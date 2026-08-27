@@ -8,7 +8,7 @@ use crate::capabilities::base::{
     Dependency, HasCapabilityMetadata, SubAgentBinding, SubAgentBindingRequest, ToolName,
 };
 use crate::capabilities::requirement::ModelRequirement;
-use crate::models::{ConfiguredModel, ModelFunction};
+use crate::models::{ConfiguredModel, ConfiguredModelResolution, ModelFunction};
 use crate::registry::ConfigConstructable;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -112,10 +112,7 @@ impl Capability for SubAgentCapability {
             ),
         };
         let model_id = &self.config.model_id;
-        let configured_model = self
-            .configured_model
-            .as_ref()
-            .map_err(|e| anyhow::anyhow!(e.clone()))?;
+        let configured_model = self.configured_model.resolved()?;
 
         let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
             model_id,
@@ -143,10 +140,7 @@ impl Capability for SubAgentCapability {
     }
 
     fn is_healthy(&self) -> Result<(), String> {
-        self.configured_model
-            .as_ref()
-            .map(|_| ())
-            .map_err(Clone::clone)
+        self.configured_model.health()
     }
 }
 

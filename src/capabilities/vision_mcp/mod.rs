@@ -22,7 +22,7 @@ use crate::capabilities::base::{
     HasCapabilityMetadata, LaunchContext, McpBinding, McpBindingRequest, McpTransportKind,
 };
 use crate::capabilities::requirement::ModelRequirement;
-use crate::models::{ConfiguredModel, ModelFunction, ModelType};
+use crate::models::{ConfiguredModel, ConfiguredModelResolution, ModelFunction, ModelType};
 use crate::providers::ApiType;
 use crate::registry::ConfigConstructable;
 use crate::utils::subserver::SubServer;
@@ -164,10 +164,7 @@ impl Capability for VisionMCPCapability {
         );
 
         let model_id = &self.config.model_id;
-        let configured_model = self
-            .configured_model
-            .as_ref()
-            .map_err(|e| anyhow::anyhow!(e.clone()))?;
+        let configured_model = self.configured_model.resolved()?;
         // The vision backend speaks the OpenAI-compatible chat/vision
         // dialect, the one every granite-cli provider can serve -- same
         // rationale as `pi`/`opencode`'s AgentModel binding. The model must
@@ -215,10 +212,7 @@ impl Capability for VisionMCPCapability {
     }
 
     fn is_healthy(&self) -> Result<(), String> {
-        self.configured_model
-            .as_ref()
-            .map(|_| ())
-            .map_err(Clone::clone)
+        self.configured_model.health()
     }
 }
 

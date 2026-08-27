@@ -319,6 +319,35 @@ impl ConfiguredModel {
     }
 }
 
+/*-- ConfiguredModelResolution -------------------------------------------------*/
+
+/// What every model-backed `Capability` does with the `Result<ConfiguredModel,
+/// String>` it stores from `ConfiguredModel::resolve`: report the failure
+/// from `Capability::is_healthy`, or bail out of `Capability::bind` with a
+/// named error. Centralized here so the 5 capabilities that store this
+/// `Result` (`AgentModelCapability`, `VisionMCPCapability`,
+/// `SubAgentCapability`, `ExploreSubAgentCapability`, `PlanSubAgentCapability`)
+/// each reduce to one call instead of repeating the same
+/// `as_ref().map_err(...)`.
+pub trait ConfiguredModelResolution {
+    /// For `Capability::is_healthy`.
+    fn health(&self) -> Result<(), String>;
+
+    /// For `Capability::bind` prologues: `Ok(&ConfiguredModel)` when
+    /// resolved, or a named `anyhow::Error` otherwise.
+    fn resolved(&self) -> anyhow::Result<&ConfiguredModel>;
+}
+
+impl ConfiguredModelResolution for Result<ConfiguredModel, String> {
+    fn health(&self) -> Result<(), String> {
+        self.as_ref().map(|_| ()).map_err(Clone::clone)
+    }
+
+    fn resolved(&self) -> anyhow::Result<&ConfiguredModel> {
+        self.as_ref().map_err(|e| anyhow::anyhow!(e.clone()))
+    }
+}
+
 /*-- Metadata Types ----------------------------------------------------------*/
 
 /// Metadata describing a model implementation.
@@ -836,5 +865,23 @@ mod configured_model_tests {
             panic!("expected resolve to fail for an unconfigured model_id")
         };
         assert!(err.contains("granite-4.2-8b"));
+    }
+
+    #[test]
+    fn configured_model_resolution_health_and_resolved_agree_with_the_result() {
+        let ok: Result<ConfiguredModel, String> = Ok(configured_model(
+            vec![ModelFunction::Chat],
+            ok_provider(),
+            None,
+        ));
+        assert!(ok.health().is_ok());
+        assert!(ok.resolved().is_ok());
+
+        let broken: Result<ConfiguredModel, String> = Err("granite-4.2-8b missing".to_string());
+        assert_eq!(broken.health(), Err("granite-4.2-8b missing".to_string()));
+        let Err(err) = broken.resolved() else {
+            panic!("expected resolved() to fail when the stored Result is Err")
+        };
+        assert!(err.to_string().contains("granite-4.2-8b missing"));
     }
 }

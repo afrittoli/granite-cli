@@ -146,8 +146,8 @@ impl crate::dependency::Configured<dyn Model> for ModelSource {
 // Re-export types from base
 mod base;
 pub use base::{
-    ConfiguredModel, LayerKind, LayerTypeCount, MambaShape, Model, ModelArchitecture,
-    ModelFunction, ModelMetadata, ModelType, ModelVariant,
+    ConfiguredModel, ConfiguredModelResolution, LayerKind, LayerTypeCount, MambaShape, Model,
+    ModelArchitecture, ModelFunction, ModelMetadata, ModelType, ModelVariant,
 };
 
 pub(crate) mod context_fit;

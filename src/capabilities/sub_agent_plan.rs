@@ -18,7 +18,7 @@ use crate::capabilities::base::{
     Dependency, HasCapabilityMetadata, KnownSubAgent, SubAgentBinding, SubAgentBindingRequest,
     ToolName,
 };
-use crate::models::{ConfiguredModel, ModelFunction};
+use crate::models::{ConfiguredModel, ConfiguredModelResolution, ModelFunction};
 use crate::registry::ConfigConstructable;
 
 /*-- PlanSubAgentCapabilityConfig --------------------------------------------*/
@@ -186,10 +186,7 @@ impl Capability for PlanSubAgentCapability {
             ),
         };
         let model_id = &self.config.model_id;
-        let configured_model = self
-            .configured_model
-            .as_ref()
-            .map_err(|e| anyhow::anyhow!(e.clone()))?;
+        let configured_model = self.configured_model.resolved()?;
 
         let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
             model_id,
@@ -217,10 +214,7 @@ impl Capability for PlanSubAgentCapability {
     }
 
     fn is_healthy(&self) -> Result<(), String> {
-        self.configured_model
-            .as_ref()
-            .map(|_| ())
-            .map_err(Clone::clone)
+        self.configured_model.health()
     }
 }
 
