@@ -704,6 +704,34 @@ mod tests {
         );
     }
 
+    // Regression test for issue #90: `select_capabilities` used to panic when
+    // a configured capability's model_id no longer resolves (e.g. after
+    // `model remove granite-4.2-8b` while `capability setup agent-model` still
+    // references it). It must instead silently omit the broken capability
+    // from the multi-select, the same way an unknown capability_type is
+    // already omitted.
+    #[tokio::test]
+    async fn select_capabilities_omits_capability_whose_model_was_removed() {
+        let mut ctx = test_ctx();
+        add_capability(&mut ctx, "my-agent", "granite-4.2-8b");
+        // Simulate `model remove granite-4.2-8b`: the capability config still
+        // references it, but it's gone from config.models.
+        ctx.config.models.remove("granite-4.2-8b");
+
+        let launcher_def = claude_launcher_def();
+        let result = select_capabilities(&mut ctx, &launcher_def, &[]).await;
+
+        assert!(result.is_ok(), "must not panic or error: {result:?}");
+        let ui = capture_ui!(ctx);
+        let prompts = ui.multi_select_prompts.borrow();
+        if let Some((_, items, _)) = prompts.first() {
+            assert!(
+                !items.contains(&"my-agent".to_string()),
+                "broken capability must not be offered as a choice"
+            );
+        }
+    }
+
     // Previously-enabled capability IDs are pre-checked (defaults = true).
     #[tokio::test]
     async fn select_capabilities_pre_checks_previously_enabled_ids() {

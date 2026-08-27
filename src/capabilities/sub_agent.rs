@@ -41,7 +41,11 @@ pub struct SubAgentCapabilityConfig {
 pub struct SubAgentCapability {
     instance_id: String,
     config: SubAgentCapabilityConfig,
-    configured_model: ConfiguredModel,
+    /// `Err` when `config.model_id` doesn't resolve (e.g. the model was
+    /// removed after this capability was configured). Construction stays
+    /// infallible per `ConfigConstructable`; the error is surfaced at
+    /// `bind()` time and via `Capability::is_healthy`.
+    configured_model: Result<ConfiguredModel, String>,
 }
 
 impl ConfigConstructable for SubAgentCapability {
@@ -108,8 +112,12 @@ impl Capability for SubAgentCapability {
             ),
         };
         let model_id = &self.config.model_id;
+        let configured_model = self
+            .configured_model
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!(e.clone()))?;
 
-        let (provider, endpoint, model_name) = self.configured_model.resolve_provider_endpoint(
+        let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
             model_id,
             api_type.clone(),
             ModelFunction::Chat,
@@ -128,10 +136,17 @@ impl Capability for SubAgentCapability {
                 endpoint_path: endpoint.path().to_string(),
                 api_key: provider.api_key().cloned(),
                 verify_ssl: provider.verify_ssl(),
-                context_length: Some(self.configured_model.model.context_length()),
+                context_length: Some(configured_model.model.context_length()),
             },
             known_type: None,
         }))
+    }
+
+    fn is_healthy(&self) -> Result<(), String> {
+        self.configured_model
+            .as_ref()
+            .map(|_| ())
+            .map_err(Clone::clone)
     }
 }
 
@@ -329,13 +344,13 @@ mod tests {
         SubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: crate::models::ConfiguredModel::for_test(
+            configured_model: Ok(crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: functions,
                     provider,
                 }),
                 None,
-            ),
+            )),
         }
     }
 
@@ -367,13 +382,13 @@ mod tests {
         let cap = SubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: crate::models::ConfiguredModel::for_test(
+            configured_model: Ok(crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: vec![ModelFunction::Chat],
                     provider: ok_provider(),
                 }),
                 None,
-            ),
+            )),
         };
 
         let binding = cap.bind(request(ApiType::Anthropic)).await.unwrap();

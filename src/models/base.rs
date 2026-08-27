@@ -223,10 +223,15 @@ impl ConfiguredModel {
     /// computed first (rather than after, as it used to be) so it can be
     /// passed into `take`, which needs it to compute the same provider alias
     /// `resolve_provider_endpoint` will use later as the route's dispatch
-    /// key. Panics if the model isn't found/constructible -- capabilities'
-    /// `ConfigConstructable::new` is infallible by trait signature, so this
-    /// preserves that contract exactly.
-    pub fn resolve(model_id: &str, global_config: &crate::config::Config) -> Self {
+    /// key.
+    ///
+    /// Returns `Err` (naming `model_id`) rather than panicking when the model
+    /// isn't found/constructible -- e.g. a capability's `model_id` still
+    /// points at a model the user has since removed. Capabilities'
+    /// `ConfigConstructable::new` is infallible by trait signature, so
+    /// callers store this `Result` and surface the error at `bind()` time
+    /// instead of at construction time.
+    pub fn resolve(model_id: &str, global_config: &crate::config::Config) -> Result<Self, String> {
         let configured_variant = global_config
             .models
             .get(model_id)
@@ -234,13 +239,13 @@ impl ConfiguredModel {
         let mut source = crate::models::ModelSource::from_config(global_config);
         let model = source
             .take(model_id, configured_variant.as_deref())
-            .unwrap_or_else(|| {
-                panic!("Configured model '{model_id}' not found or could not be constructed")
-            });
-        Self {
+            .ok_or_else(|| {
+                format!("Configured model '{model_id}' not found or could not be constructed")
+            })?;
+        Ok(Self {
             model,
             configured_variant,
-        }
+        })
     }
 
     /// Test-only escape hatch so capability unit tests can inject a fake
@@ -819,5 +824,17 @@ mod configured_model_tests {
     fn resolve_variant_returns_none_without_a_configured_variant() {
         let cm = configured_model(vec![ModelFunction::Chat], ok_provider(), None);
         assert!(cm.resolve_variant().is_none());
+    }
+
+    // Regression test for issue #90: resolving a model_id that isn't in
+    // config.models (e.g. it was removed via `model remove`) must return a
+    // named `Err`, not panic.
+    #[test]
+    fn resolve_returns_named_err_for_unconfigured_model_id() {
+        let global_config = crate::config::Config::default();
+        let Err(err) = ConfiguredModel::resolve("granite-4.2-8b", &global_config) else {
+            panic!("expected resolve to fail for an unconfigured model_id")
+        };
+        assert!(err.contains("granite-4.2-8b"));
     }
 }

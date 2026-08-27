@@ -269,6 +269,19 @@ pub trait Capability: crate::registry::Named + Send + Sync {
     /// Resolve a `BindingRequest` into a concrete `Binding`.
     async fn bind(&self, request: BindingRequest) -> anyhow::Result<Binding>;
 
+    /// Whether this instance's dependencies actually resolved to something
+    /// usable at construction time. `ConfigConstructable::new` is infallible
+    /// by trait signature, so a capability whose config references
+    /// now-missing state (e.g. a `model_id` the user has since removed)
+    /// can't report that by failing construction -- it stores the failure
+    /// and surfaces it here instead. `CapabilitySource::from_config` checks
+    /// this right after constructing each configured entry and skips (with a
+    /// warning) any that report unhealthy, the same way it already skips
+    /// entries with an unrecognized `capability_type`.
+    fn is_healthy(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     // Execution hooks (all optional with NoOp defaults)
     async fn on_setup(&self) -> anyhow::Result<()> {
         Ok(())

@@ -75,7 +75,11 @@ Complete the user's search request efficiently and report your findings clearly.
 pub struct ExploreSubAgentCapability {
     instance_id: String,
     config: ExploreSubAgentCapabilityConfig,
-    configured_model: ConfiguredModel,
+    /// `Err` when `config.model_id` doesn't resolve (e.g. the model was
+    /// removed after this capability was configured). Construction stays
+    /// infallible per `ConfigConstructable`; the error is surfaced at
+    /// `bind()` time and via `Capability::is_healthy`.
+    configured_model: Result<ConfiguredModel, String>,
     /// Static prompt for the explore sub-agent (placeholder for now; user can
     /// override by editing this field later).
     pub prompt: String,
@@ -156,8 +160,12 @@ impl Capability for ExploreSubAgentCapability {
             ),
         };
         let model_id = &self.config.model_id;
+        let configured_model = self
+            .configured_model
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!(e.clone()))?;
 
-        let (provider, endpoint, model_name) = self.configured_model.resolve_provider_endpoint(
+        let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
             model_id,
             api_type.clone(),
             ModelFunction::Chat,
@@ -176,10 +184,17 @@ impl Capability for ExploreSubAgentCapability {
                 endpoint_path: endpoint.path().to_string(),
                 api_key: provider.api_key().cloned(),
                 verify_ssl: provider.verify_ssl(),
-                context_length: Some(self.configured_model.model.context_length()),
+                context_length: Some(configured_model.model.context_length()),
             },
             known_type: Some(KnownSubAgent::Explore),
         }))
+    }
+
+    fn is_healthy(&self) -> Result<(), String> {
+        self.configured_model
+            .as_ref()
+            .map(|_| ())
+            .map_err(Clone::clone)
     }
 }
 
@@ -376,13 +391,13 @@ mod tests {
         ExploreSubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: crate::models::ConfiguredModel::for_test(
+            configured_model: Ok(crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: functions,
                     provider,
                 }),
                 None,
-            ),
+            )),
             prompt: cap.prompt,
             tools: cap.tools,
         }
@@ -414,13 +429,13 @@ mod tests {
         let cap = ExploreSubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: crate::models::ConfiguredModel::for_test(
+            configured_model: Ok(crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: vec![ModelFunction::Chat],
                     provider: ok_provider(),
                 }),
                 None,
-            ),
+            )),
             prompt: cap.prompt,
             tools: cap.tools,
         };

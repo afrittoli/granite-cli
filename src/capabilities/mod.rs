@@ -46,9 +46,16 @@ impl CapabilitySource {
                         capability_config.capability_type
                     );
                 }
-                result
-                    .ok()
-                    .map(|capability| (capability_config.capability_id.clone(), capability))
+                let capability = result.ok()?;
+                if let Err(e) = capability.is_healthy() {
+                    alog_channel!(
+                        MessageLevel::Warning,
+                        "Skipping capability '{}': {e}",
+                        capability_config.capability_id
+                    );
+                    return None;
+                }
+                Some((capability_config.capability_id.clone(), capability))
             })
             .collect();
         Self { constructed }
@@ -154,6 +161,51 @@ mod tests {
 
         let source = CapabilitySource::from_config(&config);
         assert!(source.instances().is_empty());
+    }
+
+    // Regression test for the panic reported in issue #90: a capability
+    // whose `model_id` no longer exists in `config.models` (e.g. after
+    // `model remove`) must be skipped with a warning, not crash the whole
+    // command -- the same treatment `capability_source_skips_unknown_capability_types`
+    // already gives an unrecognized `capability_type`.
+    #[test]
+    fn capability_source_skips_capability_referencing_a_removed_model() {
+        let mut config = Config::default();
+        // Deliberately do NOT insert "granite-4.2-8b" into config.models --
+        // this reproduces "the model this capability depends on was removed".
+        config.capabilities.insert(
+            "my-agent".to_string(),
+            agent_model_config("my-agent", "granite-4.2-8b"),
+        );
+
+        let source = CapabilitySource::from_config(&config);
+        assert!(source.instances().is_empty());
+    }
+
+    // Alongside a healthy capability, only the broken one should be skipped.
+    #[test]
+    fn capability_source_skips_broken_entries_but_keeps_healthy_ones() {
+        let mut config = Config::default();
+        config.models.insert(
+            "granite-3.1-8b-instruct".to_string(),
+            ModelConfig {
+                model_id: "granite-3.1-8b-instruct".to_string(),
+                provider_id: None,
+                variant: None,
+            },
+        );
+        config.capabilities.insert(
+            "healthy".to_string(),
+            agent_model_config("healthy", "granite-3.1-8b-instruct"),
+        );
+        config.capabilities.insert(
+            "broken".to_string(),
+            agent_model_config("broken", "granite-4.2-8b"),
+        );
+
+        let source = CapabilitySource::from_config(&config);
+        let ids: Vec<String> = source.instances().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec!["healthy".to_string()]);
     }
 
     #[test]

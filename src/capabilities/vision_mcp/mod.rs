@@ -80,7 +80,11 @@ impl Default for VisionMCPCapabilityConfig {
 pub struct VisionMCPCapability {
     instance_id: String,
     config: VisionMCPCapabilityConfig,
-    configured_model: ConfiguredModel,
+    /// `Err` when `config.model_id` doesn't resolve (e.g. the model was
+    /// removed after this capability was configured). Construction stays
+    /// infallible per `ConfigConstructable`; the error is surfaced at
+    /// `bind()` time and via `Capability::is_healthy`.
+    configured_model: Result<ConfiguredModel, String>,
     /// The in-process Streamable HTTP server started by `bind()`. `None`
     /// before `bind()` runs.
     http_server: Mutex<Option<SubServer>>,
@@ -160,13 +164,17 @@ impl Capability for VisionMCPCapability {
         );
 
         let model_id = &self.config.model_id;
+        let configured_model = self
+            .configured_model
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!(e.clone()))?;
         // The vision backend speaks the OpenAI-compatible chat/vision
         // dialect, the one every granite-cli provider can serve -- same
         // rationale as `pi`/`opencode`'s AgentModel binding. The model must
         // support ImageUnderstanding, but the endpoint is looked up via
         // Chat, since that's the endpoint that actually serves vision
         // requests.
-        let (provider, endpoint, model_name) = self.configured_model.resolve_provider_endpoint(
+        let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
             model_id,
             ApiType::OpenAI,
             ModelFunction::ImageUnderstanding,
@@ -204,6 +212,13 @@ impl Capability for VisionMCPCapability {
             server.shutdown().await;
         }
         Ok(())
+    }
+
+    fn is_healthy(&self) -> Result<(), String> {
+        self.configured_model
+            .as_ref()
+            .map(|_| ())
+            .map_err(Clone::clone)
     }
 }
 
@@ -404,13 +419,13 @@ mod tests {
         VisionMCPCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: ConfiguredModel::for_test(
+            configured_model: Ok(ConfiguredModel::for_test(
                 Arc::new(TestVisionModel {
                     supported_functions: functions,
                     provider,
                 }),
                 None,
-            ),
+            )),
             http_server: Mutex::new(None),
         }
     }
