@@ -39,19 +39,19 @@ ids in different places:
 │  LauncherConfig  │
 └──────────────────┘
          │  enabled_capabilities: Vec<String>
-         │  wrapper field; no type knowledge needed
+         │  (wrapper field; no type knowledge needed)
          ▼
 ┌──────────────────┐
-│ CapabilityConfig │
-└──────────────────┘
-         │  config["model_id"]
-         │  instance JSON, under a key named by metadata()
+│ CapabilityConfig │ <─── Registry metadata().dependencies
+└──────────────────┘      (declares dep.config_key for this type)
+         │  config[dep.config_key]
+         │  (opaque JSON; inspects key named by metadata)
          ▼
 ┌──────────────────┐
 │    ModelConfig   │
 └──────────────────┘
          │  provider_id: Option<String>
-         │  wrapper field; no type knowledge needed
+         │  (wrapper field; no type knowledge needed)
          ▼
 ┌──────────────────┐
 │  ProviderConfig  │
@@ -115,13 +115,20 @@ doing.
 |---|---|---|
 | List (`model/capability/launcher/provider list`) | Inline annotation, never prompt | Sub-Task 3 |
 | Info/detail (`model/capability info`) | Warning + offer remediation | Sub-Task 3 |
-| Setup (create) | Remediation only for a dependency the wizard is about to use | Deferred, see [open question](#open-questions) |
+| Setup (create) | Remediation only for a dependency the wizard is about to use | Deferred, see [out of scope](#out-of-scope-future-work) |
 | Setup (overwrite of an existing instance) | Visually flag defaults that are themselves broken | Sub-Task 5 |
 | Launch | Offer remediation, abort by default if declined | Sub-Task 3 |
 | Remove | Warn and offer a choice before creating a new dangling reference | Sub-Task 4 |
 
 One shared prompt serves every command that offers a fix, so the choices
 read the same wherever they appear (Sub-Task 2).
+
+Fixing one reference can reveal another: choosing a replacement model for a
+capability can point it at a model whose own provider is gone. A command that
+remediates therefore re-runs its scoped validation after each accepted fix
+and keeps prompting until the walk comes back clean, so one run of the
+command ends with a configuration that resolves rather than asking the user
+to run it again.
 
 Remediation is interactive-only, gated on **both** `Ui::is_interactive()`
 *and* the command not being in an auto/non-prompting mode (e.g. `setup
@@ -143,16 +150,14 @@ current value as a default that the user accepts without noticing.
 Both are handled by validating what was just produced rather than trusting
 it (Sub-Task 5).
 
-## Open Questions
-
-- Should a broken candidate appear at all in a `setup` selection list
-  (e.g. "Select a model for this capability")? Today `*Source::from_config`
-  filters it out of `instances()` entirely.
-- Should we implement multi-hop remediation within one session, when fixing
-  one reference reveals another.
-
 ## Out of Scope (Future Work)
 
+- Broken candidates in `setup` selection lists. `*Source::from_config`
+  filters a dangling instance out of `instances()`, so a broken model never
+  appears in "Select a model for this capability" and reads as one that was
+  never configured. Listing it with `ui.warn_mark` and forcing a reconfigure
+  when it is picked would say more, but it changes the candidate lists of
+  every `setup` flow, which is wider than this refactor.
 - Runtime liveness (#36). Whether a provider is actually reachable is a
   separate axis from whether config references resolve, and giving `Model`,
   `Capability` and `Launcher` a `health_check()` is its own piece of work.
@@ -296,6 +301,13 @@ interactive or because the command is running in a non-prompting mode such as
 `setup --auto`. `launch` is the exception, aborting by default instead of
 skipping.
 
+Remediation is a loop rather than a single pass. After a fix is accepted the
+caller re-runs the same scoped validation and prompts for whatever is still
+broken, including anything the fix itself introduced. The loop ends when
+validation comes back clean, or when a whole pass changes nothing, which is
+what a run of skips produces, so a user who keeps declining is never asked
+about the same reference twice.
+
 ```
 ⚠ Configuration issue (1 of 2)
 
@@ -311,7 +323,10 @@ skipping.
 Tests cover: canned answers confirming that reconfigure invokes setup
 pre-selected on the right instance, that remove calls the right removal
 function, and that neither a non-interactive session nor an auto-mode flag
-ever reaches the underlying prompt call.
+ever reaches the underlying prompt call; a fix that repairs one reference
+while exposing a second, confirming the loop re-validates and prompts again
+before returning; and a pass in which every problem is skipped, confirming
+the loop stops instead of re-offering the same choices.
 
 **Relevant Context**
 - `src/commands/capability.rs` (`CapabilityCommands::setup`, reused by reconfigure)
@@ -354,8 +369,8 @@ the launch itself. This check runs before the existing binary check, so a
 config problem is reported before anything about the environment.
 
 Remediation during a fresh `setup`, for a dependency the wizard is about to
-use, is not built here. It depends on the first open question, and stays
-unimplemented until that is settled.
+use, is not built here. It depends on broken candidates being visible in the
+wizard's selection lists, which is out of scope for this plan.
 
 Tests cover: a UI double that panics on `select`/`confirm`, driven through a
 list containing a broken entry, confirming the list never prompts; for info
