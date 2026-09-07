@@ -78,19 +78,38 @@ one hop at a time (Sub-Task 1):
 fn validate_ref(kind: RefKind, id: &str, config: &Config)
     -> Result<(), ValidationError>
 
-enum ValidationError {
-    NotConfigured { kind: RefKind, id: String, reason: String },
-    Other(String),
+struct ValidationError {
+    /// What did not resolve.
+    target: (RefKind, String),
+    problem: Problem,
+    /// The configured instance holding the broken reference, absent when the
+    /// instance asked about is itself the problem.
+    referrer: Option<(RefKind, String)>,
+}
+
+enum Problem {
+    NotConfigured,
+    UnknownType { type_name: String },
+    NoProviderConfigured,
+    MissingDependency { config_key: String },
 }
 ```
+
+The referrer is there because a caller acting on a failure acts on the
+instance that holds the reference, not on the missing thing. `launch claude`
+finding that `chat`'s model is gone offers to reconfigure `chat`, and the
+prompt in Sub-Task 2 names it. `Problem` is an enum rather than a message so
+that caller branches on a variant instead of on text.
 
 The command drives the check, and it covers only what that command names,
 walking transitively from there. A command never reports a problem in a part
 of the configuration it was not asked about, so an unrelated broken entry
 does not block the work in hand. Construction cannot be the driver instead,
-because `ModelSource::from_config` is eager and is rebuilt inside
-`ConfiguredModel::resolve()`, so building one instance already touches the
-whole configuration.
+because `construct()` serves two kinds of caller and cannot tell them apart.
+One builds an instance drawn from the configuration. The other builds a
+transient instance of something that is deliberately not configured, which is
+how the setup wizard probes provider and launcher types and how `model setup`
+builds a model before saving it. Only the caller knows which it is.
 
 ```
 capability setup chat     ->  chat, its model, that model's provider
@@ -100,11 +119,11 @@ model list                ->  every model (the command's whole subject)
 provider remove ollama    ->  whatever currently points at ollama
 ```
 
-The same check also runs inside construction, to remove the panic. The
-factory's generated `construct()` calls it before building an instance and
-returns an error if a reference does not resolve. Today that path aborts the
-process instead: `ConfiguredModel::resolve()` panics when a capability names
-a model that is no longer configured.
+Validation runs where something is about to be used, and nowhere else,
+so a broken entry blocks only the commands that would have used it.
+A list command is the one case that walks every instance of a kind,
+because its subject is every instance of that kind.
+
 
 ### 2. Notifying and remediating
 
@@ -170,11 +189,15 @@ it (Sub-Task 5).
   specifies stderr only for `error`. Whether `warn` should join it is a
   policy question about the trait, not about config integrity.
 - `ModelSource` eagerness (#58). It builds every configured model on each
-  `ConfiguredModel::resolve()`, which is both wasted work and the reason
-  construction cannot be scoped. #58's lazy memoised `construct_shared` is
-  that fix; this plan works around it meanwhile by driving validation from
-  the command layer.
-- Malformed instance config (#59). `ConfigConstructable::new` deserialises
+  `ConfiguredModel::resolve()`, which is wasted work. #58's lazy memoised
+  `construct_shared` is that fix; this plan leaves the eager build in place
+  and drives validation from the command layer.
+- The `ConfiguredModel::resolve` panic itself (#90). This plan detects a
+  dangling reference and tells the user about it; it does not stop the abort
+  that happens when a capability is constructed against a model that is gone.
+  Fixing that requires making `ConfigConstructable::new` fallible. Once 
+  `global_config` is removed from `ConfigConstructable::new`, the next step
+  will be to make it fallible and fix the panic in #90
   with `unwrap_or_default()`, so a corrupt config silently becomes a default
   rather than an error. Validation here checks that references resolve, not
   that each instance's own config parses.
@@ -210,7 +233,14 @@ Each kind reads its references from where they actually live. A launcher
 walks the ids in `enabled_capabilities`. A capability looks up its type's
 static `dependencies` in the registry and, for each entry, reads the id from
 its own config JSON under that entry's `config_key`. A model reads
-`provider_id`. Providers have no outbound references and always pass.
+`provider_id`. Providers have no outbound references between instances.
+
+Each of the four kinds also names its implementation type (`*_type` fields),
+and that reference is checked too. 
+
+A capability's dependency is validated whenever it holds an id, whether the
+dependency is declared required or not, so a dangling optional dependency is
+reported exactly like a dangling required one.
 
 A model with no `provider_id` at all fails, distinctly from one whose
 `provider_id` points at nothing:
@@ -246,29 +276,31 @@ already prefers the static form, and the only callers of the instance form
 are five tests, which move to metadata. This leaves `metadata()` as the one
 place a capability says what it needs.
 
-The factory's generated `construct()` calls `validate_ref` before building
-and returns an error instead of proceeding. This stops
-`ConfiguredModel::resolve()` panicking on a dangling reference, and gives
-`*Source::from_config` the skip-and-warn outcome #90 asks for.
 
-Its public signature is unchanged: it already returns `Result<_, String>`,
-and the validation error converts into that string.
 
 Tests cover: a healthy and a dangling instance of each kind, confirming only
 the dangling one fails; a launcher → capability → model → provider chain with
 only the provider missing, confirming the walk recurses rather than stopping
 one hop deep; the two `provider_id` cases producing different messages;
 `find_dangling` against a config seeded with several known-broken instances
-returning exactly the expected list; and a config whose capability references
-a removed model, driven through `construct()`, returning an error where it
-previously panicked.
+returning exactly the expected list.
 
 **Relevant Context**
 - `src/capabilities/base.rs` (`CapabilityMetadata.dependencies`, `Dependency`, `Capability::dependencies`)
 - `src/commands/capability.rs:196-198` (comment on preferring metadata over an instance)
 - `src/commands/setup.rs:513-530` (existing static-metadata read)
-- `src/models/base.rs:251-261` (`ConfiguredModel::resolve`, the panic)
-- `src/registry/mod.rs` (`define_factory!`, generated `construct`)
+- `src/commands/setup.rs:122-138`, `:335-350` (discovery constructing types
+  that are deliberately not configured)
+- `src/commands/model.rs:610-615` (a live, provider-less instance built
+  before anything is written)
+- `src/models/mod.rs:35-59` (`ModelSource::from_config`, which constructs a
+  model whether or not its provider resolves)
+- `src/registry/mod.rs:206-211` (the `construct` doc comment)
+- `src/capabilities/base.rs:346-376` (`Display for Dependency`, which already
+  distinguishes required from optional to the user)
+- `src/commands/capability.rs:278-300`, `:420` (`resolve_model_dependency` and
+  `resolve_provider_dependency`, where an unsatisfiable optional dependency is
+  left unset)
 
 **Status** — `[ ]` not started
 
