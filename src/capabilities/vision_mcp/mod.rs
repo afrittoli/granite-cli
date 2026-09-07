@@ -126,19 +126,6 @@ impl Capability for VisionMCPCapability {
         "Exposes a vision-language model as an MCP server (compare/analyze images) for a launched coding agent to call."
     }
 
-    fn dependencies(&self) -> Vec<Dependency> {
-        vec![Dependency::Model {
-            config_key: "model_id".to_string(),
-            requirement: ModelRequirement {
-                model_type: Some(ModelType::Vision),
-                supported_functions: vec![ModelFunction::Chat, ModelFunction::ImageUnderstanding],
-                ..Default::default()
-            },
-            resolved_id: Some(self.config.model_id.clone()),
-            required: true,
-        }]
-    }
-
     fn binding_types(&self) -> HashSet<BindingType> {
         HashSet::from([BindingType::Mcp])
     }

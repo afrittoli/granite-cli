@@ -307,13 +307,12 @@ mod tests {
     }
 
     #[test]
-    fn dependencies_carry_resolved_model_id() {
-        let cap = explore_capability_with_test_model(vec![ModelFunction::Chat], ok_provider());
-        let deps = cap.dependencies();
+    fn metadata_declares_a_required_model_dependency() {
+        let deps = ExploreSubAgentCapability::metadata().dependencies;
         assert_eq!(deps.len(), 1);
         assert!(deps.iter().any(|d| matches!(
             d,
-            Dependency::Model { resolved_id: Some(id), .. } if id == "granite-3.1-8b-instruct"
+            Dependency::Model { config_key, required: true, .. } if config_key == "model_id"
         )));
     }
 

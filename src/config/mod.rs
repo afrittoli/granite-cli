@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 
 use_channel!("CONF");
 
+pub(crate) mod validation;
+
 const PATH_DELIM: &str = "---";
 
-trait ConfigId {
+pub(crate) trait ConfigId {
     fn config_id(&self) -> &str;
 }
 

@@ -81,18 +81,6 @@ impl Capability for AgentModelCapability {
         "Surfaces a configured model's connection details (base URL, model name, auth, TLS) to a launched agent."
     }
 
-    fn dependencies(&self) -> Vec<Dependency> {
-        vec![Dependency::Model {
-            config_key: "model_id".to_string(),
-            requirement: ModelRequirement {
-                supported_functions: vec![ModelFunction::Chat, ModelFunction::ToolCalling],
-                ..Default::default()
-            },
-            resolved_id: Some(self.config.model_id.clone()),
-            required: true,
-        }]
-    }
-
     fn binding_types(&self) -> HashSet<BindingType> {
         HashSet::from([BindingType::AgentModel])
     }
@@ -496,28 +484,12 @@ mod tests {
     }
 
     #[test]
-    fn dependencies_carry_resolved_model_id() {
-        let mut config = Config::default();
-        config.models.insert(
-            "granite-3.1-8b-instruct".to_string(),
-            ModelConfig {
-                model_id: "granite-3.1-8b-instruct".to_string(),
-                model_type: "granite-3.1-8b-instruct".to_string(),
-                config: serde_json::json!({}),
-                provider_id: None,
-                variant: None,
-            },
-        );
-        let cap = AgentModelCapability::new(
-            "my-agent",
-            &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-            &config,
-        );
-        let deps = cap.dependencies();
+    fn metadata_declares_a_required_model_dependency() {
+        let deps = AgentModelCapability::metadata().dependencies;
         assert_eq!(deps.len(), 1);
         assert!(deps.iter().any(|d| matches!(
             d,
-            Dependency::Model { resolved_id: Some(id), .. } if id == "granite-3.1-8b-instruct"
+            Dependency::Model { config_key, required: true, .. } if config_key == "model_id"
         )));
     }
 

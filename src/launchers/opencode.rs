@@ -1308,9 +1308,6 @@ mod tests {
         fn description(&self) -> &str {
             "test double"
         }
-        fn dependencies(&self) -> Vec<crate::capabilities::Dependency> {
-            vec![]
-        }
         fn binding_types(&self) -> HashSet<BindingType> {
             HashSet::from([BindingType::SubAgent])
         }
