@@ -272,6 +272,12 @@ enum ProviderSubcommands {
     /// List all configured providers
     List,
 
+    /// Show detailed provider information
+    Info {
+        /// Provider ID
+        provider_id: String,
+    },
+
     /// Interactive provider setup wizard
     Setup {
         /// Catalog provider type to set up (e.g. `openai-compatible`)
@@ -304,6 +310,12 @@ enum LauncherSubcommands {
 
     /// List all configured launcher instances
     List,
+
+    /// Show detailed launcher information
+    Info {
+        /// Launcher ID
+        launcher_id: String,
+    },
 
     /// Interactive launcher setup wizard
     Setup {
@@ -666,6 +678,7 @@ async fn run_provider_command(
     match subcmd {
         ProviderSubcommands::Catalog { wide } => ProviderCommands::catalog(ctx, wide),
         ProviderSubcommands::List => ProviderCommands::list(ctx),
+        ProviderSubcommands::Info {provider_id} => ProviderCommands::info(ctx, &provider_id),
         ProviderSubcommands::Setup {
             provider_type,
             instance_id,
@@ -684,6 +697,7 @@ async fn run_launcher_command(
     match subcmd {
         LauncherSubcommands::Catalog => LauncherCommands::catalog(ctx),
         LauncherSubcommands::List => LauncherCommands::list(ctx),
+        LauncherSubcommands::Info { launcher_id } => LauncherCommands::info(ctx, &launcher_id),
         LauncherSubcommands::Setup {
             launcher_type,
             instance_id,
