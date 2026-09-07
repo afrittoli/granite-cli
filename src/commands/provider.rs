@@ -106,6 +106,84 @@ impl ProviderCommands {
         Ok(())
     }
 
+    pub fn info(ctx: &crate::AppContext, id: &str) -> Result<()> {
+        let configured = ctx.config.get_provider(id);
+
+        let metadata = configured
+            .and_then(|p| PROVIDER_REGISTRY.get(&p.provider_type))
+            .or_else(|| PROVIDER_REGISTRY.get(id));
+
+        match metadata {
+            Some(md) => {
+                let mut fields: Vec<(&str, String)> = vec![
+                    ("Name", md.name.clone()),
+                    ("Description", md.description.clone()),
+                    ("Type", md.provider_type.to_string()),
+                    ("Default URL", md.default_endpoint.clone()),
+                ];
+
+                let api_types = md
+                    .supported_api_types
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !api_types.is_empty() {
+                    fields.push(("API Types", api_types));
+                }
+
+                let formats = md
+                    .supported_formats
+                    .iter()
+                    .map(|f| f.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !formats.is_empty() {
+                    fields.push(("Formats", formats));
+                }
+
+                if !md.tags.is_empty() {
+                    fields.push(("Tags", md.tags.join(", ")));
+                }
+
+                if let Some(cfg) = configured {
+                    fields.push(("Config: Type", cfg.provider_type.clone()));
+                    if let Some(obj) = cfg.config.as_object() {
+                        for (k, v) in obj {
+                            fields.push(("Config", format!("{k} = {v}")))
+                        }
+                    }
+                }
+
+                ctx.ui.detail(id, &fields);
+                Ok(())
+            }
+            None => {
+                if configured.is_some() {
+                    let fields: Vec<(&str, String)> = vec![(
+                        "Note",
+                        "Configured but its type is not found in the bundled registry".to_string(),
+                    )];
+                    ctx.ui.detail(id, &fields);
+                    Ok(())
+                } else {
+                    ctx.ui
+                        .error(&format!("Provider '{id}' not found in registry."));
+
+                    let available: Vec<_> = crate::providers::PROVIDER_REGISTRY
+                        .entries()
+                        .keys()
+                        .map(|k| k.to_string())
+                        .collect();
+                    ctx.ui
+                        .info(&format!("Available providers: {}", available.join(", ")));
+
+                    anyhow::bail!("Provider not found");
+                }
+            }
+        }
+    }
+
     /// Interactive provider setup wizard.
     ///
     /// `provider_type` is the catalog/registry key (e.g. `openai-compatible`).
@@ -337,6 +415,16 @@ mod tests {
         };
     }
 
+    macro_rules! details {
+        ($ctx:expr) => {
+            (&*($ctx.ui) as &dyn std::any::Any)
+                .downcast_ref::<CaptureUi>()
+                .unwrap()
+                .details
+                .borrow()
+        };
+    }
+
     macro_rules! infos {
         ($ctx:expr) => {
             (&*($ctx.ui) as &dyn std::any::Any)
@@ -467,6 +555,85 @@ mod tests {
         assert_eq!(rows[2][1], "openai-compatible");
         assert_eq!(rows[1][0], "dev-openai");
         assert_eq!(rows[2][0], "prod-openai");
+    }
+
+    // -- info -----------------------------------------------------------------
+
+    #[test]
+    fn info_unknown_provider_returns_err() {
+        let ctx = test_ctx();
+        let result = ProviderCommands::info(&ctx, "does-not-exist");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Provider not found")
+        );
+    }
+
+    #[test]
+    fn info_catalog_provider_renders_detail() {
+        let ctx = test_ctx();
+        let result = ProviderCommands::info(&ctx, "openai-compatible");
+        assert!(result.is_ok());
+
+        let details = details!(ctx);
+        assert_eq!(details.len(), 1);
+        let (id, fields) = &details[0];
+        assert_eq!(id, "openai-compatible");
+        assert!(fields.iter().any(|(k, _)| *k == "Name"));
+        assert!(!fields.iter().any(|(k, _)| k.starts_with("Config")));
+    }
+
+    #[test]
+    fn info_configured_provider_renders_detail_with_config() {
+        let ctx = ctx_with_provider("my-provider", "http://localhost:11434");
+        let result = ProviderCommands::info(&ctx, "my-provider");
+        assert!(result.is_ok());
+
+        let details = details!(ctx);
+        assert_eq!(details.len(), 1);
+        let (id, fields) = &details[0];
+        assert_eq!(id, "my-provider");
+
+        assert!(fields.iter().any(|(k, _)| *k == "Name"));
+
+        assert!(
+            fields
+                .iter()
+                .any(|(k, v)| *k == "Config: Type" && v == "openai-compatible")
+        );
+        assert!(
+            fields
+                .iter()
+                .any(|(k, v)| *k == "Config" && v.contains("http://localhost:11434"))
+        );
+    }
+
+    #[test]
+    fn info_configured_unknown_type_renders_note() {
+        let mut ctx = test_ctx();
+        ctx.config.providers.insert(
+            "custom-provider".to_string(),
+            ProviderConfig {
+                provider_id: "custom-provider".to_string(),
+                provider_type: "not-a-real-type".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
+        let result = ProviderCommands::info(&ctx, "custom-provider");
+        assert!(result.is_ok());
+
+        let details = details!(ctx);
+        assert_eq!(details.len(), 1);
+        let (id, fields) = &details[0];
+        assert_eq!(id, "custom-provider");
+        assert!(
+            fields
+                .iter()
+                .any(|(k, v)| *k == "Note" && v.contains("not found in the bundled registry"))
+        );
     }
 
     // -- health ----------------------------------------------------------------
