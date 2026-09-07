@@ -3,6 +3,7 @@ pub mod hardware;
 pub mod launcher;
 pub mod model;
 pub mod provider;
+pub mod remediation;
 pub mod setup;
 
 pub use capability::CapabilityCommands;

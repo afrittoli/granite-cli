@@ -302,7 +302,7 @@ returning exactly the expected list.
   `resolve_provider_dependency`, where an unsatisfiable optional dependency is
   left unset)
 
-**Status** — `[ ]` not started
+**Status** — `[x] done`
 
 ---
 
@@ -357,13 +357,15 @@ pre-selected on the right instance, that remove calls the right removal
 function, and that neither a non-interactive session nor an auto-mode flag
 ever reaches the underlying prompt call; a fix that repairs one reference
 while exposing a second, confirming the loop re-validates and prompts again
-before returning; and a pass in which every problem is skipped, confirming
-the loop stops instead of re-offering the same choices.
+before returning; a fix that returns having changed nothing, confirming the
+loop reports it as still unresolved rather than asking again; and a pass in
+which every problem is skipped, confirming the loop stops instead of
+re-offering the same choices.
 
 **Relevant Context**
 - `src/commands/capability.rs` (`CapabilityCommands::setup`, reused by reconfigure)
 
-**Status** — `[ ]` not started
+**Status** — `[x] done`
 
 ---
 

@@ -134,6 +134,12 @@ pub(crate) fn find_dangling(kind: RefKind, config: &Config) -> Vec<DanglingRef> 
         .collect()
 }
 
+/// The `*_type` of a configured instance: the registry key that its setup
+/// command needs to reconfigure it. `None` when `id` names nothing.
+pub(crate) fn type_name<'a>(kind: RefKind, id: &str, config: &'a Config) -> Option<&'a str> {
+    config.entry(kind, id).map(Validatable::type_name)
+}
+
 impl std::fmt::Display for RefKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
