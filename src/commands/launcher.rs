@@ -85,7 +85,7 @@ impl LauncherCommands {
                     .iter()
                     .map(|c| c.to_string())
                     .collect();
-                if !cpas.is_empty() {
+                if !caps.is_empty() {
                     caps.sort();
                     fields.push(("Supported Capabilities", caps.join(", ")));
                 }
