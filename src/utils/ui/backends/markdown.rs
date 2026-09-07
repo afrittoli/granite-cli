@@ -60,7 +60,7 @@ impl Ui for MarkdownOutput {
         println!("{msg}");
     }
     fn warn(&self, msg: &str) {
-        println!("Warning: {msg}");
+        println!("> [!Warning]\n> {msg}");
     }
     fn error(&self, msg: &str) {
         eprintln!("Error: {msg}");
