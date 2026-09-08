@@ -172,11 +172,14 @@ it (Sub-Task 5).
 ## Out of Scope (Future Work)
 
 - Broken candidates in `setup` selection lists. `*Source::from_config`
-  filters a dangling instance out of `instances()`, so a broken model never
-  appears in "Select a model for this capability" and reads as one that was
-  never configured. Listing it with `ui.warn_mark` and forcing a reconfigure
-  when it is picked would say more, but it changes the candidate lists of
-  every `setup` flow, which is wider than this refactor.
+  filters a dangling instance out of `instances()`, so a broken model or
+  capability never appears in "Select a model for this capability" and reads
+  as one that was never configured. Listing it with `ui.warn_mark` and
+  forcing a reconfigure when it is picked would say more, but it changes the
+  candidate lists of every `setup` flow, which is wider than this refactor.
+  Launcher setup does say what it could not offer, and carries a
+  previously-enabled id through rather than dropping it, so editing a launcher
+  never un-enables what the walk would otherwise report.
 - Runtime liveness (#36). Whether a provider is actually reachable is a
   separate axis from whether config references resolve, and giving `Model`,
   `Capability` and `Launcher` a `health_check()` is its own piece of work.
@@ -193,8 +196,10 @@ it (Sub-Task 5).
   `construct_shared` is that fix; this plan leaves the eager build in place
   and drives validation from the command layer.
 - The `ConfiguredModel::resolve` panic itself (#90). This plan detects a
-  dangling reference and tells the user about it; it does not stop the abort
-  that happens when a capability is constructed against a model that is gone.
+  dangling reference and tells the user about it, and `CapabilitySource`
+  skips an instance whose references do not resolve rather than constructing
+  it, so the construction sites no longer reach the abort. The panic is still
+  there for any caller that resolves a model directly.
   Fixing that requires making `ConfigConstructable::new` fallible. Once 
   `global_config` is removed from `ConfigConstructable::new`, the next step
   will be to make it fallible and fix the panic in #90
@@ -206,6 +211,34 @@ it (Sub-Task 5).
 - Cross-process conflict resolution / file locking. granite-cli has no
   daemon; every invocation is load-run-exit, so this is a narrow race, not
   addressed here.
+- Re-typing a broken instance in place (issue to file). When an instance's
+  `*_type` is not in the registry the only repair offered is removal, and
+  removing a model breaks every capability that points at it. Re-typing would
+  keep the instance id, and so every inbound reference, which is what a
+  catalog rename actually calls for. It needs a type picker per kind, which
+  does not exist as a reusable piece today, and it leaves behind an instance
+  id that may still name the old type.
+- The second confirmation when reconfiguring (issue to file). Choosing to
+  reconfigure an instance leads into setup, which then asks whether to
+  overwrite the instance that is already configured, defaulting to no. That
+  is two confirmations for one decision, and accepting the default leaves the
+  reference broken. Fixing it means changing how the four setup commands
+  treat an explicit instance id, which affects every caller of them.
+- Sibling problems a declined prompt hides (issue to file). Remediation
+  reports one problem at a time and stops when the user declines, so a
+  launcher with two broken capabilities only ever names the first. Reporting
+  the second would mean gathering every error rather than stopping at the
+  first, which is the collect-all walk Sub-Task 1 deliberately does not have.
+- Launching without a broken capability (issue to file). A launcher with
+  several enabled capabilities cannot start while any one of them is broken:
+  declining the preflight aborts, and there is no way to run with the rest.
+  Acknowledging the problem is not enough on its own, because the capability
+  stays enabled and model resolution panics when it is constructed (#90). The
+  repair is to drop the broken id from `enabled_capabilities` for that run
+  only, which `run_launch` can do on the clone it already takes, and which
+  re-validation then reports clean. It needs a fourth action on the preflight
+  prompt, a line naming what was dropped so the reduced session is visible,
+  and a decision about what to do when every capability is broken.
 
 ---
 
@@ -326,30 +359,75 @@ fn is_interactive(&self) -> bool  // default: true
 
 The prompt walks broken references one at a time, offering three choices:
 reconfigure the instance, which drives the existing per-type setup command
-pre-selected on the right instance; remove it, via the existing removal
-command; or skip it and leave it as-is. Skip is also the automatic fallback
-whenever prompting is not offered, either because the session is not
-interactive or because the command is running in a non-prompting mode such as
-`setup --auto`. `launch` is the exception, aborting by default instead of
-skipping.
+pre-selected on the right instance; remove it; or skip it and leave it as-is.
+Skip is also the automatic fallback whenever prompting is not offered, either
+because the session is not interactive or because the command is running in a
+non-prompting mode such as `setup --auto`. `launch` is the exception,
+aborting by default instead of skipping.
+
+What removal means depends on how remediation was reached. A caller that
+named the instance itself, such as `capability info chat`, is offered deletion
+through the existing removal command. Remediation reached through a launcher
+is offered un-enabling instead: the id is dropped from that launcher's
+`enabled_capabilities` and the capability stays configured. A capability may
+be enabled by several launchers, so `launch claude` offering to delete one
+would change more than the launcher it was asked about. Both shapes a launcher
+produces are covered, whether the enabled capability is itself broken or is
+not configured at all.
+
+An unknown type name is the one case with two choices rather than three.
+Setup cannot run a type that is not in the registry, so offering to
+reconfigure would only produce a failed fix, and removal is the only repair
+on offer.
 
 Remediation is a loop rather than a single pass. After a fix is accepted the
 caller re-runs the same scoped validation and prompts for whatever is still
-broken, including anything the fix itself introduced. The loop ends when
-validation comes back clean, or when a whole pass changes nothing, which is
-what a run of skips produces, so a user who keeps declining is never asked
-about the same reference twice.
+broken, including anything the fix itself introduced. It ends in one of three
+ways: validation comes back clean, the user declines, or every repair on offer
+has been tried against the same problem.
+
+A repair that leaves the problem exactly as it was is dropped from the choices
+rather than ending the run. Reconfiguring is the case that matters: a user who
+walks out of the wizard, or who goes in to change something else, comes back to
+the same question with the remaining repairs still reachable instead of having
+to re-run the command. A different problem starts over with all of them.
+
+Declining ends the whole loop rather than moving to the next problem. The
+scoped walk is deterministic and reports one problem at a time, so the next
+pass would report the reference just declined. This means a launcher with two
+broken capabilities only ever names the first, which a list command shows in
+full.
+
+Removing the instance the caller asked about leaves it unresolved, since what
+the caller named no longer validates. For `launch` that is the right answer
+anyway, and for an info or detail command it means there is nothing left to
+show.
+
+There is no "1 of N" counter. A scoped walk stops at the first problem, so a
+total is not knowable without gathering every error, which Sub-Task 1
+deliberately does not do.
 
 ```
-⚠ Configuration issue (1 of 2)
+⚠ Configuration issue: capability 'chat' depends on model
+  'granite-3.1-8b-instruct', which is not configured
 
-  Capability 'chat' (agent-model) depends on model
-  'granite-3.1-8b-instruct', which is no longer configured.
+? What would you like to do?
+  [1] Reconfigure capability 'chat' now
+  [2] Remove capability 'chat'
+> [3] Skip for now, 'chat' stays broken until fixed
+```
 
-  [1] Reconfigure 'chat' now — pick a different model
-  [2] Remove 'chat'
-  [3] Skip for now — 'chat' stays disabled until fixed
->
+Reached through `launch claude`, the same problem offers the launcher's own
+list rather than the shared instance:
+
+```
+⚠ Configuration issue: capability 'chat' depends on model
+  'granite-3.1-8b-instruct', which is not configured
+
+? What would you like to do?
+  [1] Reconfigure capability 'chat' now
+  [2] Remove capability 'chat' from launcher 'claude'
+> [3] Cancel
 ```
 
 Tests cover: canned answers confirming that reconfigure invokes setup
@@ -357,10 +435,16 @@ pre-selected on the right instance, that remove calls the right removal
 function, and that neither a non-interactive session nor an auto-mode flag
 ever reaches the underlying prompt call; a fix that repairs one reference
 while exposing a second, confirming the loop re-validates and prompts again
-before returning; a fix that returns having changed nothing, confirming the
-loop reports it as still unresolved rather than asking again; and a pass in
-which every problem is skipped, confirming the loop stops instead of
-re-offering the same choices.
+before returning; a fix that returns having changed nothing, confirming it
+drops out of the choices while the rest stay reachable, and that a launch can
+still un-enable after one; a declined
+problem, confirming the loop stops instead of re-offering the same choices;
+an unknown type, confirming removal is offered without reconfiguration; a
+launcher root, confirming un-enabling is offered in place of deletion for both
+a broken capability and one that is not configured, that it leaves the
+capability configured, and that a caller naming the capability is still
+offered deletion; and the JSON and Markdown backends answering that they
+cannot prompt.
 
 **Relevant Context**
 - `src/commands/capability.rs` (`CapabilityCommands::setup`, reused by reconfigure)
@@ -391,34 +475,48 @@ model-3  lm-studio
 They never prompt, whatever they find. A list reports that a problem exists;
 acting on it is left to a command the user chooses to run next.
 
-Info and detail commands validate the instance they were asked about, show a
-warning, and offer the remediation prompt from Sub-Task 2 when the session
-allows prompting.
+`model list` builds its rows from constructed instances, so a model whose
+type is not in the registry never reaches the table and would disappear at
+exactly the moment something is wrong with it. It gets a row of its own,
+carrying the id and the reason with the remaining columns empty. A list
+filtered by model type leaves those rows out, since there is no metadata to
+filter them on.
+
+Info commands validate the instance they were asked about and offer the
+remediation prompt from Sub-Task 2 when the session allows prompting, then
+render the state that results, so what is shown reflects any repair. An id
+that names a catalog type rather than a configured instance is being
+browsed, not diagnosed, and is neither validated nor annotated. Removing the
+instance is one of the offered choices, and leaves the command with nothing
+to show, so it returns without rendering.
 
 `launch` validates the launcher it was asked to run, the capabilities it has
 enabled, and what those resolve to, before starting anything. A broken
 reference is offered the same prompt, but declining aborts the launch rather
 than skipping, because a capability that cannot bind would fail later during
 the launch itself. This check runs before the existing binary check, so a
-config problem is reported before anything about the environment.
+config problem is reported before anything about the environment. It is a
+`preflight` function on the launcher commands, called by `run_launch` after
+the configuration is loaded and before the launcher is constructed.
 
 Remediation during a fresh `setup`, for a dependency the wizard is about to
 use, is not built here. It depends on broken candidates being visible in the
 wizard's selection lists, which is out of scope for this plan.
 
-Tests cover: a UI double that panics on `select`/`confirm`, driven through a
-list containing a broken entry, confirming the list never prompts; for info
-and detail, canned answers for each remediation choice against a broken
-instance, confirming the resulting configuration is correct; and, for
-`launch`, that declining remediation aborts before any subprocess is spawned,
-while accepting it proceeds with the repaired configuration.
+Tests cover: a list containing a broken entry, confirming the annotation
+appears and that no prompt is reached; a model whose type is unknown, which
+keeps its row; for info, canned answers for reconfigure and for remove
+against a broken instance, confirming the resulting configuration is
+correct, and a catalog id, confirming it is not diagnosed; and, for the
+launch pre-flight, that declining aborts before anything is constructed
+while accepting proceeds with the repaired configuration.
 
 **Relevant Context**
 - `src/commands/model.rs`, `capability.rs`, `launcher.rs`, `provider.rs`
   (`list` and `info` functions)
 - `src/commands/launcher.rs` (current `launch` pre-flight: `validate_command()` only)
 
-**Status** — `[ ]` not started
+**Status** — `[x] done`
 
 ---
 
