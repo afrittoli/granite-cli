@@ -123,6 +123,7 @@ impl ConfigConstructable for OpenAIProvider {
         let function_endpoints = config
             .function_endpoints
             .clone()
+            .filter(|v| !v.is_empty())
             .unwrap_or_else(Self::default_function_endpoints);
 
         let custom_headers = config.custom_headers.clone().unwrap_or_default();
