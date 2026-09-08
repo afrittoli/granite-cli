@@ -3,6 +3,7 @@ use anyhow::Result;
 
 // Local
 use crate::commands::ProviderCommands;
+use crate::config::validation::RefKind;
 use crate::dependency::{self, Configured, DependsOn, Requirement};
 use crate::models::{
     ContextFit, MODEL_REGISTRY, ModelMetadata, ModelSource, ModelType, ModelVariant,
@@ -407,6 +408,7 @@ impl ModelCommands {
     }
 
     pub fn list(ctx: &crate::AppContext, filter_type: Option<ModelType>) -> Result<()> {
+        let notes = crate::commands::remediation::dangling_notes(ctx, RefKind::Model);
         let source = ModelSource::from_config(&ctx.config);
         let mut enriched: Vec<(Vec<String>, ModelMetadata)> = Vec::new();
 
@@ -434,11 +436,39 @@ impl ModelCommands {
         }
         sort_enriched_rows(&mut enriched);
 
-        let rows: Vec<Vec<String>> = enriched.into_iter().map(|(row, _)| row).collect();
+        let mut rows: Vec<Vec<String>> = enriched
+            .into_iter()
+            .map(|(mut row, _)| {
+                row.push(notes.get(&row[0]).cloned().unwrap_or_default());
+                row
+            })
+            .collect();
+
+        // A model whose type is not in the registry cannot be constructed,
+        // so it never reaches `instances()` and would drop out of the list
+        // at exactly the moment something is wrong with it. Give it a row
+        // carrying the reason instead. A filtered list leaves them out,
+        // since there is no metadata to filter them on.
+        if filter_type.is_none() {
+            let mut unconstructed: Vec<Vec<String>> = notes
+                .iter()
+                .filter(|(id, _)| !rows.iter().any(|row| &&row[0] == id))
+                .map(|(id, note)| {
+                    let mut row = vec![id.clone()];
+                    row.resize(6, "-".to_string());
+                    row.push(note.clone());
+                    row
+                })
+                .collect();
+            unconstructed.sort_by(|a, b| a[0].cmp(&b[0]));
+            rows.extend(unconstructed);
+        }
 
         ctx.ui.table(
             &format!("Configured Models ({} models)", rows.len()),
-            &["ID", "FAMILY", "SIZE", "CONTEXT", "TYPE", "PROVIDER"],
+            &[
+                "ID", "FAMILY", "SIZE", "CONTEXT", "TYPE", "PROVIDER", "NOTES",
+            ],
             &rows,
         );
         Ok(())
@@ -494,7 +524,26 @@ impl ModelCommands {
             .map(|m| Self::metadata_fields(&m))
     }
 
-    pub fn info(ctx: &crate::AppContext, id: &str) -> Result<()> {
+    pub async fn info(ctx: &mut crate::AppContext, id: &str) -> Result<()> {
+        // Only a configured instance can have a broken reference. An id that
+        // names a catalog type is being browsed, not diagnosed.
+        if ctx.config.get_model(id).is_some() {
+            crate::commands::remediation::remediate(
+                ctx,
+                RefKind::Model,
+                id,
+                crate::commands::remediation::OnDecline::Skip,
+                true,
+            )
+            .await?;
+
+            // Removing it is one of the choices offered above, and leaves
+            // nothing to show.
+            if ctx.config.get_model(id).is_none() {
+                return Ok(());
+            }
+        }
+
         // Prefer a configured instance's real, live values (e.g. a custom
         // model's user-entered fields aren't in the registry at all) --
         // fall back to pure catalog browsing by registry key.
@@ -1146,21 +1195,29 @@ mod tests {
     }
 
     #[test]
-    fn list_unknown_model_id_in_config_is_skipped() {
+    fn list_shows_a_model_whose_type_is_unknown_with_the_reason() {
         let ctx = ctx_with_model("this-model-does-not-exist", Some("p1"));
         ModelCommands::list(&ctx, None).unwrap();
         let tables = tables!(ctx);
-        let (_, _, rows) = &tables[0];
-        // The unknown id is not in MODEL_REGISTRY, so it should be skipped
-        assert_eq!(rows.len(), 0);
+        let (_, headers, rows) = &tables[0];
+        // The type is not in MODEL_REGISTRY, so the model cannot be
+        // constructed and has no metadata to fill the other columns. It still
+        // gets a row: dropping it would hide a configured model at exactly
+        // the moment something is wrong with it.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], "this-model-does-not-exist");
+        let notes = headers.iter().position(|h| h == "NOTES").unwrap();
+        assert!(rows[0][notes].contains("unknown model type"), "{rows:?}");
     }
 
     // -- info -----------------------------------------------------------------
 
-    #[test]
-    fn info_known_model_renders_detail_with_key_fields() {
-        let ctx = empty_ctx();
-        ModelCommands::info(&ctx, "granite-3.1-8b-instruct").unwrap();
+    #[tokio::test]
+    async fn info_known_model_renders_detail_with_key_fields() {
+        let mut ctx = empty_ctx();
+        ModelCommands::info(&mut ctx, "granite-3.1-8b-instruct")
+            .await
+            .unwrap();
         let details = details!(ctx);
         assert_eq!(details.len(), 1);
         let (title, fields) = &details[0];
@@ -1170,10 +1227,10 @@ mod tests {
         assert!(fields.iter().any(|(k, _)| k == "Supported Functions"));
     }
 
-    #[test]
-    fn info_unknown_model_returns_err_and_emits_error() {
-        let ctx = empty_ctx();
-        let result = ModelCommands::info(&ctx, "does-not-exist");
+    #[tokio::test]
+    async fn info_unknown_model_returns_err_and_emits_error() {
+        let mut ctx = empty_ctx();
+        let result = ModelCommands::info(&mut ctx, "does-not-exist").await;
         assert!(result.is_err());
         assert!(!errors!(ctx).is_empty());
     }
@@ -1690,9 +1747,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn info_shows_a_custom_models_real_values_and_config_type() {
-        let ctx = ctx_with_custom_model(
+    #[tokio::test]
+    async fn info_shows_a_custom_models_real_values_and_config_type() {
+        let mut ctx = ctx_with_custom_model(
             "my-custom",
             serde_json::json!({
                 "family": "My Local Model",
@@ -1700,7 +1757,7 @@ mod tests {
             }),
             None,
         );
-        ModelCommands::info(&ctx, "my-custom").unwrap();
+        ModelCommands::info(&mut ctx, "my-custom").await.unwrap();
         let details = details!(ctx);
         assert_eq!(details.len(), 1);
         let (title, fields) = &details[0];

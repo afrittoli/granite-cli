@@ -9,11 +9,6 @@
 //! One walk covers every kind. Each of the four config types implements
 //! [`Validatable`] to say what its type name is and which ids it points at,
 //! and [`validate`] does the rest.
-//!
-//! Nothing outside the module's own tests calls this yet. The consumers are
-//! the remediation prompt and the list/info/launch wiring, which arrive in
-//! Sub-Tasks 2 and 3 of spec 0024; this allow goes with them.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

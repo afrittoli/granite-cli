@@ -6,16 +6,15 @@
 //! the broken reference, and remove drives the same removal. Nothing here
 //! edits the configuration itself.
 //!
-//! Nothing calls this yet. The callers are the info, detail and launch
-//! wiring, which arrives in Sub-Task 3 of spec 0024; this allow goes with
-//! them.
-#![allow(dead_code)]
+use std::collections::HashMap;
 
 use anyhow::Result;
 
 use crate::commands::{CapabilityCommands, LauncherCommands, ModelCommands, ProviderCommands};
 use crate::config::Config;
-use crate::config::validation::{Problem, RefKind, ValidationError, type_name, validate_ref};
+use crate::config::validation::{
+    Problem, RefKind, ValidationError, find_dangling, type_name, validate_ref,
+};
 
 /*-- public --------------------------------------------------------------------*/
 
@@ -40,6 +39,23 @@ pub(crate) enum Outcome {
     /// Something is still broken: the user declined to fix it, or there was
     /// nobody to ask.
     Unresolved,
+}
+
+/// The note a list command puts against each instance of `kind` whose
+/// references do not resolve, keyed by instance id.
+///
+/// A list reports that a problem exists and never prompts about it. Acting on
+/// it is left to a command the user chooses to run next.
+pub(crate) fn dangling_notes(ctx: &crate::AppContext, kind: RefKind) -> HashMap<String, String> {
+    find_dangling(kind, &ctx.config)
+        .into_iter()
+        .map(|dangling| {
+            (
+                dangling.instance_id,
+                ctx.ui.warn_mark(&format!("⚠ {}", dangling.reason)),
+            )
+        })
+        .collect()
 }
 
 /// Validates `(kind, id)` and offers a fix for whatever is broken,
@@ -728,6 +744,43 @@ mod tests {
         assert_eq!(items.len(), 2, "{items:?}");
         assert!(items[0].starts_with("Remove model"), "{items:?}");
         assert_eq!(outcome, Outcome::Unresolved);
+    }
+
+    // The `launch` pre-flight is thin policy over `remediate`, so its two
+    // tests live here with the fixture rather than in `launcher.rs`.
+
+    #[tokio::test]
+    async fn the_launch_preflight_aborts_when_the_user_declines() {
+        let mut ctx = ctx_with_a_dangling_model_ref();
+
+        // No canned answer, so the prompt takes its default, which declines.
+        let result = crate::commands::LauncherCommands::preflight(&mut ctx, "claude").await;
+
+        assert!(result.is_err(), "declining must stop the launch");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Launch aborted: launcher 'claude' has a configuration problem that was not fixed."
+        );
+    }
+
+    #[tokio::test]
+    async fn the_launch_preflight_proceeds_once_the_reference_is_repaired() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_a_dangling_model_ref();
+        answer(&ctx, &[0]);
+        capture(&ctx).confirm_answers.borrow_mut().push_back(true);
+
+        crate::commands::LauncherCommands::preflight(&mut ctx, "claude")
+            .await
+            .expect("a repaired configuration launches");
+
+        assert_eq!(
+            ctx.config
+                .get_capability("chat")
+                .and_then(|c| c.config.get("model_id"))
+                .and_then(|v| v.as_str()),
+            Some("granite-3.1-8b-instruct")
+        );
     }
 
     #[tokio::test]
