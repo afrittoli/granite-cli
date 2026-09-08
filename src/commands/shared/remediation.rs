@@ -63,6 +63,31 @@ pub(crate) fn dangling_notes(ctx: &crate::AppContext, kind: RefKind) -> HashMap<
         .collect()
 }
 
+/// A selection prompt that names the instance currently configured, and says
+/// so when it no longer resolves.
+///
+/// A setup run over an existing instance offers its current values as
+/// defaults. Without this, pressing Enter through the wizard re-saves a
+/// dangling reference with nothing on screen to say it was one.
+pub(crate) fn prompt_with_current(
+    ctx: &crate::AppContext,
+    prompt: &str,
+    kind: RefKind,
+    current: Option<&str>,
+) -> String {
+    let Some(current) = current.filter(|id| !id.is_empty()) else {
+        return prompt.to_string();
+    };
+
+    match validate_ref(kind, current, &ctx.config) {
+        Ok(()) => format!("{prompt} [current: '{current}']"),
+        Err(_) => format!(
+            "{prompt} [current: '{current}', {} no longer resolves]",
+            ctx.ui.warn_mark("⚠")
+        ),
+    }
+}
+
 /// What a removal should do about the instances pointing at what is being
 /// removed.
 #[derive(Debug, Clone, PartialEq, Eq)]

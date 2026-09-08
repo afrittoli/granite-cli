@@ -620,7 +620,11 @@ Separately, the provider-selection helper does not re-validate the id it
 returns at all. If a user picks "configure a new provider," types a name that
 collides with an existing provider, and declines to overwrite it, the helper
 still returns that existing provider's id, even if it does not satisfy what
-the model needs. It should get the same re-validation.
+the model needs. It gets the same re-validation, by reading what is
+configured under that id after setup returns and comparing its type against
+the one being configured. A mismatch is rejected with an error naming the
+collision, rather than re-prompted: the wizard has no loop to return to, and
+the message says what to do differently.
 
 The overwrite wizard is the third case. When `setup` presents an existing
 instance's current values as defaults, a default that is itself a dangling
@@ -628,21 +632,29 @@ reference is flagged inline, so pressing Enter through the wizard cannot
 silently re-save it:
 
 ```
-Model for 'chat' [current: granite-4.2-8b — ⚠ no longer configured]:
+Select a model for this capability [current: 'granite-4.2-8b', ⚠ no longer resolves]
   > granite-vision
     granite-3.1-8b
+    Configure a new model...
 ```
+
+The flag says the reference no longer resolves rather than naming which of
+the four problems it is, since the prompt is asking for a replacement either
+way. A current value that still resolves is named without a flag, so the
+wizard always says what pressing Enter would be replacing. The same applies
+to a model's provider, whose current value comes from the instance being
+overwritten.
 
 Tests cover: inserting a provider into an unwritable configuration directory
 returns an error while the entry still appears in memory, which is the root
 cause this sub-task addresses; declining an overwrite onto a mismatched
-existing provider is rejected or re-prompted rather than silently reused; and
-an overwrite wizard whose current value is dangling renders the flag rather
-than offering it as a clean default.
+existing provider is rejected rather than silently reused; and an overwrite
+wizard whose current value is dangling renders the flag, while one that still
+resolves is named without it.
 
 **Relevant Context**
 - `src/config/mod.rs:313-413` (`insert_model`/`insert_provider`/`insert_capability`/`insert_launcher`, `save()`)
 - `src/commands/capability.rs:334-352` (`resolve_model_dependency`)
 - `src/commands/model.rs:722-770` (`select_provider`)
 
-**Status** — `[ ]` not started
+**Status** — `[x] done`
