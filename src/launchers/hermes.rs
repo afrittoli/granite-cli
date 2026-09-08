@@ -263,6 +263,14 @@ impl HermesLauncher {
                 model["api_key"] = serde_json::Value::String(format!("${{{API_KEY_ENV}}}"));
             }
 
+            // Add custom headers as extra_headers if configured.
+            // Sorted by key for deterministic output.
+            if let Some(ref headers) = binding.custom_headers {
+                if !headers.is_empty() {
+                    model["extra_headers"] = serde_json::to_value(headers)?;
+                }
+            }
+
             // Merge user-provided overrides on top so they win on conflict.
             // Special case: if the override key is "model", merge the inner
             // object into config["model"] rather than replacing it entirely.
