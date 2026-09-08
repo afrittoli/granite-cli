@@ -658,3 +658,68 @@ resolves is named without it.
 - `src/commands/model.rs:722-770` (`select_provider`)
 
 **Status** — `[x] done`
+
+---
+
+## Implementation Summary
+
+Measured against `main` at bf117bb, the commit merged into the branch carrying
+Sub-Tasks 1 to 3. Every production figure excludes the file's own `#[cfg(test)]`
+items. The figures cover everything the two branches carry, which includes
+making `ModelConfig.provider_id` required, a change that came out of the review
+of Sub-Tasks 1 to 3.
+
+### New modules
+
+| Module | Production | Tests | Line coverage |
+|---|---:|---:|---:|
+| `src/config/validation.rs` | 436 | 412 | 98.64% |
+| `src/commands/shared/remediation.rs` | 430 | 552 | 97.92% |
+
+The validator answers three questions, `validate_ref`, `find_dangling` and
+`dependents`, over one `Validatable` implementation per config type.
+Remediation drives the prompts: `remediate`, `confirm_removal`,
+`dangling_notes` and `prompt_with_current`. A third new file,
+`src/commands/shared/mod.rs`, declares the remediation module in four lines.
+
+### Existing code
+
+| | Added | Removed |
+|---|---:|---:|
+| Production | 382 | 110 |
+| Tests | 376 | 145 |
+
+Twenty-four files: the five command modules and the `mod.rs` that declares
+them, the capability registrations, the `Ui` trait with its JSON and Markdown
+backends and the TUI app, `Config`, the model source, the registry macro,
+`main`, and the two launchers whose test doubles implemented the removed
+`dependencies` method.
+
+### Tests
+
+55 new, 27 updated, 8 removed or renamed away. The suite goes from 692 test
+functions to 739, and from 720 passing tests to 767. The gap between the two
+counts is the macro-generated output-contract tests each `Ui` backend gets.
+
+### Coverage
+
+| | Before | After |
+|---|---:|---:|
+| Lines | 78.79% | 80.38% |
+| Regions | 78.45% | 79.91% |
+| Functions | 77.14% | 78.75% |
+
+Measured with `cargo llvm-cov`. Per-file coverage counts a file's own
+`#[cfg(test)]` module, which runs in full, so a file that is half tests reads
+higher than its production half alone. Where the misses sit is exact, since
+test code always executes: `validation.rs` leaves 7 of 516 instrumented lines
+uncovered and `remediation.rs` 14 of 672, and all of those are production
+lines.
+
+### Other
+
+27 Rust files changed, plus this document, and no new dependencies. The
+declaration sites for a capability's `model_id` config key drop from eight to
+four, one per capability type, which is what removing
+`Capability::dependencies(&self)` was for. Neither new module carries
+`#![allow(dead_code)]`: every item has a production caller.
