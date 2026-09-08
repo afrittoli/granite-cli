@@ -622,7 +622,7 @@ mod tests {
             url: "https://ollama.com/library/granite4.1:8b".to_string(),
         };
         assert_eq!(
-            provider.model_alias(Some(&variant)),
+            provider.model_alias("unused".to_string(), Some(&variant)),
             Some("granite4.1:8b".to_string())
         );
     }
@@ -641,7 +641,7 @@ mod tests {
             url: "https://ollama.com/ibm/granite4.1:8b".to_string(),
         };
         assert_eq!(
-            provider.model_alias(Some(&variant)),
+            provider.model_alias("unused".to_string(), Some(&variant)),
             Some("ibm/granite4.1:8b".to_string())
         );
     }
@@ -659,7 +659,7 @@ mod tests {
             size_gb: Some(5.3),
             url: "https://huggingface.co/ibm-granite/granite-4.1-8b-GGUF/blob/main/granite-4.1-8b-Q4_K_M.gguf".to_string(),
         };
-        assert_eq!(provider.model_alias(Some(&variant)), None);
+        assert_eq!(provider.model_alias("unused".to_string(), Some(&variant)), None);
     }
 
     #[test]
@@ -669,7 +669,7 @@ mod tests {
             &serde_json::json!({}),
             &crate::config::Config::default(),
         );
-        assert_eq!(provider.model_alias(None), None);
+        assert_eq!(provider.model_alias("unused".to_string(), None), None);
     }
 
     #[test]
