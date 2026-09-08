@@ -143,6 +143,10 @@ impl Provider for ProxiedProvider {
     async fn health_check(&self) -> Result<HealthStatus, ProviderError> {
         self.inner.health_check().await
     }
+
+    fn custom_headers(&self) -> Option<std::collections::HashMap<String, Secret>> {
+        self.inner.custom_headers()
+    }
     async fn pull_model(
         &self,
         model: &ModelMetadata,
@@ -190,6 +194,11 @@ mod tests {
         }
         fn verify_ssl(&self) -> bool {
             true
+        }
+        fn custom_headers(
+            &self,
+        ) -> Option<std::collections::HashMap<String, Secret>> {
+            None
         }
         fn supported_formats(&self) -> Vec<ModelFormat> {
             vec![]
