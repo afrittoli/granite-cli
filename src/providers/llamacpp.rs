@@ -357,7 +357,7 @@ impl Provider for LlamaCppProvider {
         variant_format.eq_ignore_ascii_case("gguf")
     }
 
-    fn model_alias(&self, variant: Option<&crate::models::ModelVariant>) -> Option<String> {
+    fn model_alias(&self, _model_id: String, variant: Option<&crate::models::ModelVariant>) -> Option<String> {
         let v = variant?;
         let repo = hf_repo_id(&v.url)?;
         Some(format!("{}:{}", repo, v.precision))

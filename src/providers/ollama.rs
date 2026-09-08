@@ -250,7 +250,7 @@ impl Provider for OllamaProvider {
         variant_format.eq_ignore_ascii_case("gguf") || variant_format.eq_ignore_ascii_case("ollama")
     }
 
-    fn model_alias(&self, variant: Option<&crate::models::ModelVariant>) -> Option<String> {
+    fn model_alias(&self, _model_id: String, variant: Option<&crate::models::ModelVariant>) -> Option<String> {
         variant.and_then(|v| ollama_model_ref(&v.url))
     }
 

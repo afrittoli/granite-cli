@@ -158,7 +158,7 @@ pub trait Provider: crate::registry::Named + Send + Sync {
     /// naming convention (e.g. Ollama's `granite4.1:8b` vs the catalog ID
     /// `granite-4.1-8b`) override this to derive the alias from the variant URL.
     /// The default returns `None`, meaning the catalog ID should be used as-is.
-    fn model_alias(&self, _variant: Option<&ModelVariant>) -> Option<String> {
+    fn model_alias(&self, _model_id: String, _variant: Option<&ModelVariant>) -> Option<String> {
         None
     }
 

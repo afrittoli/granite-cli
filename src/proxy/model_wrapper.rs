@@ -137,8 +137,8 @@ impl Provider for ProxiedProvider {
     fn can_run_model(&self, variant_format: &str, variant_precision: &str) -> bool {
         self.inner.can_run_model(variant_format, variant_precision)
     }
-    fn model_alias(&self, variant: Option<&ModelVariant>) -> Option<String> {
-        self.inner.model_alias(variant)
+    fn model_alias(&self, model_id: String, variant: Option<&ModelVariant>) -> Option<String> {
+        self.inner.model_alias(model_id, variant)
     }
     async fn health_check(&self) -> Result<HealthStatus, ProviderError> {
         self.inner.health_check().await

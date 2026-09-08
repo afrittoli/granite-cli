@@ -330,7 +330,7 @@ impl ConfiguredModel {
                 )
             })?;
         let model_name = provider
-            .model_alias(self.resolve_variant())
+            .model_alias(model_id.to_string(), self.resolve_variant())
             .unwrap_or_else(|| model_id.to_string());
         Ok((provider, endpoint, model_name))
     }
