@@ -137,6 +137,13 @@ pub trait Provider: crate::registry::Named + Send + Sync {
     /// Returns the configured API key for this provider instance, if any.
     fn api_key(&self) -> Option<&Secret>;
 
+    /// Returns the configured custom HTTP headers for this provider instance, if any.
+    /// Custom headers are used as-is in outgoing requests. Keys are the header names
+    /// (strings) and values are secret tokens.
+    fn custom_headers(&self) -> Option<HashMap<String, Secret>> {
+        None
+    }
+
     /// Returns whether this provider instance verifies SSL certificates.
     fn verify_ssl(&self) -> bool;
 

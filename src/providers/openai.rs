@@ -120,10 +120,7 @@ impl ConfigConstructable for OpenAIProvider {
             .clone()
             .unwrap_or_else(Self::default_function_endpoints);
 
-        let custom_headers = config
-            .custom_headers
-            .clone()
-            .unwrap_or_else(HashMap::new);
+        let custom_headers = config.custom_headers.clone().unwrap_or_default();
 
         Self {
             instance_id: instance_id.to_string(),
@@ -165,6 +162,10 @@ impl Provider for OpenAIProvider {
 
     fn verify_ssl(&self) -> bool {
         self.config.verify_ssl
+    }
+
+    fn custom_headers(&self) -> Option<HashMap<String, Secret>> {
+        Some(self.custom_headers.clone())
     }
 
     fn supported_formats(&self) -> Vec<ModelFormat> {
