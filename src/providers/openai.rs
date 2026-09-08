@@ -38,6 +38,9 @@ pub struct OpenAIProviderConfig {
     /// Custom HTTP headers to be sent with each API request.
     /// Keys are header names (strings) and values are secret tokens.
     pub custom_headers: Option<HashMap<String, Secret>>,
+
+    /// Per-model alias mapping.
+    pub model_aliases: Option<HashMap<String, String>>,
 }
 
 fn default_timeout() -> u64 {
@@ -62,6 +65,7 @@ impl Default for OpenAIProviderConfig {
             health_check_endpoint: "/v1/models".to_string(),
             function_endpoints: None,
             custom_headers: None,
+            model_aliases: None,
         }
     }
 }
@@ -74,6 +78,7 @@ pub struct OpenAIProvider {
     client: reqwest::Client,
     function_endpoints: HashMap<ModelFunction, Vec<ApiEndpoint>>,
     custom_headers: HashMap<String, Secret>,
+    model_aliases: HashMap<String, String>,
 }
 
 impl OpenAIProvider {
@@ -122,12 +127,15 @@ impl ConfigConstructable for OpenAIProvider {
 
         let custom_headers = config.custom_headers.clone().unwrap_or_default();
 
+        let model_aliases = config.model_aliases.clone().unwrap_or_default();
+
         Self {
             instance_id: instance_id.to_string(),
             config,
             client,
             function_endpoints,
             custom_headers,
+            model_aliases,
         }
     }
 }
@@ -174,6 +182,10 @@ impl Provider for OpenAIProvider {
 
     fn can_run_model(&self, _variant_format: &str, _variant_precision: &str) -> bool {
         true
+    }
+
+    fn model_alias(&self, model_id: String, _variant: Option<&crate::models::ModelVariant>) -> Option<String> {
+        self.model_aliases.get(&model_id).cloned()
     }
 
     async fn health_check(&self) -> Result<HealthStatus, ProviderError> {
