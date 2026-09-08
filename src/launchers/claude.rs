@@ -191,10 +191,19 @@ impl Launcher for ClaudeLauncher {
             // Sort by key for deterministic output.
             if let Some(ref headers) = binding.custom_headers {
                 if !headers.is_empty() {
-                    let mut header_pairs: Vec<(String, String)> =
-                        headers.iter().map(
-                            |(k, v)| (k.clone(), serde_json::to_value(v).unwrap().as_str().unwrap().to_string())
-                        ).collect();
+                    let mut header_pairs: Vec<(String, String)> = headers
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                serde_json::to_value(v)
+                                    .unwrap()
+                                    .as_str()
+                                    .unwrap()
+                                    .to_string(),
+                            )
+                        })
+                        .collect();
                     header_pairs.sort_by(|a, b| a.0.cmp(&b.0));
                     let header_lines: Vec<String> = header_pairs
                         .iter()
@@ -513,8 +522,14 @@ mod tests {
     #[tokio::test]
     async fn env_overlay_includes_custom_headers() {
         let mut headers = HashMap::new();
-        headers.insert("X-Custom-Header".to_string(), crate::registry::Secret::from("value1"));
-        headers.insert("User-Agent".to_string(), crate::registry::Secret::from("my-agent/1.0"));
+        headers.insert(
+            "X-Custom-Header".to_string(),
+            crate::registry::Secret::from("value1"),
+        );
+        headers.insert(
+            "User-Agent".to_string(),
+            crate::registry::Secret::from("my-agent/1.0"),
+        );
         let l = launcher_with(
             Some(crate::capabilities::AgentModelBinding {
                 api_type: crate::providers::ApiType::Anthropic,
@@ -535,7 +550,10 @@ mod tests {
             .find(|b| b.key == "ANTHROPIC_CUSTOM_HEADERS")
             .expect("ANTHROPIC_CUSTOM_HEADERS should be set");
         // Headers are formatted as "Name: Value" pairs, newline-separated, sorted by key.
-        assert_eq!(headers_entry.value, "User-Agent: my-agent/1.0\nX-Custom-Header: value1");
+        assert_eq!(
+            headers_entry.value,
+            "User-Agent: my-agent/1.0\nX-Custom-Header: value1"
+        );
     }
 
     #[tokio::test]
@@ -555,9 +573,7 @@ mod tests {
             vec![],
         );
         let overlay = l.env_overlay(&test_launch_context(false)).await.unwrap();
-        let headers_entry = overlay
-            .iter()
-            .find(|b| b.key == "ANTHROPIC_CUSTOM_HEADERS");
+        let headers_entry = overlay.iter().find(|b| b.key == "ANTHROPIC_CUSTOM_HEADERS");
         assert!(headers_entry.is_none());
     }
 
@@ -578,9 +594,7 @@ mod tests {
             vec![],
         );
         let overlay = l.env_overlay(&test_launch_context(false)).await.unwrap();
-        let headers_entry = overlay
-            .iter()
-            .find(|b| b.key == "ANTHROPIC_CUSTOM_HEADERS");
+        let headers_entry = overlay.iter().find(|b| b.key == "ANTHROPIC_CUSTOM_HEADERS");
         assert!(headers_entry.is_none());
     }
 

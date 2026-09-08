@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 // Third Party
-use alog::{alog_channel, use_channel, MessageLevel};
+use alog::{MessageLevel, alog_channel, use_channel};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -192,10 +192,19 @@ impl Launcher for GooseLauncher {
             // Format: HEADER_A=VALUE_A,HEADER_B=VALUE_B, sorted by key for deterministic output.
             if let Some(ref headers) = binding.custom_headers {
                 if !headers.is_empty() {
-                    let mut header_pairs: Vec<(String, String)> =
-                        headers.iter().map(
-                            |(k, v)| (k.clone(), serde_json::to_value(v).unwrap().as_str().unwrap().to_string())
-                        ).collect();
+                    let mut header_pairs: Vec<(String, String)> = headers
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                serde_json::to_value(v)
+                                    .unwrap()
+                                    .as_str()
+                                    .unwrap()
+                                    .to_string(),
+                            )
+                        })
+                        .collect();
                     header_pairs.sort_by(|a, b| a.0.cmp(&b.0));
                     let header_lines: Vec<String> = header_pairs
                         .iter()
@@ -563,8 +572,14 @@ mod tests {
     async fn env_overlay_includes_custom_headers() {
         let mut b = binding();
         let mut headers = HashMap::new();
-        headers.insert("X-Custom-Header".to_string(), crate::registry::Secret::from("value1"));
-        headers.insert("User-Agent".to_string(), crate::registry::Secret::from("my-agent/1.0"));
+        headers.insert(
+            "X-Custom-Header".to_string(),
+            crate::registry::Secret::from("value1"),
+        );
+        headers.insert(
+            "User-Agent".to_string(),
+            crate::registry::Secret::from("my-agent/1.0"),
+        );
         b.custom_headers = Some(headers);
         let l = bound(serde_json::json!({}), b);
         let overlay = l.env_overlay(&ctx(false)).await.unwrap();
@@ -573,7 +588,10 @@ mod tests {
             .find(|b| b.key == "OPENAI_CUSTOM_HEADERS")
             .expect("OPENAI_CUSTOM_HEADERS env");
         // Headers are formatted as "Name=Value" pairs, comma-separated, sorted by key.
-        assert_eq!(headers_entry.value, "User-Agent=my-agent/1.0,X-Custom-Header=value1");
+        assert_eq!(
+            headers_entry.value,
+            "User-Agent=my-agent/1.0,X-Custom-Header=value1"
+        );
     }
 
     #[tokio::test]
