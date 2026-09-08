@@ -856,6 +856,18 @@ impl ModelCommands {
             anyhow::bail!("No model configured with id '{model_id}'. Nothing to remove.");
         }
 
+        // Anything pointing at it would be stranded by this removal.
+        match crate::commands::shared::remediation::confirm_removal(ctx, RefKind::Model, model_id)?
+        {
+            crate::commands::shared::remediation::Removal::Cancel => {
+                ctx.ui.info(&format!("Keeping model '{model_id}'."));
+                return Ok(());
+            }
+            crate::commands::shared::remediation::Removal::Proceed { with } => {
+                crate::commands::shared::remediation::remove_all(ctx, &with)?;
+            }
+        }
+
         if let Err(e) = ctx.config.remove_model(model_id) {
             ctx.ui
                 .warn(&format!("failed to persist model removal: {e}"));

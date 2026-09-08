@@ -274,6 +274,21 @@ impl ProviderCommands {
             anyhow::bail!("No provider configured with id '{provider_id}'. Nothing to remove.");
         }
 
+        // Anything pointing at it would be stranded by this removal.
+        match crate::commands::shared::remediation::confirm_removal(
+            ctx,
+            RefKind::Provider,
+            provider_id,
+        )? {
+            crate::commands::shared::remediation::Removal::Cancel => {
+                ctx.ui.info(&format!("Keeping provider '{provider_id}'."));
+                return Ok(());
+            }
+            crate::commands::shared::remediation::Removal::Proceed { with } => {
+                crate::commands::shared::remediation::remove_all(ctx, &with)?;
+            }
+        }
+
         if let Err(e) = ctx.config.remove_provider(provider_id) {
             ctx.ui
                 .warn(&format!("failed to persist provider removal: {e}"));

@@ -241,6 +241,22 @@ it (Sub-Task 5).
   is two confirmations for one decision, and accepting the default leaves the
   reference broken. Fixing it means changing how the four setup commands
   treat an explicit instance id, which affects every caller of them.
+- A flag for non-interactive removal (issue to file). A session with nobody
+  to ask always removes only what was asked and warns about what that broke.
+  A script has no way to say that it wants the dependents removed too, or
+  that it wants the removal refused when anything depends on the target. A
+  flag on the four removal commands would give it both, and would give the
+  refusal a non-zero exit to act on.
+- Removing a capability without breaking or deleting its launcher (issue to
+  file). A launcher depends on a capability by listing it in
+  `enabled_capabilities`, so the removal prompt's three answers are: delete
+  the launcher too, do nothing, or leave the launcher pointing at something
+  that is gone. None of them deletes exactly what was asked and leaves the
+  launcher working. A fourth choice would drop the id from that list as part
+  of the removal. Reaching that end state today takes two commands: remove
+  only the capability, then accept the disable the next `launch` offers.
+  The behaviour exists in `remediation::disable` and needs extracting to
+  take an explicit launcher and capability id.
 - Sibling problems a declined prompt hides (issue to file). Remediation
   reports one problem at a time and stops when the user declines, so a
   launcher with two broken capabilities only ever names the first. Reporting
@@ -537,31 +553,49 @@ Stop `Remove` from stranding whatever pointed at what it just deleted.
 
 **Expected Outcomes**
 
-Before any of the four removal methods on `Config` deletes an entry, we scan
-the other configuration maps for anything that depends on the id being
-removed. If something does, the command layer, not `Config` itself per Spec
-0001, offers a choice: remove both together, cancel, or remove only what was
-asked for. Non-interactive backends default to removing only what was asked,
-with a warning.
+Before any of the four removal commands deletes an entry, we scan the other
+configuration maps for anything that depends on the id being removed. If
+something does, the command layer, not `Config` itself per Spec 0001, offers
+a choice: remove both together, cancel, or remove only what was asked for.
+Non-interactive backends default to removing only what was asked, with a
+warning.
+
+Finding the dependents is `Validatable::refs` read backwards: an instance
+depends on the target when the target appears among the references it
+declares. It lives beside the walk in the validation module and needs no
+knowledge of its own about which field holds what.
+
+Cancelling is the default answer, since this is the destructive prompt and
+the other two both delete something. It reports what was kept and succeeds
+rather than failing: the user made a deliberate choice, and a script never
+reaches it, since a session with nobody to ask does not prompt.
 
 ```
-⚠ Removing 'granite-3.1-8b-instruct' will break:
+⚠ Removing model 'granite-3.1-8b-instruct' will break:
   - capability 'chat' (agent-model)
 
-  [1] Remove 'granite-3.1-8b-instruct' and 'chat' together
-  [2] Cancel — keep 'granite-3.1-8b-instruct'
-  [3] Remove only 'granite-3.1-8b-instruct' — fix 'chat' later
->
+? What would you like to do?
+  [1] Remove model 'granite-3.1-8b-instruct' and capability 'chat' together
+> [2] Cancel, keep model 'granite-3.1-8b-instruct'
+  [3] Remove only model 'granite-3.1-8b-instruct', fix the rest later
 ```
+
+Removing the dependents goes through their own removal commands, so anything
+depending on *them* gets the same question in turn. Removing a model the user
+agrees to take a capability with will ask again about the launcher enabling
+that capability. The reference graph runs launcher to capability to model to
+provider, so the questions are bounded by its depth.
 
 Tests cover: a model with one dependent capability producing the right final
 configuration for each of the three outcomes, including the non-interactive
-default.
+default; a removal with no dependents, confirming it does not prompt; and the
+dependents scan itself, in each direction and for a target nothing points
+at.
 
 **Relevant Context**
 - `src/config/mod.rs:318-418` (`remove_model`/`remove_provider`/`remove_capability`/`remove_launcher`, all currently unconditional)
 
-**Status** — `[ ]` not started
+**Status** — `[x] done`
 
 ---
 

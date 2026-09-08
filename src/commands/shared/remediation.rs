@@ -1,10 +1,15 @@
-//! Offers to fix a broken configuration reference, one problem at a time,
-//! until what the caller named validates or the user stops accepting fixes.
+//! The prompts that ask what to do about a broken configuration reference,
+//! and the code that applies the answer.
 //!
-//! The fixes are the commands the user would otherwise run by hand:
-//! reconfigure drives the same setup, pre-selected on the instance holding
-//! the broken reference, and remove drives the same removal. Nothing here
-//! edits the configuration itself.
+//! [`remediate`] offers a fix for one broken reference at a time, until what
+//! the caller named validates or the user stops accepting fixes.
+//! [`confirm_removal`] runs before a removal and reports what points at the
+//! instance about to be deleted, so the user can take those with it, cancel,
+//! or leave them.
+//!
+//! Reconfigure and remove run the instance's own setup and removal commands,
+//! the ones a user would run by hand. Un-enabling is the one repair applied
+//! here, dropping an id from a launcher's `enabled_capabilities`.
 //!
 use std::collections::HashMap;
 
@@ -13,7 +18,7 @@ use anyhow::Result;
 use crate::commands::{CapabilityCommands, LauncherCommands, ModelCommands, ProviderCommands};
 use crate::config::Config;
 use crate::config::validation::{
-    Problem, RefKind, ValidationError, find_dangling, type_name, validate_ref,
+    Problem, RefKind, ValidationError, dependents, find_dangling, type_name, validate_ref,
 };
 
 /*-- public --------------------------------------------------------------------*/
@@ -56,6 +61,78 @@ pub(crate) fn dangling_notes(ctx: &crate::AppContext, kind: RefKind) -> HashMap<
             )
         })
         .collect()
+}
+
+/// What a removal should do about the instances pointing at what is being
+/// removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Removal {
+    /// Go ahead, taking these instances with it. Empty when nothing pointed
+    /// at the target, or when the user chose to strand what did.
+    Proceed { with: Vec<(RefKind, String)> },
+    /// Leave everything alone.
+    Cancel,
+}
+
+/// Asks what to do about the instances that point at `(kind, id)` before a
+/// removal strands them.
+///
+/// Nothing pointing at it means no prompt. A session with nobody to ask
+/// removes only what was asked for, after saying what that breaks.
+pub(crate) fn confirm_removal(ctx: &crate::AppContext, kind: RefKind, id: &str) -> Result<Removal> {
+    let stranded = dependents(kind, id, &ctx.config);
+    if stranded.is_empty() {
+        return Ok(Removal::Proceed { with: stranded });
+    }
+
+    ctx.ui.warn(&format!("Removing {kind} '{id}' will break:"));
+    for (dependent_kind, dependent_id) in &stranded {
+        let type_suffix = type_name(*dependent_kind, dependent_id, &ctx.config)
+            .map(|t| format!(" ({t})"))
+            .unwrap_or_default();
+        ctx.ui.info(&format!(
+            "  - {dependent_kind} '{dependent_id}'{type_suffix}"
+        ));
+    }
+
+    if !ctx.ui.is_interactive() {
+        ctx.ui.warn(&format!(
+            "Removing only {kind} '{id}'. What depended on it needs fixing."
+        ));
+        return Ok(Removal::Proceed { with: Vec::new() });
+    }
+
+    let together = match stranded.as_slice() {
+        [(dependent_kind, dependent_id)] => {
+            format!("Remove {kind} '{id}' and {dependent_kind} '{dependent_id}' together")
+        }
+        _ => format!(
+            "Remove {kind} '{id}' and the {} instances that depend on it",
+            stranded.len()
+        ),
+    };
+    let items = vec![
+        together,
+        format!("Cancel, keep {kind} '{id}'"),
+        format!("Remove only {kind} '{id}', fix the rest later"),
+    ];
+
+    // Cancelling is the default: this is the destructive prompt, and the
+    // other two answers both delete something.
+    match ctx.ui.select("What would you like to do?", &items, 1)? {
+        0 => Ok(Removal::Proceed { with: stranded }),
+        2 => Ok(Removal::Proceed { with: Vec::new() }),
+        _ => Ok(Removal::Cancel),
+    }
+}
+
+/// Removes each instance through its own removal command, so anything
+/// depending on *them* gets the same question in turn.
+pub(crate) fn remove_all(ctx: &mut crate::AppContext, ids: &[(RefKind, String)]) -> Result<()> {
+    for (kind, id) in ids {
+        remove(ctx, *kind, id)?;
+    }
+    Ok(())
 }
 
 /// Validates `(kind, id)` and offers a fix for whatever is broken,
@@ -130,7 +207,7 @@ pub(crate) async fn remediate(
             }
             Choice::Remove => {
                 previous = Some(error);
-                remove(ctx, &fix)?;
+                remove(ctx, fix.kind, &fix.id)?;
             }
             Choice::Disable => {
                 previous = Some(error);
@@ -315,9 +392,8 @@ fn disable(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
     Ok(())
 }
 
-fn remove(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
-    let id = fix.id.as_str();
-    match fix.kind {
+fn remove(ctx: &mut crate::AppContext, kind: RefKind, id: &str) -> Result<()> {
+    match kind {
         RefKind::Launcher => LauncherCommands::remove(ctx, id),
         RefKind::Capability => CapabilityCommands::remove(ctx, id),
         RefKind::Model => ModelCommands::remove(ctx, id),
@@ -405,6 +481,81 @@ mod tests {
         ctx
     }
 
+    /// Capability `chat` uses the one configured model, and nothing enables
+    /// the capability, so removing it strands nothing further.
+    fn ctx_model_with_one_dependent() -> crate::AppContext {
+        let mut ctx = ctx_with_a_dangling_model_ref();
+        ctx.config.launchers.clear();
+        ctx.config.capabilities.get_mut("chat").unwrap().config =
+            serde_json::json!({ "model_id": "granite-3.1-8b-instruct" });
+        ctx
+    }
+
+    #[test]
+    fn removing_a_model_with_its_dependent_removes_both() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_model_with_one_dependent();
+        answer(&ctx, &[0]);
+
+        ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
+
+        assert!(ctx.config.get_model("granite-3.1-8b-instruct").is_none());
+        assert!(ctx.config.get_capability("chat").is_none());
+    }
+
+    #[test]
+    fn cancelling_a_removal_keeps_both() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_model_with_one_dependent();
+        answer(&ctx, &[1]);
+
+        ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
+
+        assert!(ctx.config.get_model("granite-3.1-8b-instruct").is_some());
+        assert!(ctx.config.get_capability("chat").is_some());
+    }
+
+    #[test]
+    fn removing_only_what_was_asked_leaves_the_dependent_broken() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_model_with_one_dependent();
+        answer(&ctx, &[2]);
+
+        ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
+
+        assert!(ctx.config.get_model("granite-3.1-8b-instruct").is_none());
+        // Left in place, and now dangling, which `capability list` reports.
+        assert!(ctx.config.get_capability("chat").is_some());
+        assert!(!find_dangling(RefKind::Capability, &ctx.config).is_empty());
+    }
+
+    #[test]
+    fn a_session_with_nobody_to_ask_removes_only_what_was_asked() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_model_with_one_dependent();
+        *capture(&ctx).interactive.borrow_mut() = Some(false);
+
+        ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
+
+        assert!(prompts(&ctx).is_empty());
+        assert!(ctx.config.get_model("granite-3.1-8b-instruct").is_none());
+        assert!(ctx.config.get_capability("chat").is_some());
+        // The user is told what was broken even though nothing was asked.
+        let warns = capture(&ctx).warns.borrow().clone();
+        assert!(warns.iter().any(|w| w.contains("will break")), "{warns:?}");
+    }
+
+    #[test]
+    fn removing_something_nothing_depends_on_does_not_prompt() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_model_with_one_dependent();
+
+        CapabilityCommands::remove(&mut ctx, "chat").unwrap();
+
+        assert!(prompts(&ctx).is_empty());
+        assert!(ctx.config.get_capability("chat").is_none());
+    }
+
     #[tokio::test]
     async fn a_healthy_instance_is_clean_without_prompting() {
         let mut ctx = ctx_with_a_dangling_model_ref();
@@ -461,7 +612,9 @@ mod tests {
     async fn remove_deletes_the_instance_holding_the_reference() {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_a_dangling_model_ref();
-        answer(&ctx, &[1]);
+        // Remove, then keep the launcher that enables `chat` when the
+        // removal asks about it.
+        answer(&ctx, &[1, 2]);
 
         let outcome = remediate(&mut ctx, RefKind::Capability, "chat", OnDecline::Skip, true)
             .await
