@@ -126,7 +126,11 @@ mod tests {
         fn supported_formats(&self) -> Vec<ModelFormat> {
             vec![]
         }
-        fn model_alias(&self, _model_id: String, _variant: Option<&crate::models::ModelVariant>) -> Option<String> {
+        fn model_alias(
+            &self,
+            _model_id: String,
+            _variant: Option<&crate::models::ModelVariant>,
+        ) -> Option<String> {
             self.alias.clone()
         }
         async fn health_check(&self) -> Result<HealthStatus, ProviderError> {

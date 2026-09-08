@@ -185,7 +185,11 @@ impl Provider for OpenAIProvider {
         true
     }
 
-    fn model_alias(&self, model_id: String, _variant: Option<&crate::models::ModelVariant>) -> Option<String> {
+    fn model_alias(
+        &self,
+        model_id: String,
+        _variant: Option<&crate::models::ModelVariant>,
+    ) -> Option<String> {
         self.model_aliases.get(&model_id).cloned()
     }
 

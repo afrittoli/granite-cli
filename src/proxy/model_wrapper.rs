@@ -195,9 +195,7 @@ mod tests {
         fn verify_ssl(&self) -> bool {
             true
         }
-        fn custom_headers(
-            &self,
-        ) -> Option<std::collections::HashMap<String, Secret>> {
+        fn custom_headers(&self) -> Option<std::collections::HashMap<String, Secret>> {
             None
         }
         fn supported_formats(&self) -> Vec<ModelFormat> {

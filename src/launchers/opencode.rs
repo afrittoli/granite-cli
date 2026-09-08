@@ -817,10 +817,7 @@ mod tests {
             entry["options"]["headers"]["Helicone-Cache-Enabled"],
             "true"
         );
-        assert_eq!(
-            entry["options"]["headers"]["Helicone-User-Id"],
-            "opencode"
-        );
+        assert_eq!(entry["options"]["headers"]["Helicone-User-Id"], "opencode");
     }
 
     // -- provider_api_key_env ---------------------------------------------------

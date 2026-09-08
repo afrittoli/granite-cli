@@ -357,7 +357,11 @@ impl Provider for LlamaCppProvider {
         variant_format.eq_ignore_ascii_case("gguf")
     }
 
-    fn model_alias(&self, _model_id: String, variant: Option<&crate::models::ModelVariant>) -> Option<String> {
+    fn model_alias(
+        &self,
+        _model_id: String,
+        variant: Option<&crate::models::ModelVariant>,
+    ) -> Option<String> {
         let v = variant?;
         let repo = hf_repo_id(&v.url)?;
         Some(format!("{}:{}", repo, v.precision))
@@ -613,7 +617,10 @@ mod tests {
             size_gb: Some(5.3),
             url: "https://ollama.com/library/granite4.1:8b".to_string(),
         };
-        assert_eq!(provider.model_alias("unused".to_string(), Some(&variant)), None);
+        assert_eq!(
+            provider.model_alias("unused".to_string(), Some(&variant)),
+            None
+        );
     }
 
     #[test]
