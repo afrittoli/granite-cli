@@ -558,6 +558,7 @@ mod tests {
                 api_key: None,
                 verify_ssl: true,
                 context_length: Some(4096),
+                custom_headers: None,
             },
             known_type: None,
         }
@@ -791,6 +792,7 @@ mod tests {
                 api_key: None,
                 verify_ssl: true,
                 context_length: Some(4096),
+                custom_headers: None,
             }),
             vec![(
                 "reviewer".to_string(),

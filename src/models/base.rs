@@ -694,6 +694,9 @@ mod configured_model_tests {
         fn verify_ssl(&self) -> bool {
             self.verify_ssl
         }
+        fn custom_headers(&self) -> Option<HashMap<String, Secret>> {
+            None
+        }
         fn supported_formats(&self) -> Vec<ModelFormat> {
             vec![]
         }
