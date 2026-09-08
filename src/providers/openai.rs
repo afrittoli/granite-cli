@@ -268,24 +268,13 @@ impl Provider for OpenAIProvider {
 
 impl HasProviderMetadata for OpenAIProvider {
     fn metadata() -> ProviderMetadata {
-        let mut default_mappings = HashMap::new();
-        default_mappings.insert(ModelFunction::Chat, vec![ApiEndpoint::OpenAIChat]);
-        default_mappings.insert(
-            ModelFunction::Embeddings,
-            vec![ApiEndpoint::OpenAIEmbeddings],
-        );
-        default_mappings.insert(
-            ModelFunction::Transcription,
-            vec![ApiEndpoint::OpenAIAudioTranscription],
-        );
-
         ProviderMetadata {
             name: "OpenAI Compatible Provider".to_string(),
             description: "Provider for OpenAI-compatible API endpoints supporting chat, embeddings, and audio transcription".to_string(),
             provider_type: ProviderType::Local,
             default_endpoint: "http://localhost:8080".to_string(),
             supported_api_types: vec![ApiType::OpenAI],
-            default_function_endpoints: default_mappings,
+            default_function_endpoints: Self::default_function_endpoints(),
             supported_formats: vec![
                 ModelFormat::Safetensors,
                 ModelFormat::GGUF,
