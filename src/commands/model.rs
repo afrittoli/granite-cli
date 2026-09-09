@@ -422,8 +422,7 @@ impl ModelCommands {
             let provider_id = ctx
                 .config
                 .get_model(&instance_id)
-                .and_then(|c| c.provider_id.clone())
-                .unwrap_or_else(|| "None".to_string());
+                .unwrap().provider_id.clone();
             let row = vec![
                 instance_id.clone(),
                 md.family.clone(),
@@ -721,7 +720,7 @@ impl ModelCommands {
         ctx.ui
             .info(&format!("\nModel '{instance_id}' configured successfully!"));
 
-        if let (Some(pid), Some(variant)) = (&provider_id, &selected_variant) {
+        if let (pid, Some(variant)) = (&provider_id, &selected_variant) {
             let is_local = ctx
                 .config
                 .get_provider(pid)
@@ -784,8 +783,8 @@ impl ModelCommands {
         }
 
         let (variant_str, provider_id) = match configured {
-            Some(c) if c.variant.is_some() && c.provider_id.is_some() => {
-                (c.variant.clone().unwrap(), c.provider_id.clone().unwrap())
+            Some(c) if c.variant.is_some() => {
+                (c.variant.clone().unwrap(), c.provider_id.clone())
             }
             _ => {
                 anyhow::bail!(
@@ -871,7 +870,7 @@ impl ModelCommands {
     async fn select_provider(
         ctx: &mut crate::AppContext,
         resolution: &dependency::Resolution,
-    ) -> Result<Option<String>> {
+    ) -> Result<String> {
         if resolution.is_unsatisfiable() {
             anyhow::bail!(
                 "No provider type supports this model's format/precision; configure a compatible provider first, then set up this model."
@@ -892,7 +891,7 @@ impl ModelCommands {
         };
 
         if options[choice] != CONFIGURE_NEW {
-            return Ok(Some(options[choice].clone()));
+            return Ok(options[choice].clone());
         }
 
         let provider_type = if resolution.configurable_types.len() == 1 {
@@ -913,7 +912,7 @@ impl ModelCommands {
 
         ProviderCommands::setup(ctx, provider_type, Some(&nickname)).await?;
 
-        Ok(Some(nickname))
+        Ok(nickname)
     }
 }
 

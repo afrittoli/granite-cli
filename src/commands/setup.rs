@@ -1400,12 +1400,17 @@ impl SetupCommands {
                 ),
                 None => (selected_providers.iter().next().cloned(), None),
             };
+            if provider_id.is_none() {
+                let err = format!("Failed to find provider for {}/{:#?}", model_id, chosen_variant);
+                ui.warn(&err);
+                anyhow::bail!(err);
+            }
 
             let model_config = crate::config::ModelConfig {
                 model_id: model_id.clone(),
                 model_type: model_id.clone(),
                 config: serde_json::json!({}),
-                provider_id,
+                provider_id: provider_id.unwrap(),
                 variant,
             };
 
@@ -1583,11 +1588,10 @@ impl SetupCommands {
             .filter_map(|model_id| {
                 ctx.config
                     .get_model(model_id)
-                    .and_then(|mc| mc.provider_id.clone())
-                    .and_then(|provider_id| {
+                    .and_then(|mc| {
                         ctx.config
-                            .get_provider(&provider_id)
-                            .map(|pc| (model_id.clone(), provider_id, pc.provider_type.clone()))
+                            .get_provider(mc.provider_id.as_str())
+                            .map(|pc| (model_id.clone(), mc.provider_id.clone(), pc.provider_type.clone()))
                     })
             })
             .collect();

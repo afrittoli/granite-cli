@@ -36,9 +36,6 @@ pub(crate) enum Problem {
     NotConfigured,
     /// The instance's `*_type` is not a key in its kind's registry.
     UnknownType { type_name: String },
-    /// A model that names no provider at all, as distinct from one naming a
-    /// provider that is not configured.
-    NoProviderConfigured,
     /// A capability whose config carries no id under a required dependency's
     /// `config_key`.
     MissingDependency { config_key: String },
@@ -162,7 +159,6 @@ impl std::fmt::Display for ValidationError {
             Problem::UnknownType { type_name } => {
                 write!(f, "has an unknown {kind} type '{type_name}'")
             }
-            Problem::NoProviderConfigured => write!(f, "has no provider configured"),
             Problem::MissingDependency { config_key } => {
                 write!(f, "is missing required dependency '{config_key}'")
             }
@@ -330,10 +326,7 @@ impl Validatable for ModelConfig {
     /// Naming no provider at all is a different problem from naming one that
     /// is not configured, which is a dangling reference like any other.
     fn refs(&self) -> Result<Vec<(RefKind, &str)>, Problem> {
-        match self.provider_id.as_deref() {
-            Some(provider_id) => Ok(vec![(RefKind::Provider, provider_id)]),
-            None => Err(Problem::NoProviderConfigured),
-        }
+        Ok(vec![(RefKind::Provider, &self.provider_id)])
     }
 }
 
@@ -568,35 +561,6 @@ mod tests {
             err.to_string(),
             "capability 'chat' depends on model 'm1', which is not configured"
         );
-    }
-
-    #[test]
-    fn a_model_with_no_provider_differs_from_one_with_a_dangling_provider() {
-        let mut config = healthy();
-        config
-            .models
-            .insert("m-none".into(), model("m-none", "custom", None));
-        config
-            .models
-            .insert("m-gone".into(), model("m-gone", "custom", Some("gone")));
-
-        let none = validate_ref(RefKind::Model, "m-none", &config).expect_err("should fail");
-        let gone = validate_ref(RefKind::Model, "m-gone", &config).expect_err("should fail");
-
-        assert_eq!(none.problem, Problem::NoProviderConfigured);
-        assert_eq!(
-            none.to_string(),
-            "model 'm-none' has no provider configured"
-        );
-
-        assert_eq!(gone.problem, Problem::NotConfigured);
-        assert_eq!(gone.target, (RefKind::Provider, "gone".to_string()));
-        assert_eq!(
-            gone.to_string(),
-            "model 'm-gone' depends on provider 'gone', which is not configured"
-        );
-
-        assert_ne!(none.problem, gone.problem);
     }
 
     #[test]

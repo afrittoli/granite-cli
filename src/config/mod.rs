@@ -68,7 +68,7 @@ pub struct ModelConfig {
     /// Registry key: the catalog id this instance was constructed from (a
     /// `resources/models.yaml` id, or `"custom"`).
     pub model_type: String,
-    pub provider_id: Option<String>,
+    pub provider_id: String,
     pub variant: Option<String>,
     /// Model-type-specific config (e.g. `CustomModelConfig`'s fields for a
     /// `"custom"` instance). `{}` for catalog models, which take no config

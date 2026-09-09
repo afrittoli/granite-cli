@@ -38,10 +38,7 @@ impl ModelSource {
             .values()
             .filter_map(|model_config| {
                 let mut cfg = model_config.config.clone();
-                if let Some(provider_config) = model_config
-                    .provider_id
-                    .as_deref()
-                    .and_then(|pid| config.get_provider(pid))
+                if let Some(provider_config) = config.get_provider(&model_config.provider_id)
                 {
                     cfg["provider_config"] =
                         serde_json::to_value(provider_config).unwrap_or_default();
