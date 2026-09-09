@@ -124,6 +124,7 @@ impl Capability for AgentModelCapability {
             api_key: provider.api_key().cloned(),
             verify_ssl: provider.verify_ssl(),
             context_length: Some(self.configured_model.model.context_length()),
+            custom_headers: provider.custom_headers(),
         }))
     }
 }
@@ -212,10 +213,17 @@ mod tests {
         fn verify_ssl(&self) -> bool {
             self.verify_ssl
         }
+        fn custom_headers(&self) -> Option<HashMap<String, Secret>> {
+            None
+        }
         fn supported_formats(&self) -> Vec<ModelFormat> {
             vec![]
         }
-        fn model_alias(&self, _variant: Option<&crate::models::ModelVariant>) -> Option<String> {
+        fn model_alias(
+            &self,
+            _model_id: String,
+            _variant: Option<&crate::models::ModelVariant>,
+        ) -> Option<String> {
             self.alias.clone()
         }
         async fn health_check(&self) -> Result<HealthStatus, ProviderError> {

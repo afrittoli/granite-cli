@@ -99,7 +99,7 @@ impl ModelSource {
             Ok(provider) => {
                 let variant = base::find_variant(model.variants(), configured_variant);
                 let route_key = provider
-                    .model_alias(variant)
+                    .model_alias(model_id.to_string(), variant)
                     .unwrap_or_else(|| model_id.to_string());
                 let target = crate::proxy::UpstreamTarget {
                     base_url: provider.base_url().to_string(),

@@ -33,8 +33,9 @@ pub struct PiLauncherConfig {
     pub command_path: Option<String>,
 
     /// Extra keys merged (shallow, last-write-wins) into the generated Pi
-    /// provider entry -- e.g. `compat` flags or `headers` a particular server
-    /// needs. Necessary because the entry is regenerated on every launch.
+    /// provider entry -- e.g. `compat` flags or other provider-level
+    /// configuration a particular server needs. Necessary because the entry
+    /// is regenerated on every launch.
     #[serde(default)]
     pub provider_overrides: Option<serde_json::Value>,
 }
@@ -241,6 +242,12 @@ impl PiLauncher {
                 "contextWindow": binding.context_length,
             }],
         });
+
+        // Add custom headers from binding if present. They are merged at the
+        // provider level in Pi's models.json.
+        if let Some(ref headers) = binding.custom_headers {
+            entry["headers"] = serde_json::to_value(headers)?;
+        }
 
         // Shallow merge so a user override of e.g. `compat` doesn't clobber the
         // generated `baseUrl`/`models`, and vice versa.
@@ -467,6 +474,7 @@ mod tests {
             api_key: None,
             verify_ssl: true,
             context_length: Some(131072),
+            custom_headers: None,
         }
     }
 
@@ -534,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn config_schema_exposes_only_command_path_and_overrides() {
+    fn config_schema_exposes_command_path_overrides() {
         use crate::launchers::base::LauncherFactory;
         let mut factory = LauncherFactory::new();
         factory.register::<PiLauncher>("pi");
@@ -581,6 +589,20 @@ mod tests {
         }));
         let entry = l.provider_entry(&binding()).unwrap();
         assert_eq!(entry["baseUrl"], "http://proxy:8080/v1");
+    }
+
+    #[test]
+    fn provider_entry_headers_can_be_overridden_by_provider_overrides() {
+        let l = launcher(serde_json::json!({
+            "headers": { "X-Config": "config-value" },
+            "provider_overrides": { "headers": { "X-Override": "override-value" } }
+        }));
+        let entry = l.provider_entry(&binding()).unwrap();
+        // provider_overrides replaces the entire headers object since it's a
+        // top-level key merge (shallow, last-write-wins).
+        assert_eq!(entry["headers"]["X-Override"], "override-value");
+        // config-level headers are not merged in.
+        assert!(entry["headers"].get("X-Config").is_none());
     }
 
     // -- base url / api mapping ------------------------------------------------
