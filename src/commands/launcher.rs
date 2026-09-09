@@ -692,7 +692,7 @@ mod tests {
                 model_id: model_id.to_string(),
                 model_type: model_id.to_string(),
                 config: serde_json::json!({}),
-                provider_id: Some("ollama".to_string()),
+                provider_id: "ollama".to_string(),
                 variant: None,
             },
         );

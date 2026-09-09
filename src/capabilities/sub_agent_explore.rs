@@ -226,7 +226,7 @@ mod tests {
                 model_id: "granite-3.1-8b-instruct".to_string(),
                 model_type: "granite-3.1-8b-instruct".to_string(),
                 config: serde_json::json!({}),
-                provider_id: None,
+                provider_id: "ollama".to_string(),
                 variant: None,
             },
         );
@@ -266,7 +266,7 @@ mod tests {
                 model_id: "granite-3.1-8b-instruct".to_string(),
                 model_type: "granite-3.1-8b-instruct".to_string(),
                 config: serde_json::json!({}),
-                provider_id: None,
+                provider_id: "ollama".to_string(),
                 variant: None,
             },
         );

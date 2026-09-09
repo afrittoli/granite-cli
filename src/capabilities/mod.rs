@@ -160,7 +160,7 @@ mod tests {
                 model_id: "granite-3.1-8b-instruct".to_string(),
                 model_type: "granite-3.1-8b-instruct".to_string(),
                 config: serde_json::json!({}),
-                provider_id: Some("ollama".to_string()),
+                provider_id: "ollama".to_string(),
                 variant: None,
             },
         );
@@ -204,28 +204,7 @@ mod tests {
         assert!(source.instances().is_empty());
     }
 
-    #[test]
-    fn capability_source_skips_a_capability_whose_model_has_no_provider() {
-        let mut config = Config::default();
-        config.models.insert(
-            "granite-3.1-8b-instruct".to_string(),
-            ModelConfig {
-                model_id: "granite-3.1-8b-instruct".to_string(),
-                model_type: "granite-3.1-8b-instruct".to_string(),
-                config: serde_json::json!({}),
-                provider_id: None,
-                variant: None,
-            },
-        );
-        config.capabilities.insert(
-            "chat".to_string(),
-            agent_model_config("chat", "granite-3.1-8b-instruct"),
-        );
 
-        // It would construct, but `model.provider()` fails at bind time.
-        let source = CapabilitySource::from_config(&config);
-        assert!(source.instances().is_empty());
-    }
 
     #[test]
     fn capability_registry_has_agent_model() {

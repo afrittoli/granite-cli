@@ -431,7 +431,7 @@ mod tests {
         ModelConfig {
             model_id: id.to_string(),
             model_type: model_type.to_string(),
-            provider_id: provider_id.map(str::to_string),
+            provider_id: provider_id.unwrap_or("ollama").to_string(),
             variant: None,
             config: serde_json::json!({}),
         }

@@ -775,7 +775,7 @@ mod tests {
                 model_id: "granite-3.1-8b-instruct".to_string(),
                 model_type: "granite-3.1-8b-instruct".to_string(),
                 config: serde_json::json!({}),
-                provider_id: Some("ollama".to_string()),
+                provider_id: "ollama".to_string(),
                 variant: None,
             },
         );
@@ -812,32 +812,7 @@ mod tests {
     // live `ModelCommands::setup`/`ProviderCommands::setup` call against the
     // real registries -- unsafe/nondeterministic for a unit test.
 
-    #[test]
-    fn model_candidates_excludes_providerless_model() {
-        use crate::config::ModelConfig;
-        use crate::models::ModelFunction;
 
-        let mut ctx = test_ctx();
-        // Configured model with no provider_id -- Model::provider() errs, so
-        // it must not be offered as a usable candidate.
-        ctx.config.models.insert(
-            "granite-3.1-8b-instruct".to_string(),
-            ModelConfig {
-                model_id: "granite-3.1-8b-instruct".to_string(),
-                model_type: "granite-3.1-8b-instruct".to_string(),
-                config: serde_json::json!({}),
-                provider_id: None,
-                variant: None,
-            },
-        );
-
-        let requirement = ModelRequirement {
-            supported_functions: vec![ModelFunction::Chat],
-            ..Default::default()
-        };
-        let (usable, _) = CapabilityCommands::model_candidates(&ctx, &requirement);
-        assert!(!usable.contains(&"granite-3.1-8b-instruct".to_string()));
-    }
 
     #[test]
     fn model_candidates_offers_configurable_types_when_nothing_configured() {

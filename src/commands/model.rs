@@ -994,7 +994,7 @@ mod tests {
             ModelConfig {
                 model_id: id.to_string(),
                 model_type: id.to_string(),
-                provider_id: provider_id.map(String::from),
+                provider_id: provider_id.unwrap_or("ollama").to_string(),
                 variant: None,
                 config: serde_json::json!({}),
             },
@@ -1015,7 +1015,7 @@ mod tests {
             ModelConfig {
                 model_id: model_id.to_string(),
                 model_type: model_id.to_string(),
-                provider_id: Some(provider_id.to_string()),
+                provider_id: provider_id.to_string(),
                 variant: Some(variant.to_string()),
                 config: serde_json::json!({}),
             },
@@ -1182,15 +1182,6 @@ mod tests {
         let (_, _, rows) = &tables[0];
         assert_eq!(rows.len(), 1);
         assert!(rows[0].iter().any(|c| c == "my-ollama"));
-    }
-
-    #[test]
-    fn list_configured_model_without_provider_shows_none() {
-        let ctx = ctx_with_model("granite-3.1-8b-instruct", None);
-        ModelCommands::list(&ctx, None).unwrap();
-        let tables = tables!(ctx);
-        let (_, _, rows) = &tables[0];
-        assert!(rows[0].iter().any(|c| c == "None"));
     }
 
     #[test]
@@ -1716,7 +1707,7 @@ mod tests {
             ModelConfig {
                 model_id: instance_id.to_string(),
                 model_type: "custom".to_string(),
-                provider_id: provider_id.map(String::from),
+                provider_id: provider_id.unwrap_or("ollama").to_string(),
                 variant: None,
                 config: config_value,
             },
@@ -1785,7 +1776,7 @@ mod tests {
             ModelConfig {
                 model_id: "my-custom".to_string(),
                 model_type: "custom".to_string(),
-                provider_id: Some("openai".to_string()),
+                provider_id: "openai".to_string(),
                 variant: Some("safetensors/bfloat16".to_string()),
                 config: serde_json::json!({
                     "family": "My Local Model",
@@ -1832,7 +1823,7 @@ mod tests {
         assert_eq!(configured.model_type, "custom");
         assert_eq!(
             configured.provider_id,
-            Some("my-openai".to_string()),
+            "my-openai",
             "with no variants to filter by, the sole existing provider should be selected"
         );
         assert!(

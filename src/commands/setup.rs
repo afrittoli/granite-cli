@@ -1759,7 +1759,7 @@ mod tests {
                 model_id: id.to_string(),
                 model_type: id.to_string(),
                 config: serde_json::json!({}),
-                provider_id: provider_id.map(String::from),
+                provider_id: provider_id.unwrap_or("ollama").to_string(),
                 variant: None,
             },
         );
@@ -2569,7 +2569,7 @@ mod tests {
                 model_id: model_id.to_string(),
                 model_type: model_id.to_string(),
                 config: serde_json::json!({}),
-                provider_id: Some("ollama".to_string()),
+                provider_id: "ollama".to_string(),
                 variant: Some(format!("{}/{}", variant.format, variant.precision)),
             },
         );
