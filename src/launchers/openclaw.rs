@@ -441,10 +441,9 @@ mod tests {
             "my-ollama/granite4.1:8b"
         );
         // No key means no apiKey field at all.
-        assert!(
-            config["models"]["providers"]["my-ollama"]
-                .get("apiKey")
-                .is_none()
+        assert_eq!(
+            config["models"]["providers"]["my-ollama"]["apiKey"],
+            "unused"
         );
     }
 
