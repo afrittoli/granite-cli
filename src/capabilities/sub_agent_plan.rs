@@ -146,10 +146,17 @@ mod tests {
         fn verify_ssl(&self) -> bool {
             self.verify_ssl
         }
+        fn custom_headers(&self) -> Option<std::collections::HashMap<String, Secret>> {
+            None
+        }
         fn supported_formats(&self) -> Vec<ModelFormat> {
             vec![]
         }
-        fn model_alias(&self, _variant: Option<&crate::models::ModelVariant>) -> Option<String> {
+        fn model_alias(
+            &self,
+            _model_id: String,
+            _variant: Option<&crate::models::ModelVariant>,
+        ) -> Option<String> {
             self.alias.clone()
         }
         async fn health_check(&self) -> Result<HealthStatus, ProviderError> {
