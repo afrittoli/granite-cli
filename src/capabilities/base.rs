@@ -96,6 +96,8 @@ pub struct AgentModelBinding {
     pub api_key: Option<Secret>,
     pub verify_ssl: bool,
     pub context_length: Option<u64>,
+    /// Custom headers to be sent with each request to the provider.
+    pub custom_headers: Option<HashMap<String, Secret>>,
 }
 
 /// Request payload for `BindingType::SubAgent` -- which `ApiType` the
