@@ -36,7 +36,7 @@ impl LauncherCommands {
 
     /// List all configured launcher instances.
     pub fn list(ctx: &crate::AppContext) -> Result<()> {
-        let notes = crate::commands::utils::remediation::dangling_notes(ctx, RefKind::Launcher);
+        let notes = crate::commands::shared::remediation::dangling_notes(ctx, RefKind::Launcher);
         let mut rows: Vec<Vec<String>> = ctx
             .config
             .launchers
@@ -248,16 +248,16 @@ impl LauncherCommands {
     /// before anything about the environment, so a configuration problem is
     /// reported before a missing binary is.
     pub async fn prelaunch(ctx: &mut crate::AppContext, launcher_id: &str) -> Result<()> {
-        let outcome = crate::commands::utils::remediation::remediate(
+        let outcome = crate::commands::shared::remediation::remediate(
             ctx,
             RefKind::Launcher,
             launcher_id,
-            crate::commands::utils::remediation::OnDecline::Abort,
+            crate::commands::shared::remediation::OnDecline::Abort,
             true,
         )
         .await?;
 
-        if outcome == crate::commands::utils::remediation::Outcome::Unresolved {
+        if outcome == crate::commands::shared::remediation::Outcome::Unresolved {
             anyhow::bail!(
                 "Launch aborted: launcher '{launcher_id}' has a configuration problem \
                  that was not fixed."

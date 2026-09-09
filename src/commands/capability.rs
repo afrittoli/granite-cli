@@ -40,7 +40,7 @@ impl CapabilityCommands {
     }
 
     pub fn list(ctx: &crate::AppContext) -> Result<()> {
-        let notes = crate::commands::utils::remediation::dangling_notes(ctx, RefKind::Capability);
+        let notes = crate::commands::shared::remediation::dangling_notes(ctx, RefKind::Capability);
         let mut rows: Vec<Vec<String>> = ctx
             .config
             .capabilities
@@ -73,11 +73,11 @@ impl CapabilityCommands {
         // Only a configured instance can have a broken reference. An id that
         // names a catalog type is being browsed, not diagnosed.
         if ctx.config.get_capability(capability_id).is_some() {
-            crate::commands::utils::remediation::remediate(
+            crate::commands::shared::remediation::remediate(
                 ctx,
                 RefKind::Capability,
                 capability_id,
-                crate::commands::utils::remediation::OnDecline::Skip,
+                crate::commands::shared::remediation::OnDecline::Skip,
                 true,
             )
             .await?;

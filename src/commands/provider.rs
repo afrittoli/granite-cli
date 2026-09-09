@@ -77,7 +77,7 @@ impl ProviderCommands {
     }
 
     pub fn list(ctx: &crate::AppContext) -> Result<()> {
-        let notes = crate::commands::utils::remediation::dangling_notes(ctx, RefKind::Provider);
+        let notes = crate::commands::shared::remediation::dangling_notes(ctx, RefKind::Provider);
         let mut rows: Vec<Vec<String>> = ctx
             .config
             .providers

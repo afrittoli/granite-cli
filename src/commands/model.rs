@@ -408,7 +408,7 @@ impl ModelCommands {
     }
 
     pub fn list(ctx: &crate::AppContext, filter_type: Option<ModelType>) -> Result<()> {
-        let notes = crate::commands::utils::remediation::dangling_notes(ctx, RefKind::Model);
+        let notes = crate::commands::shared::remediation::dangling_notes(ctx, RefKind::Model);
         let source = ModelSource::from_config(&ctx.config);
         let mut enriched: Vec<(Vec<String>, ModelMetadata)> = Vec::new();
 
@@ -529,11 +529,11 @@ impl ModelCommands {
         // Only a configured instance can have a broken reference. An id that
         // names a catalog type is being browsed, not diagnosed.
         if ctx.config.get_model(id).is_some() {
-            crate::commands::utils::remediation::remediate(
+            crate::commands::shared::remediation::remediate(
                 ctx,
                 RefKind::Model,
                 id,
-                crate::commands::utils::remediation::OnDecline::Skip,
+                crate::commands::shared::remediation::OnDecline::Skip,
                 true,
             )
             .await?;
