@@ -317,9 +317,6 @@ impl std::fmt::Display for CapabilityMetadata {
 /// `config_key` names the key in a configured instance's own config JSON that
 /// holds the resolved id, which is how `config::validation` reads it without
 /// constructing anything.
-///
-/// `resolved_id` has no producer since the instance method that filled it was
-/// removed, so it reads as `None` everywhere.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Dependency {
     Model {

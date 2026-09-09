@@ -36,7 +36,7 @@ impl LauncherCommands {
 
     /// List all configured launcher instances.
     pub fn list(ctx: &crate::AppContext) -> Result<()> {
-        let notes = crate::commands::remediation::dangling_notes(ctx, RefKind::Launcher);
+        let notes = crate::commands::utils::remediation::dangling_notes(ctx, RefKind::Launcher);
         let mut rows: Vec<Vec<String>> = ctx
             .config
             .launchers
@@ -247,17 +247,17 @@ impl LauncherCommands {
     /// that cannot bind would fail later during the launch itself. This runs
     /// before anything about the environment, so a configuration problem is
     /// reported before a missing binary is.
-    pub async fn preflight(ctx: &mut crate::AppContext, launcher_id: &str) -> Result<()> {
-        let outcome = crate::commands::remediation::remediate(
+    pub async fn prelaunch(ctx: &mut crate::AppContext, launcher_id: &str) -> Result<()> {
+        let outcome = crate::commands::utils::remediation::remediate(
             ctx,
             RefKind::Launcher,
             launcher_id,
-            crate::commands::remediation::OnDecline::Abort,
+            crate::commands::utils::remediation::OnDecline::Abort,
             true,
         )
         .await?;
 
-        if outcome == crate::commands::remediation::Outcome::Unresolved {
+        if outcome == crate::commands::utils::remediation::Outcome::Unresolved {
             anyhow::bail!(
                 "Launch aborted: launcher '{launcher_id}' has a configuration problem \
                  that was not fixed."
@@ -333,7 +333,7 @@ async fn select_capabilities(
         // Ids this launcher already enables that cannot be offered: the
         // instance is gone, its references do not resolve, or it does not
         // bind to anything this launcher supports. They are carried through
-        // rather than dropped, since editing a launcher should not un-enable
+        // rather than dropped, since editing a launcher should not disable
         // what it already had. `launch` reports each one and offers a fix.
         let carried: Vec<String> = previously_enabled
             .iter()
@@ -799,7 +799,7 @@ mod tests {
 
         assert!(
             result.contains(&"gone".to_string()),
-            "editing a launcher must not un-enable what it could not offer: {result:?}"
+            "editing a launcher must not disable what it could not offer: {result:?}"
         );
         let ui = capture_ui!(ctx);
         let items = &ui.multi_select_prompts.borrow()[0].1;

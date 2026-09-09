@@ -101,6 +101,24 @@ finding that `chat`'s model is gone offers to reconfigure `chat`, and the
 prompt in Sub-Task 2 names it. `Problem` is an enum rather than a message so
 that caller branches on a variant instead of on text.
 
+A caller names what it is about to use and branches on the failure to decide
+what to offer:
+
+```rust
+// The launch check: the launcher, its enabled capabilities, their models,
+// and those models' providers.
+validate_ref(RefKind::Launcher, "claude", &config)?;
+
+// A failure names what to act on as well as what is missing, so a caller
+// offering a fix reconfigures the capability rather than the model.
+if let Err(e) = validate_ref(RefKind::Capability, "chat", &config) {
+    match (&e.problem, &e.referrer) {
+        (Problem::NotConfigured, Some((kind, id))) => reconfigure(*kind, id),
+        _ => ui.warn(&e.to_string()),
+    }
+}
+```
+
 The command drives the check, and it covers only what that command names,
 walking transitively from there. A command never reports a problem in a part
 of the configuration it was not asked about, so an unrelated broken entry
@@ -179,7 +197,7 @@ it (Sub-Task 5).
   candidate lists of every `setup` flow, which is wider than this refactor.
   Launcher setup does say what it could not offer, and carries a
   previously-enabled id through rather than dropping it, so editing a launcher
-  never un-enables what the walk would otherwise report.
+  never disables what the walk would otherwise report.
 - Runtime liveness (#36). Whether a provider is actually reachable is a
   separate axis from whether config references resolve, and giving `Model`,
   `Capability` and `Launcher` a `health_check()` is its own piece of work.
@@ -231,12 +249,12 @@ it (Sub-Task 5).
   first, which is the collect-all walk Sub-Task 1 deliberately does not have.
 - Launching without a broken capability (issue to file). A launcher with
   several enabled capabilities cannot start while any one of them is broken:
-  declining the preflight aborts, and there is no way to run with the rest.
+  declining the prelaunch aborts, and there is no way to run with the rest.
   Acknowledging the problem is not enough on its own, because the capability
   stays enabled and model resolution panics when it is constructed (#90). The
   repair is to drop the broken id from `enabled_capabilities` for that run
   only, which `run_launch` can do on the clone it already takes, and which
-  re-validation then reports clean. It needs a fourth action on the preflight
+  re-validation then reports clean. It needs a fourth action on the prelaunch
   prompt, a line naming what was dropped so the reduced session is visible,
   and a decision about what to do when every capability is broken.
 
@@ -328,7 +346,7 @@ returning exactly the expected list.
   before anything is written)
 - `src/models/mod.rs:35-59` (`ModelSource::from_config`, which constructs a
   model whether or not its provider resolves)
-- `src/registry/mod.rs:206-211` (the `construct` doc comment)
+- `src/registry/mod.rs:203-231` (the `construct` doc comment)
 - `src/capabilities/base.rs:346-376` (`Display for Dependency`, which already
   distinguishes required from optional to the user)
 - `src/commands/capability.rs:278-300`, `:420` (`resolve_model_dependency` and
@@ -368,7 +386,7 @@ aborting by default instead of skipping.
 What removal means depends on how remediation was reached. A caller that
 named the instance itself, such as `capability info chat`, is offered deletion
 through the existing removal command. Remediation reached through a launcher
-is offered un-enabling instead: the id is dropped from that launcher's
+is offered disabling instead: the id is dropped from that launcher's
 `enabled_capabilities` and the capability stays configured. A capability may
 be enabled by several launchers, so `launch claude` offering to delete one
 would change more than the launcher it was asked about. Both shapes a launcher
@@ -437,10 +455,10 @@ ever reaches the underlying prompt call; a fix that repairs one reference
 while exposing a second, confirming the loop re-validates and prompts again
 before returning; a fix that returns having changed nothing, confirming it
 drops out of the choices while the rest stay reachable, and that a launch can
-still un-enable after one; a declined
+still disable after one; a declined
 problem, confirming the loop stops instead of re-offering the same choices;
 an unknown type, confirming removal is offered without reconfiguration; a
-launcher root, confirming un-enabling is offered in place of deletion for both
+launcher root, confirming disabling is offered in place of deletion for both
 a broken capability and one that is not configured, that it leaves the
 capability configured, and that a caller naming the capability is still
 offered deletion; and the JSON and Markdown backends answering that they
@@ -496,7 +514,7 @@ reference is offered the same prompt, but declining aborts the launch rather
 than skipping, because a capability that cannot bind would fail later during
 the launch itself. This check runs before the existing binary check, so a
 config problem is reported before anything about the environment. It is a
-`preflight` function on the launcher commands, called by `run_launch` after
+`prelaunch` function on the launcher commands, called by `run_launch` after
 the configuration is loaded and before the launcher is constructed.
 
 Remediation during a fresh `setup`, for a dependency the wizard is about to
@@ -508,13 +526,13 @@ appears and that no prompt is reached; a model whose type is unknown, which
 keeps its row; for info, canned answers for reconfigure and for remove
 against a broken instance, confirming the resulting configuration is
 correct, and a catalog id, confirming it is not diagnosed; and, for the
-launch pre-flight, that declining aborts before anything is constructed
+launch prelaunch, that declining aborts before anything is constructed
 while accepting proceeds with the repaired configuration.
 
 **Relevant Context**
 - `src/commands/model.rs`, `capability.rs`, `launcher.rs`, `provider.rs`
   (`list` and `info` functions)
-- `src/commands/launcher.rs` (current `launch` pre-flight: `validate_command()` only)
+- `src/commands/launcher.rs` (current `launch` prelaunch: `validate_command()` only)
 
 **Status** — `[x] done`
 

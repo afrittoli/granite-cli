@@ -408,7 +408,7 @@ impl ModelCommands {
     }
 
     pub fn list(ctx: &crate::AppContext, filter_type: Option<ModelType>) -> Result<()> {
-        let notes = crate::commands::remediation::dangling_notes(ctx, RefKind::Model);
+        let notes = crate::commands::utils::remediation::dangling_notes(ctx, RefKind::Model);
         let source = ModelSource::from_config(&ctx.config);
         let mut enriched: Vec<(Vec<String>, ModelMetadata)> = Vec::new();
 
@@ -529,11 +529,11 @@ impl ModelCommands {
         // Only a configured instance can have a broken reference. An id that
         // names a catalog type is being browsed, not diagnosed.
         if ctx.config.get_model(id).is_some() {
-            crate::commands::remediation::remediate(
+            crate::commands::utils::remediation::remediate(
                 ctx,
                 RefKind::Model,
                 id,
-                crate::commands::remediation::OnDecline::Skip,
+                crate::commands::utils::remediation::OnDecline::Skip,
                 true,
             )
             .await?;
@@ -918,7 +918,7 @@ impl ModelCommands {
 
 /// Trigger `provider`'s native download/pull mechanism for `variant`,
 /// reporting progress through `ui`. Separated from `ModelCommands::pull` so
-/// a future `launch` pre-flight step can call it directly without going
+/// a future `launch` pre-launch step can call it directly without going
 /// through config lookup or CLI-specific error messages.
 pub async fn ensure_model_pulled(
     provider: &dyn Provider,

@@ -68,7 +68,7 @@ pub(crate) fn dangling_notes(ctx: &crate::AppContext, kind: RefKind) -> HashMap<
 /// passes. Without prompting the problem is reported and left alone, which is
 /// what skipping does.
 ///
-/// Reached through a launcher, the removal on offer is un-enabling: the
+/// Reached through a launcher, the removal on offer is disabling: the
 /// launcher stops enabling the capability and the capability itself stays
 /// configured. Deleting an instance is offered only to a caller that named
 /// that instance, since a capability may be enabled by more than one launcher.
@@ -132,9 +132,9 @@ pub(crate) async fn remediate(
                 previous = Some(error);
                 remove(ctx, &fix)?;
             }
-            Choice::Unenable => {
+            Choice::Disable => {
                 previous = Some(error);
-                unenable(ctx, &fix)?;
+                disable(ctx, &fix)?;
             }
             // The walk is deterministic, so the next pass would report the
             // problem just declined. Stop rather than ask about it again.
@@ -155,11 +155,11 @@ struct Fix {
     /// False when the type name is itself the problem. Setup cannot run a
     /// type the registry does not have, so removal is the only fix.
     can_reconfigure: bool,
-    /// The `(launcher, capability)` pair to un-enable, when remediation was
+    /// The `(launcher, capability)` pair to disable, when remediation was
     /// reached through a launcher that enables the capability. Some means the
     /// removal on offer drops the id from that launcher's list rather than
     /// deleting the instance.
-    unenable: Option<(String, String)>,
+    disable: Option<(String, String)>,
 }
 
 impl Fix {
@@ -176,7 +176,7 @@ impl Fix {
         Some(Self {
             type_name: type_name(kind, &id, config)?.to_string(),
             can_reconfigure: !matches!(error.problem, Problem::UnknownType { .. }),
-            unenable: unenable_target(error, kind, &id, root, config),
+            disable: disable_target(error, kind, &id, root, config),
             kind,
             id,
         })
@@ -184,7 +184,7 @@ impl Fix {
 }
 
 /// The `(launcher, capability)` pair a fix reached through a launcher can
-/// un-enable.
+/// disable.
 ///
 /// A capability is shared: other launchers may enable the same instance, and
 /// the caller asked to launch one launcher rather than to change the
@@ -195,7 +195,7 @@ impl Fix {
 /// reference is broken, where the fix acts on that capability; and the
 /// launcher enables a capability that is not configured at all, where the fix
 /// acts on the launcher.
-fn unenable_target(
+fn disable_target(
     error: &ValidationError,
     kind: RefKind,
     id: &str,
@@ -225,7 +225,7 @@ fn unenable_target(
 enum Choice {
     Reconfigure,
     Remove,
-    Unenable,
+    Disable,
     Decline,
 }
 
@@ -246,9 +246,9 @@ fn choose(
         items.push(format!("Reconfigure {} '{}' now", fix.kind, fix.id.clone()));
     }
 
-    match &fix.unenable {
-        Some((launcher_id, capability_id)) if !tried.contains(&Choice::Unenable) => {
-            choices.push(Choice::Unenable);
+    match &fix.disable {
+        Some((launcher_id, capability_id)) if !tried.contains(&Choice::Disable) => {
+            choices.push(Choice::Disable);
             items.push(format!(
                 "Remove capability '{capability_id}' from launcher '{launcher_id}'"
             ));
@@ -293,8 +293,8 @@ async fn reconfigure(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
 /// Drops the capability from the launcher's `enabled_capabilities`. The
 /// capability stays configured, so any other launcher enabling it is
 /// untouched.
-fn unenable(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
-    let Some((launcher_id, capability_id)) = fix.unenable.clone() else {
+fn disable(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
+    let Some((launcher_id, capability_id)) = fix.disable.clone() else {
         return Ok(());
     };
     // The in-memory change lands either way, which is what the walk about to
@@ -746,15 +746,15 @@ mod tests {
         assert_eq!(outcome, Outcome::Unresolved);
     }
 
-    // The `launch` pre-flight is thin policy over `remediate`, so its two
+    // The `launch` pre-launch is thin policy over `remediate`, so its two
     // tests live here with the fixture rather than in `launcher.rs`.
 
     #[tokio::test]
-    async fn the_launch_preflight_aborts_when_the_user_declines() {
+    async fn the_launch_prelaunch_aborts_when_the_user_declines() {
         let mut ctx = ctx_with_a_dangling_model_ref();
 
         // No canned answer, so the prompt takes its default, which declines.
-        let result = crate::commands::LauncherCommands::preflight(&mut ctx, "claude").await;
+        let result = crate::commands::LauncherCommands::prelaunch(&mut ctx, "claude").await;
 
         assert!(result.is_err(), "declining must stop the launch");
         assert_eq!(
@@ -764,13 +764,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_launch_preflight_proceeds_once_the_reference_is_repaired() {
+    async fn the_launch_prelaunch_proceeds_once_the_reference_is_repaired() {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_a_dangling_model_ref();
         answer(&ctx, &[0]);
         capture(&ctx).confirm_answers.borrow_mut().push_back(true);
 
-        crate::commands::LauncherCommands::preflight(&mut ctx, "claude")
+        crate::commands::LauncherCommands::prelaunch(&mut ctx, "claude")
             .await
             .expect("a repaired configuration launches");
 

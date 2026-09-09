@@ -70,23 +70,6 @@ pub(crate) struct DanglingRef {
 ///
 /// The walk covers only what it was asked about. Nothing here reads a part of
 /// the configuration the caller did not name.
-///
-/// # Examples
-///
-/// ```ignore
-/// // A launch pre-flight: the launcher, its enabled capabilities, their
-/// // models, and those models' providers.
-/// validate_ref(RefKind::Launcher, "claude", &config)?;
-///
-/// // A failure names what to act on as well as what is missing, so a caller
-/// // offering a fix reconfigures the capability rather than the model.
-/// if let Err(e) = validate_ref(RefKind::Capability, "chat", &config) {
-///     match (&e.problem, &e.referrer) {
-///         (Problem::NotConfigured, Some((kind, id))) => reconfigure(*kind, id),
-///         _ => ui.warn(&e.to_string()),
-///     }
-/// }
-/// ```
 pub(crate) fn validate_ref(
     kind: RefKind,
     id: &str,
@@ -112,8 +95,7 @@ pub(crate) fn validate_ref(
 /// }
 /// ```
 pub(crate) fn find_dangling(kind: RefKind, config: &Config) -> Vec<DanglingRef> {
-    config
-        .entries(kind)
+    config_entries(config, kind)
         .into_iter()
         .filter_map(|entry| {
             let id = entry.config_id();
@@ -129,7 +111,7 @@ pub(crate) fn find_dangling(kind: RefKind, config: &Config) -> Vec<DanglingRef> 
 /// The `*_type` of a configured instance: the registry key that its setup
 /// command needs to reconfigure it. `None` when `id` names nothing.
 pub(crate) fn type_name<'a>(kind: RefKind, id: &str, config: &'a Config) -> Option<&'a str> {
-    config.entry(kind, id).map(Validatable::type_name)
+    config_entry(config, kind, id).map(Validatable::type_name)
 }
 
 impl std::fmt::Display for RefKind {
@@ -190,27 +172,25 @@ trait Validatable: ConfigId {
     fn refs(&self) -> Result<Vec<(RefKind, &str)>, Problem>;
 }
 
-/// Reaching the four maps by [`RefKind`] rather than by name. This lives with
-/// the walk because `Validatable` is the only reason to want it. The arms
-/// spell the four fields out because the maps have four different value
-/// types and `kind` is only known at run time.
-impl Config {
-    fn entry(&self, kind: RefKind, id: &str) -> Option<&dyn Validatable> {
-        match kind {
-            RefKind::Launcher => lookup(&self.launchers, id),
-            RefKind::Capability => lookup(&self.capabilities, id),
-            RefKind::Model => lookup(&self.models, id),
-            RefKind::Provider => lookup(&self.providers, id),
-        }
+/// Reaching the four maps by [`RefKind`] rather than by name. These live with
+/// the walk because [`Validatable`] and [`RefKind`] are the only reason to
+/// want them. The arms spell the four fields out because the maps have four
+/// different value types and `kind` is only known at run time.
+fn config_entry<'a>(config: &'a Config, kind: RefKind, id: &str) -> Option<&'a dyn Validatable> {
+    match kind {
+        RefKind::Launcher => lookup(&config.launchers, id),
+        RefKind::Capability => lookup(&config.capabilities, id),
+        RefKind::Model => lookup(&config.models, id),
+        RefKind::Provider => lookup(&config.providers, id),
     }
+}
 
-    fn entries(&self, kind: RefKind) -> Vec<&dyn Validatable> {
-        match kind {
-            RefKind::Launcher => erase(&self.launchers),
-            RefKind::Capability => erase(&self.capabilities),
-            RefKind::Model => erase(&self.models),
-            RefKind::Provider => erase(&self.providers),
-        }
+fn config_entries(config: &Config, kind: RefKind) -> Vec<&dyn Validatable> {
+    match kind {
+        RefKind::Launcher => erase(&config.launchers),
+        RefKind::Capability => erase(&config.capabilities),
+        RefKind::Model => erase(&config.models),
+        RefKind::Provider => erase(&config.providers),
     }
 }
 
@@ -242,8 +222,7 @@ fn validate(
     config: &Config,
     referrer: Option<(RefKind, &str)>,
 ) -> Result<(), ValidationError> {
-    let entry = config
-        .entry(kind, id)
+    let entry = config_entry(config, kind, id)
         .ok_or_else(|| err(kind, id, Problem::NotConfigured, referrer))?;
 
     if !entry.type_is_registered() {

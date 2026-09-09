@@ -708,7 +708,7 @@ async fn run_launch(
     ctx.config = crate::config::Config::new()?;
 
     // Configuration integrity first, before anything about the environment.
-    LauncherCommands::preflight(ctx, launcher_id).await?;
+    LauncherCommands::prelaunch(ctx, launcher_id).await?;
 
     let ui: &dyn Ui = &*ctx.ui;
     let mut config = ctx.config.clone();
