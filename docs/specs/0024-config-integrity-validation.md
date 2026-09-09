@@ -50,7 +50,7 @@ ids in different places:
 ┌──────────────────┐
 │    ModelConfig   │
 └──────────────────┘
-         │  provider_id: Option<String>
+         │  provider_id: String
          │  (wrapper field; no type knowledge needed)
          ▼
 ┌──────────────────┐
@@ -90,7 +90,6 @@ struct ValidationError {
 enum Problem {
     NotConfigured,
     UnknownType { type_name: String },
-    NoProviderConfigured,
     MissingDependency { config_key: String },
 }
 ```
@@ -293,16 +292,10 @@ A capability's dependency is validated whenever it holds an id, whether the
 dependency is declared required or not, so a dangling optional dependency is
 reported exactly like a dangling required one.
 
-A model with no `provider_id` at all fails, distinctly from one whose
-`provider_id` points at nothing:
-
-```
-provider_id: None            ->  "no provider configured"
-provider_id: Some(dangling)  ->  "provider 'ollama' is not configured"
-```
-
-Both are unusable today, since every path that reaches a model needs its
-provider, but they are different problems and the messages should say so.
+`ModelConfig.provider_id` is required, so a model always names a provider and
+the only thing that can be wrong with it is that the name resolves to nothing,
+which reads like any other dangling reference: "provider 'ollama' is not
+configured".
 
 Alongside it, a helper answers the same question for a whole kind at once,
 which is what a list command needs:
@@ -332,9 +325,8 @@ place a capability says what it needs.
 Tests cover: a healthy and a dangling instance of each kind, confirming only
 the dangling one fails; a launcher → capability → model → provider chain with
 only the provider missing, confirming the walk recurses rather than stopping
-one hop deep; the two `provider_id` cases producing different messages;
-`find_dangling` against a config seeded with several known-broken instances
-returning exactly the expected list.
+one hop deep; `find_dangling` against a config seeded with several
+known-broken instances returning exactly the expected list.
 
 **Relevant Context**
 - `src/capabilities/base.rs` (`CapabilityMetadata.dependencies`, `Dependency`, `Capability::dependencies`)
@@ -342,8 +334,8 @@ returning exactly the expected list.
 - `src/commands/setup.rs:513-530` (existing static-metadata read)
 - `src/commands/setup.rs:122-138`, `:335-350` (discovery constructing types
   that are deliberately not configured)
-- `src/commands/model.rs:610-615` (a live, provider-less instance built
-  before anything is written)
+- `src/commands/model.rs:610-615` (a live instance built before anything is
+  written)
 - `src/models/mod.rs:35-59` (`ModelSource::from_config`, which constructs a
   model whether or not its provider resolves)
 - `src/registry/mod.rs:203-231` (the `construct` doc comment)

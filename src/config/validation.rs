@@ -302,8 +302,8 @@ impl Validatable for ModelConfig {
             .is_some()
     }
 
-    /// Naming no provider at all is a different problem from naming one that
-    /// is not configured, which is a dangling reference like any other.
+    /// `provider_id` is required, so a model always names a provider. Whether
+    /// that name resolves is the walk's business, like any other reference.
     fn refs(&self) -> Result<Vec<(RefKind, &str)>, Problem> {
         Ok(vec![(RefKind::Provider, &self.provider_id)])
     }
