@@ -74,7 +74,7 @@ impl LauncherCommands {
 
         match metadata {
             Some(md) => {
-                let mut fields: Vec<(&str, String)> = vec![
+                let mut type_fields: Vec<(&str, String)> = vec![
                     ("Name", md.name.clone()),
                     ("Description", md.description.clone()),
                     ("Default Command", md.default_command.clone()),
@@ -87,27 +87,34 @@ impl LauncherCommands {
                     .collect();
                 if !caps.is_empty() {
                     caps.sort();
-                    fields.push(("Supported Capabilities", caps.join(", ")));
+                    type_fields.push(("Supported Capabilities", caps.join(", ")));
                 }
 
                 if !md.tags.is_empty() {
-                    fields.push(("Tags", md.tags.join(", ")));
+                    type_fields.push(("Tags", md.tags.join(", ")));
                 }
 
+                ctx.ui.detail(id, &type_fields);
+
                 if let Some(cfg) = configured {
-                    fields.push(("Config: Type", cfg.launcher_type.clone()));
+                    let mut instance_fields: Vec<(&str, String)> = Vec::new();
+
+                    instance_fields.push(("Config: Type", cfg.launcher_type.clone()));
+
+                    if !cfg.enabled_capabilities.is_empty() {
+                        instance_fields
+                            .push(("Enabled Capabilities", cfg.enabled_capabilities.join(", ")));
+                    }
+
                     if let Some(obj) = cfg.config.as_object() {
                         for (k, v) in obj {
-                            fields.push(("Config", format!("{k} = {v}")))
+                            instance_fields.push(("Config", format!("{k} = {v}")))
                         }
                     }
 
-                    if !cfg.enabled_capabilities.is_empty() {
-                        fields.push(("Enabled Capabilities", cfg.enabled_capabilities.join(", ")));
-                    }
+                    ctx.ui.detail("", &instance_fields);
                 }
 
-                ctx.ui.detail(id, &fields);
                 Ok(())
             }
             None => {
@@ -120,7 +127,7 @@ impl LauncherCommands {
                     Ok(())
                 } else {
                     ctx.ui
-                        .error(&format!("Launcher '{id}' not found in registry."));
+                        .info(&format!("Launcher '{id}' not found in registry."));
 
                     let available: Vec<_> = crate::launchers::LAUNCHER_REGISTRY
                         .entries()
@@ -633,18 +640,22 @@ mod tests {
         assert!(result.is_ok());
 
         let details = details!(ctx);
-        assert_eq!(details.len(), 1);
+        assert_eq!(details.len(), 2);
 
-        let (id, fields) = &details[0];
-        assert_eq!(id, "my-claude");
-        assert!(fields.iter().any(|(k, _)| *k == "Name"));
+        let (id1, fields1) = &details[0];
+        assert_eq!(id1, "my-claude");
+        assert!(fields1.iter().any(|(k, _)| *k == "Name"));
+
+        let (id2, fields2) = &details[1];
+        assert_eq!(id2, "");
+
         assert!(
-            fields
+            fields2
                 .iter()
                 .any(|(k, v)| *k == "Config: Type" && v == "claude")
         );
         assert!(
-            fields
+            fields2
                 .iter()
                 .any(|(k, v)| *k == "Enabled Capabilities" && v == "chat, plan")
         );

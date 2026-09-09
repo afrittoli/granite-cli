@@ -115,7 +115,7 @@ impl ProviderCommands {
 
         match metadata {
             Some(md) => {
-                let mut fields: Vec<(&str, String)> = vec![
+                let mut type_fields: Vec<(&str, String)> = vec![
                     ("Name", md.name.clone()),
                     ("Description", md.description.clone()),
                     ("Type", md.provider_type.to_string()),
@@ -129,7 +129,7 @@ impl ProviderCommands {
                     .collect::<Vec<_>>()
                     .join(", ");
                 if !api_types.is_empty() {
-                    fields.push(("API Types", api_types));
+                    type_fields.push(("API Types", api_types));
                 }
 
                 let formats = md
@@ -139,23 +139,28 @@ impl ProviderCommands {
                     .collect::<Vec<_>>()
                     .join(", ");
                 if !formats.is_empty() {
-                    fields.push(("Formats", formats));
+                    type_fields.push(("Formats", formats));
                 }
 
                 if !md.tags.is_empty() {
-                    fields.push(("Tags", md.tags.join(", ")));
+                    type_fields.push(("Tags", md.tags.join(", ")));
                 }
+
+                ctx.ui.detail(id, &type_fields);
 
                 if let Some(cfg) = configured {
-                    fields.push(("Config: Type", cfg.provider_type.clone()));
+                    let mut instance_fields: Vec<(&str, String)> = Vec::new();
+
+                    instance_fields.push(("Config: Type", cfg.provider_type.clone()));
                     if let Some(obj) = cfg.config.as_object() {
                         for (k, v) in obj {
-                            fields.push(("Config", format!("{k} = {v}")))
+                            instance_fields.push(("Config", format!("{k} = {v}")))
                         }
                     }
+
+                    ctx.ui.detail("", &instance_fields);
                 }
 
-                ctx.ui.detail(id, &fields);
                 Ok(())
             }
             None => {
@@ -168,7 +173,7 @@ impl ProviderCommands {
                     Ok(())
                 } else {
                     ctx.ui
-                        .error(&format!("Provider '{id}' not found in registry."));
+                        .info(&format!("Provider '{id}' not found in registry."));
 
                     let available: Vec<_> = crate::providers::PROVIDER_REGISTRY
                         .entries()
@@ -593,19 +598,22 @@ mod tests {
         assert!(result.is_ok());
 
         let details = details!(ctx);
-        assert_eq!(details.len(), 1);
-        let (id, fields) = &details[0];
-        assert_eq!(id, "my-provider");
+        assert_eq!(details.len(), 2);
 
-        assert!(fields.iter().any(|(k, _)| *k == "Name"));
+        let (id1, fields1) = &details[0];
+        assert_eq!(id1, "my-provider");
+        assert!(fields1.iter().any(|(k, _)| *k == "Name"));
+
+        let (id2, fields2) = &details[1];
+        assert_eq!(id2, "");
 
         assert!(
-            fields
+            fields2
                 .iter()
                 .any(|(k, v)| *k == "Config: Type" && v == "openai-compatible")
         );
         assert!(
-            fields
+            fields2
                 .iter()
                 .any(|(k, v)| *k == "Config" && v.contains("http://localhost:11434"))
         );
