@@ -422,7 +422,9 @@ impl ModelCommands {
             let provider_id = ctx
                 .config
                 .get_model(&instance_id)
-                .unwrap().provider_id.clone();
+                .unwrap()
+                .provider_id
+                .clone();
             let row = vec![
                 instance_id.clone(),
                 md.family.clone(),
@@ -783,9 +785,7 @@ impl ModelCommands {
         }
 
         let (variant_str, provider_id) = match configured {
-            Some(c) if c.variant.is_some() => {
-                (c.variant.clone().unwrap(), c.provider_id.clone())
-            }
+            Some(c) if c.variant.is_some() => (c.variant.clone().unwrap(), c.provider_id.clone()),
             _ => {
                 anyhow::bail!(
                     "Model '{model_id}' is not configured yet. Run `model setup {model_id}` first."
@@ -1822,8 +1822,7 @@ mod tests {
             .expect("custom model should be saved under its instance id");
         assert_eq!(configured.model_type, "custom");
         assert_eq!(
-            configured.provider_id,
-            "my-openai",
+            configured.provider_id, "my-openai",
             "with no variants to filter by, the sole existing provider should be selected"
         );
         assert!(

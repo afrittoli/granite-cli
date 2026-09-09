@@ -812,8 +812,6 @@ mod tests {
     // live `ModelCommands::setup`/`ProviderCommands::setup` call against the
     // real registries -- unsafe/nondeterministic for a unit test.
 
-
-
     #[test]
     fn model_candidates_offers_configurable_types_when_nothing_configured() {
         let ctx = test_ctx();

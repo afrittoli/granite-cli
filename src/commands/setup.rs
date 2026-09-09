@@ -1401,7 +1401,7 @@ impl SetupCommands {
                 None => (selected_providers.iter().next().cloned(), None),
             };
             if provider_id.is_none() {
-                let err = format!("Failed to find provider for {}/{:#?}", model_id, chosen_variant);
+                let err = format!("Failed to find provider for {model_id}/{chosen_variant:#?}");
                 ui.warn(&err);
                 anyhow::bail!(err);
             }
@@ -1586,13 +1586,15 @@ impl SetupCommands {
         let pullable: Vec<_> = selected_models
             .iter()
             .filter_map(|model_id| {
-                ctx.config
-                    .get_model(model_id)
-                    .and_then(|mc| {
-                        ctx.config
-                            .get_provider(mc.provider_id.as_str())
-                            .map(|pc| (model_id.clone(), mc.provider_id.clone(), pc.provider_type.clone()))
+                ctx.config.get_model(model_id).and_then(|mc| {
+                    ctx.config.get_provider(mc.provider_id.as_str()).map(|pc| {
+                        (
+                            model_id.clone(),
+                            mc.provider_id.clone(),
+                            pc.provider_type.clone(),
+                        )
                     })
+                })
             })
             .collect();
 

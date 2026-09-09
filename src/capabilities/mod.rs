@@ -204,8 +204,6 @@ mod tests {
         assert!(source.instances().is_empty());
     }
 
-
-
     #[test]
     fn capability_registry_has_agent_model() {
         assert!(CAPABILITY_REGISTRY.get("agent-model").is_some());
