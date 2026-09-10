@@ -502,31 +502,39 @@ impl ModelCommands {
             let source = ModelSource::from_config(&ctx.config);
             if let Some((_, model)) = source.instances().into_iter().find(|(iid, _)| iid == id) {
                 let md = model.to_metadata();
-                let mut fields = Self::metadata_fields(&md);
-                fields.push(("Config: Type", model_config.model_type.clone()));
-                fields.push((
+                let type_fields = Self::metadata_fields(&md);
+
+                ctx.ui.detail(&format!("{id} (metadata)"), &type_fields);
+
+                let mut instance_fields: Vec<(&str, String)> = Vec::new();
+                instance_fields.push(("Config: Type", model_config.model_type.clone()));
+                instance_fields.push((
                     "Config: Provider",
                     format!("{:?}", model_config.provider_id),
                 ));
-                fields.push(("Config: Variant", format!("{:?}", model_config.variant)));
-                ctx.ui.detail(id, &fields);
+                instance_fields.push(("Config: Variant", format!("{:?}", model_config.variant)));
+                ctx.ui.detail(id, &instance_fields);
                 return Ok(());
             }
         }
 
         match Self::info_fields(id) {
-            Some(mut fields) => {
+            Some(type_fields) => {
+                ctx.ui.detail(&format!("{id} (metadata)"), &type_fields);
+
                 if let Some(configured) = ctx.config.get_model(id) {
-                    fields.push(("Config: Provider", format!("{:?}", configured.provider_id)));
-                    fields.push(("Config: Variant", format!("{:?}", configured.variant)));
+                    let mut instance_fields: Vec<(&str, String)> = Vec::new();
+                    instance_fields
+                        .push(("Config: Provider", format!("{:?}", configured.provider_id)));
+                    instance_fields.push(("Config: Variant", format!("{:?}", configured.variant)));
+
+                    ctx.ui.detail(id, &instance_fields);
                 }
 
-                ctx.ui.detail(id, &fields);
                 Ok(())
             }
             None => {
-                ctx.ui
-                    .error(&format!("Model '{id}' not found in registry."));
+                ctx.ui.info(&format!("Model '{id}' not found in registry."));
                 let available: Vec<_> = MODEL_REGISTRY
                     .entries()
                     .keys()
@@ -1164,7 +1172,7 @@ mod tests {
         let details = details!(ctx);
         assert_eq!(details.len(), 1);
         let (title, fields) = &details[0];
-        assert_eq!(title, "granite-3.1-8b-instruct");
+        assert_eq!(title, "granite-3.1-8b-instruct (metadata)");
         assert!(fields.iter().any(|(k, _)| k == "Family"));
         assert!(fields.iter().any(|(k, _)| k == "Context Length"));
         assert!(fields.iter().any(|(k, _)| k == "Supported Functions"));
@@ -1175,7 +1183,6 @@ mod tests {
         let ctx = empty_ctx();
         let result = ModelCommands::info(&ctx, "does-not-exist");
         assert!(result.is_err());
-        assert!(!errors!(ctx).is_empty());
     }
 
     fn metadata_supporting(formats: Vec<ModelFormat>) -> ProviderMetadata {
@@ -1702,16 +1709,19 @@ mod tests {
         );
         ModelCommands::info(&ctx, "my-custom").unwrap();
         let details = details!(ctx);
-        assert_eq!(details.len(), 1);
-        let (title, fields) = &details[0];
-        assert_eq!(title, "my-custom");
+        assert_eq!(details.len(), 2);
+        let (title1, fields1) = &details[0];
+        assert_eq!(title1, "my-custom (metadata)");
         assert!(
-            fields
+            fields1
                 .iter()
                 .any(|(k, v)| k == "Family" && v == "My Local Model")
         );
+
+        let (title2, fields2) = &details[1];
+        assert_eq!(title2, "my-custom");
         assert!(
-            fields
+            fields2
                 .iter()
                 .any(|(k, v)| k == "Config: Type" && v == "custom")
         );

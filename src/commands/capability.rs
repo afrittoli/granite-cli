@@ -79,7 +79,8 @@ impl CapabilityCommands {
                     type_fields.push(("Tags", cap.tags.join(", ")));
                 }
 
-                ctx.ui.detail(&format!("{capability_id} (metadata)"), &type_fields);
+                ctx.ui
+                    .detail(&format!("{capability_id} (metadata)"), &type_fields);
 
                 if let Some(configured) = configured {
                     let mut instance_fields: Vec<(&str, String)> = Vec::new();
