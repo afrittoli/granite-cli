@@ -60,10 +60,10 @@ impl Ui for MarkdownOutput {
         println!("{msg}");
     }
     fn warn(&self, msg: &str) {
-        println!("> [!Warning]\n> {msg}");
+        println!("> [!warning]\n> {msg}");
     }
     fn error(&self, msg: &str) {
-        eprintln!("Error: {msg}");
+        eprintln!("> [!critical]\n> {msg}");
     }
 
     fn select(&self, _prompt: &str, _items: &[String], _default: usize) -> anyhow::Result<usize> {
