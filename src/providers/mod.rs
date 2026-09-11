@@ -32,6 +32,10 @@ pub struct ProviderSource {
     /// `HashMap<String, ProviderConfig>` once `construct` stops taking the
     /// whole configuration.
     config: crate::config::Config,
+    /// When a session proxy is running, every provider handed out points at
+    /// it instead of the real upstream. Read from the configuration for now;
+    /// Sub-Task 5 has the launch pass it in directly.
+    model_proxy: Option<crate::proxy::ProxyHandle>,
     cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Provider>>>,
 }
 
@@ -39,6 +43,19 @@ impl ProviderSource {
     pub fn from_config(config: &crate::config::Config) -> Self {
         Self {
             config: config.clone(),
+            model_proxy: config.model_proxy.clone(),
+            cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// A source whose providers carry their real connection details even
+    /// when a session proxy is running. The launch path needs these to
+    /// register a route's upstream target, which has to be read before the
+    /// proxy swap rather than from behind it.
+    pub fn unproxied_from_config(config: &crate::config::Config) -> Self {
+        Self {
+            config: config.clone(),
+            model_proxy: None,
             cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -65,6 +82,13 @@ impl ProviderSource {
             )
             .map_err(|e| anyhow::anyhow!("could not construct provider '{provider_id}': {e}"))?;
         let built: std::sync::Arc<dyn Provider> = std::sync::Arc::from(built);
+        let built: std::sync::Arc<dyn Provider> = match &self.model_proxy {
+            Some(handle) => std::sync::Arc::new(crate::proxy::ProxiedProvider::wrap(
+                built,
+                handle.local_base_url.clone(),
+            )),
+            None => built,
+        };
         self.cache
             .lock()
             .unwrap()

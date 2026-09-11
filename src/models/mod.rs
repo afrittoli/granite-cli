@@ -32,7 +32,7 @@ pub struct ModelSource {
     /// `HashMap<String, ModelConfig>` once `construct` stops taking the whole
     /// configuration.
     config: crate::config::Config,
-    model_proxy: Option<crate::proxy::ProxyHandle>,
+    providers: Arc<crate::providers::ProviderSource>,
     cache: std::sync::Mutex<HashMap<String, Arc<dyn Model>>>,
 }
 
@@ -40,9 +40,52 @@ impl ModelSource {
     pub fn from_config(config: &crate::config::Config) -> Self {
         Self {
             config: config.clone(),
-            model_proxy: config.model_proxy.clone(),
+            providers: Arc::new(crate::providers::ProviderSource::from_config(config)),
             cache: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// A source whose models resolve to providers carrying their real
+    /// connection details, even when a session proxy is running. The launch
+    /// path needs these to register route targets.
+    pub fn unproxied_from_config(config: &crate::config::Config) -> Self {
+        Self {
+            config: config.clone(),
+            providers: Arc::new(crate::providers::ProviderSource::unproxied_from_config(
+                config,
+            )),
+            cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The provider the model configured under `model_id` names. Distinguishes
+    /// a model that is not configured at all from one whose `provider_id`
+    /// resolves to nothing, which `Model::provider()`'s single "model has no
+    /// configured provider" could not express.
+    pub fn provider_for(
+        &self,
+        model_id: &str,
+    ) -> anyhow::Result<Arc<dyn crate::providers::Provider>> {
+        let model_config = self
+            .config
+            .models
+            .get(model_id)
+            .ok_or_else(|| anyhow::anyhow!("model '{model_id}' is not configured"))?;
+        self.providers.get(&model_config.provider_id).map_err(|_| {
+            anyhow::anyhow!(
+                "model '{model_id}' names provider '{}', which is not configured",
+                model_config.provider_id
+            )
+        })
+    }
+
+    /// The `"format/precision"` string the model configured under `model_id`
+    /// was pinned to, if any.
+    pub fn configured_variant(&self, model_id: &str) -> Option<String> {
+        self.config
+            .models
+            .get(model_id)
+            .and_then(|mc| mc.variant.clone())
     }
 
     /// The model configured under `model_id` (the instance id -- matches
@@ -61,26 +104,16 @@ impl ModelSource {
             .get(model_id)
             .ok_or_else(|| anyhow::anyhow!("model '{model_id}' is not configured"))?;
 
-        let mut cfg = model_config.config.clone();
-        if let Some(provider_config) = self.config.get_provider(&model_config.provider_id) {
-            cfg["provider_config"] = serde_json::to_value(provider_config).unwrap_or_default();
-        }
         let built = MODEL_REGISTRY
             .construct(
                 &model_config.model_type,
                 &model_config.model_id,
-                &cfg,
+                &model_config.config,
                 &self.config,
             )
             .map_err(|e| anyhow::anyhow!("could not construct model '{model_id}': {e}"))?;
 
         let built: Arc<dyn Model> = Arc::from(built);
-        let built = match &self.model_proxy {
-            Some(handle) => {
-                route_and_wrap(built, model_id, model_config.variant.as_deref(), handle)
-            }
-            None => built,
-        };
         self.cache
             .lock()
             .unwrap()
@@ -96,53 +129,6 @@ impl ModelSource {
         ids.sort();
         ids
     }
-}
-
-/*-- private ------------------------------------------------------------------*/
-
-/// Registers `model`'s real connection details as a route on the session
-/// proxy and returns it wrapped to point at the proxy instead of the real
-/// upstream. The route key is computed on the real, unwrapped provider from
-/// the variant the model was configured with, so it matches the alias
-/// `resolve_provider_endpoint` computes later and the launched process
-/// addresses the model by. Registration is best-effort: a failure is logged
-/// and the model is returned unrouted rather than failing construction over
-/// an accounting feature.
-fn route_and_wrap(
-    model: Arc<dyn Model>,
-    model_id: &str,
-    configured_variant: Option<&str>,
-    handle: &crate::proxy::ProxyHandle,
-) -> Arc<dyn Model> {
-    match model.provider() {
-        Ok(provider) => {
-            let variant = base::find_variant(model.variants(), configured_variant);
-            let route_key = provider
-                .model_alias(model_id.to_string(), variant)
-                .unwrap_or_else(|| model_id.to_string());
-            let target = crate::proxy::UpstreamTarget {
-                base_url: provider.base_url().to_string(),
-                verify_ssl: provider.verify_ssl(),
-                auth: crate::proxy::UpstreamAuth::Inject(provider.api_key().cloned()),
-            };
-            if let Err(e) = handle.register_route(route_key, target, model_id.to_string()) {
-                alog_channel!(
-                    MessageLevel::Warning,
-                    "failed to register proxy route for model '{model_id}': {e}"
-                );
-            }
-        }
-        Err(e) => {
-            alog_channel!(
-                MessageLevel::Warning,
-                "model '{model_id}' has no usable provider, skipping proxy route: {e}"
-            );
-        }
-    }
-    Arc::new(crate::proxy::ProxiedModel::wrap(
-        model,
-        handle.local_base_url.clone(),
-    ))
 }
 
 impl crate::dependency::Configured<dyn Model> for ModelSource {
@@ -171,6 +157,7 @@ impl crate::dependency::Configured<dyn Model> for ModelSource {
 
 // Re-export types from base
 mod base;
+pub(crate) use base::find_variant;
 pub use base::{
     ConfiguredModel, LayerKind, LayerTypeCount, MambaShape, Model, ModelArchitecture,
     ModelFunction, ModelMetadata, ModelType, ModelVariant,
@@ -232,7 +219,6 @@ mod tests {
     #[test]
     fn model_source_resolves_provider_from_provider_id() {
         use crate::config::{Config, ModelConfig, ProviderConfig};
-        use crate::dependency::Configured;
 
         let mut config = Config::default();
         config.providers.insert(
@@ -255,19 +241,13 @@ mod tests {
         );
 
         let source = ModelSource::from_config(&config);
-        let (_, model) = source
-            .instances()
-            .into_iter()
-            .find(|(id, _)| id == "granite-3.1-8b-instruct")
-            .unwrap();
-        let provider = model.provider().unwrap();
+        let provider = source.provider_for("granite-3.1-8b-instruct").unwrap();
         assert_eq!(provider.base_url(), "http://localhost:11434");
     }
 
     #[test]
     fn model_source_provider_errs_when_provider_id_unresolvable() {
         use crate::config::{Config, ModelConfig};
-        use crate::dependency::Configured;
 
         let mut config = Config::default();
         config.models.insert(
@@ -282,12 +262,15 @@ mod tests {
         );
 
         let source = ModelSource::from_config(&config);
-        let (_, model) = source
-            .instances()
-            .into_iter()
-            .find(|(id, _)| id == "granite-3.1-8b-instruct")
-            .unwrap();
-        assert!(model.provider().is_err());
+        let err = source
+            .provider_for("granite-3.1-8b-instruct")
+            .err()
+            .expect("an unresolvable provider_id must not resolve")
+            .to_string();
+        assert!(
+            err.contains("does-not-exist") && err.contains("granite-3.1-8b-instruct"),
+            "the error must name both the model and the provider it points at, got: {err}"
+        );
     }
 
     #[test]
@@ -466,7 +449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn take_routes_through_proxy_and_registers_a_route_when_a_handle_is_active() {
+    async fn a_proxied_source_hands_out_provider_details_pointed_at_the_proxy() {
         use crate::config::{Config, ModelConfig, ProviderConfig};
         use crate::proxy::ProxyServer;
 
@@ -504,15 +487,32 @@ mod tests {
         let server = ProxyServer::start().unwrap();
         config.model_proxy = Some(server.handle.clone());
 
+        // Registering the route is the launch path's job, so do here what
+        // `register_proxy_routes` does there: read the real upstream details
+        // from an unproxied source, before any proxy swap hides them.
+        let real = ModelSource::unproxied_from_config(&config);
+        let upstream = real.provider_for("granite-3.1-8b-instruct").unwrap();
+        assert_eq!(upstream.base_url(), format!("http://{addr}"));
+        server
+            .handle
+            .register_route(
+                "granite-3.1-8b-instruct".to_string(),
+                crate::proxy::UpstreamTarget {
+                    base_url: upstream.base_url().to_string(),
+                    verify_ssl: upstream.verify_ssl(),
+                    auth: crate::proxy::UpstreamAuth::Inject(upstream.api_key().cloned()),
+                },
+                "granite-3.1-8b-instruct".to_string(),
+            )
+            .unwrap();
+
         let source = ModelSource::from_config(&config);
-        let model = source.get("granite-3.1-8b-instruct").unwrap();
-        let provider = model.provider().unwrap();
+        let provider = source.provider_for("granite-3.1-8b-instruct").unwrap();
         assert_eq!(provider.base_url(), server.handle.local_base_url);
         assert!(provider.api_key().is_none());
 
-        // The real route (to the un-proxied fake upstream) was registered
-        // under the model's catalog id (no alias, so it falls back to that)
-        // -- prove it's actually live by round-tripping through the proxy.
+        // Round-trip through the proxy to prove the route is live and the
+        // swapped details reach the real upstream.
         let client = reqwest::Client::new();
         let resp: serde_json::Value = client
             .post(format!("{}/echo", provider.base_url()))

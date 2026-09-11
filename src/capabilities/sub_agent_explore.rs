@@ -64,7 +64,7 @@ mod tests {
         Binding, BindingRequest, BindingType, Capability, Dependency, HasCapabilityMetadata,
         SubAgentBindingRequest,
     };
-    use crate::config::{Config, ModelConfig};
+    use crate::config::{Config, ModelConfig, ProviderConfig};
     use crate::models::{Model, ModelFunction};
     use crate::providers::{
         ApiEndpoint, ApiType, HealthStatus, ModelFormat, Provider, ProviderError,
@@ -157,7 +157,6 @@ mod tests {
 
     struct TestModel {
         supported_functions: Vec<ModelFunction>,
-        provider: FakeProvider,
     }
 
     impl ConfigConstructable for TestModel {
@@ -210,9 +209,6 @@ mod tests {
         fn supported_functions(&self) -> &[ModelFunction] {
             &self.supported_functions
         }
-        fn provider(&self) -> anyhow::Result<Box<dyn Provider>> {
-            Ok(Box::new(self.provider.clone()))
-        }
     }
 
     fn explore_capability_with_test_model(
@@ -220,6 +216,14 @@ mod tests {
         provider: FakeProvider,
     ) -> ExploreSubAgentCapability {
         let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
         config.models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {
@@ -243,8 +247,8 @@ mod tests {
             configured_model: crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: functions,
-                    provider,
                 }),
+                Arc::new(provider),
                 None,
             ),
             description: cap.description,
@@ -260,6 +264,14 @@ mod tests {
     #[tokio::test]
     async fn bind_succeeds_and_carries_description_prompt_and_tools() {
         let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
         config.models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {
@@ -283,8 +295,8 @@ mod tests {
             configured_model: crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: vec![ModelFunction::Chat],
-                    provider: ok_provider(),
                 }),
+                Arc::new(ok_provider()),
                 None,
             ),
             description: cap.description,

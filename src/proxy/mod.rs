@@ -5,7 +5,7 @@
 //! `docs/specs/0021-sub-agent-capability.md`.
 
 mod model_wrapper;
-pub use model_wrapper::ProxiedModel;
+pub use model_wrapper::ProxiedProvider;
 
 mod server;
 pub use server::{ProxyHandle, ProxyServer, UpstreamAuth, UpstreamTarget};

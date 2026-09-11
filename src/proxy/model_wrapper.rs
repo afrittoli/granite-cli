@@ -5,9 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 // Local
-use crate::models::{
-    Model, ModelArchitecture, ModelFunction, ModelMetadata, ModelType, ModelVariant,
-};
+use crate::models::{ModelFunction, ModelMetadata, ModelVariant};
 use crate::providers::{
     ApiEndpoint, HealthStatus, ModelFormat, Provider, ProviderError, PullResult,
 };
@@ -16,90 +14,27 @@ use crate::utils::ui::Ui;
 
 /*-- public --*/
 
-/// A `Model` decorator whose `provider()` points at the shared session proxy
-/// instead of the real upstream. Every other method delegates straight to
-/// `inner`, so any caller resolving connection details via
-/// `model.provider()` gets routed through (and, when a tracker is active,
-/// tracked by) the proxy transparently. Unlike the per-model proxy this
-/// replaces, wrapping has no side effects and cannot fail -- the caller
-/// (`ModelSource::take`) already registered the real route with the proxy
-/// before wrapping.
-pub struct ProxiedModel {
-    inner: Arc<dyn Model>,
-    local_base_url: String,
-}
-
-impl ProxiedModel {
-    pub fn wrap(inner: Arc<dyn Model>, local_base_url: String) -> Self {
-        Self {
-            inner,
-            local_base_url,
-        }
-    }
-}
-
-impl crate::registry::Named for ProxiedModel {
-    fn instance_id(&self) -> &str {
-        self.inner.instance_id()
-    }
-}
-
-impl Model for ProxiedModel {
-    fn family(&self) -> &str {
-        self.inner.family()
-    }
-    fn version(&self) -> &str {
-        self.inner.version()
-    }
-    fn size(&self) -> u64 {
-        self.inner.size()
-    }
-    fn context_length(&self) -> u64 {
-        self.inner.context_length()
-    }
-    fn model_type(&self) -> &ModelType {
-        self.inner.model_type()
-    }
-    fn huggingface_repo(&self) -> &str {
-        self.inner.huggingface_repo()
-    }
-    fn native_dtype(&self) -> &str {
-        self.inner.native_dtype()
-    }
-    fn architecture(&self) -> &ModelArchitecture {
-        self.inner.architecture()
-    }
-    fn variants(&self) -> &[ModelVariant] {
-        self.inner.variants()
-    }
-    fn description(&self) -> Option<&str> {
-        self.inner.description()
-    }
-    fn tags(&self) -> &[String] {
-        self.inner.tags()
-    }
-    fn supported_functions(&self) -> &[ModelFunction] {
-        self.inner.supported_functions()
-    }
-
-    fn provider(&self) -> anyhow::Result<Box<dyn Provider>> {
-        Ok(Box::new(ProxiedProvider {
-            inner: self.inner.provider()?,
-            local_base_url: self.local_base_url.clone(),
-        }))
-    }
-}
-
-/*-- private --*/
-
 /// A `Provider` decorator that redirects connection details at the shared
 /// session proxy while delegating everything else -- including
 /// `model_alias` (so the alias used to register the route and the one
 /// `resolve_provider_endpoint` computes later stay consistent) and the real
 /// upstream call made by `health_check`/`pull_model` -- to `inner`.
-struct ProxiedProvider {
-    inner: Box<dyn Provider>,
+pub struct ProxiedProvider {
+    inner: Arc<dyn Provider>,
     local_base_url: String,
+}
+
+impl ProxiedProvider {
+    /// Point `inner`'s connection details at the proxy listening on
+    /// `local_base_url`. Wrapping has no side effects and cannot fail: the
+    /// route to the real upstream is registered by the launch path, from the
+    /// unwrapped provider, before anything is wrapped.
+    pub fn wrap(inner: Arc<dyn Provider>, local_base_url: String) -> Self {
+        Self {
+            inner,
+            local_base_url,
+        }
+    }
 }
 
 impl crate::registry::Named for ProxiedProvider {
@@ -206,88 +141,45 @@ mod tests {
         }
     }
 
-    struct FakeModel {
-        provider: FakeProvider,
-    }
+    #[test]
+    fn wrap_points_connection_details_at_local_proxy_and_clears_api_key() {
+        let real: Arc<dyn Provider> = Arc::new(FakeProvider {
+            base_url: "https://api.example.com".to_string(),
+            api_key: Some(Secret("real-secret".to_string())),
+        });
 
-    impl crate::registry::Named for FakeModel {
-        fn instance_id(&self) -> &str {
-            "Mr. McFake"
-        }
-    }
+        let wrapped = ProxiedProvider::wrap(Arc::clone(&real), "http://127.0.0.1:9999".to_string());
 
-    impl Model for FakeModel {
-        fn family(&self) -> &str {
-            "Test"
-        }
-        fn version(&self) -> &str {
-            "1.0"
-        }
-        fn size(&self) -> u64 {
-            1
-        }
-        fn context_length(&self) -> u64 {
-            4096
-        }
-        fn model_type(&self) -> &ModelType {
-            &ModelType::Text
-        }
-        fn huggingface_repo(&self) -> &str {
-            "test/test"
-        }
-        fn native_dtype(&self) -> &str {
-            "bfloat16"
-        }
-        fn architecture(&self) -> &ModelArchitecture {
-            unimplemented!("not exercised by these tests")
-        }
-        fn variants(&self) -> &[ModelVariant] {
-            &[]
-        }
-        fn description(&self) -> Option<&str> {
-            None
-        }
-        fn tags(&self) -> &[String] {
-            &[]
-        }
-        fn supported_functions(&self) -> &[ModelFunction] {
-            &[]
-        }
-        fn provider(&self) -> anyhow::Result<Box<dyn Provider>> {
-            Ok(Box::new(self.provider.clone()))
-        }
+        assert_eq!(wrapped.base_url(), "http://127.0.0.1:9999");
+        assert!(
+            wrapped.api_key().is_none(),
+            "the launched process talks to the proxy and never sees the real credential"
+        );
+        assert!(wrapped.verify_ssl());
+        assert_eq!(
+            real.base_url(),
+            "https://api.example.com",
+            "wrapping must leave the real provider's own details alone, since the \
+             launch path reads them to register the route"
+        );
     }
 
     #[test]
-    fn wrap_points_provider_at_local_proxy_and_clears_api_key() {
-        let model: Arc<dyn Model> = Arc::new(FakeModel {
-            provider: FakeProvider {
-                base_url: "https://api.example.com".to_string(),
-                api_key: Some(Secret("real-secret".to_string())),
-            },
+    fn everything_but_connection_details_delegates_to_inner() {
+        let real: Arc<dyn Provider> = Arc::new(FakeProvider {
+            base_url: "https://api.example.com".to_string(),
+            api_key: None,
         });
+        let wrapped = ProxiedProvider::wrap(real, "http://127.0.0.1:9999".to_string());
 
-        let wrapped = ProxiedModel::wrap(Arc::clone(&model), "http://127.0.0.1:9999".to_string());
-
-        let provider = wrapped.provider().unwrap();
-        assert_eq!(provider.base_url(), "http://127.0.0.1:9999");
-        assert!(provider.api_key().is_none());
-        assert!(provider.verify_ssl());
-    }
-
-    #[test]
-    fn metadata_methods_delegate_to_inner() {
-        let model: Arc<dyn Model> = Arc::new(FakeModel {
-            provider: FakeProvider {
-                base_url: "https://api.example.com".to_string(),
-                api_key: None,
-            },
-        });
-        let wrapped = ProxiedModel::wrap(model, "http://127.0.0.1:9999".to_string());
-
-        assert_eq!(wrapped.family(), "Test");
-        assert_eq!(wrapped.version(), "1.0");
-        assert_eq!(wrapped.context_length(), 4096);
-        assert_eq!(wrapped.huggingface_repo(), "test/test");
+        use crate::registry::Named;
+        assert_eq!(wrapped.name(), "fake");
+        assert_eq!(wrapped.instance_id(), "so fake!");
+        assert_eq!(
+            wrapped.model_alias("granite".to_string(), None),
+            None,
+            "the alias must come from the real provider, so the route key registered \
+             and the name the launched process sends stay the same string"
+        );
     }
 }
