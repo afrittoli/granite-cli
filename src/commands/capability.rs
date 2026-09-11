@@ -97,25 +97,30 @@ impl CapabilityCommands {
 
         match catalog_entry {
             Some(cap) => {
-                let mut fields: Vec<(&str, String)> = vec![
+                let mut type_fields: Vec<(&str, String)> = vec![
                     ("Name", cap.name.clone()),
                     ("Description", cap.description.clone()),
                 ];
 
                 if !cap.tags.is_empty() {
-                    fields.push(("Tags", cap.tags.join(", ")));
+                    type_fields.push(("Tags", cap.tags.join(", ")));
                 }
+
+                ctx.ui.detail("Type Metadata", &type_fields);
 
                 if let Some(configured) = configured {
-                    fields.push(("Type", configured.capability_type.clone()));
+                    let mut instance_fields: Vec<(&str, String)> = Vec::new();
+
+                    instance_fields.push(("Config: Type", configured.capability_type.clone()));
                     if let Some(obj) = configured.config.as_object() {
                         for (k, v) in obj {
-                            fields.push(("Config", format!("{k} = {v}")));
+                            instance_fields.push(("Config", format!("{k} = {v}")));
                         }
                     }
+
+                    ctx.ui.detail(capability_id, &instance_fields);
                 }
 
-                ctx.ui.detail(capability_id, &fields);
                 Ok(())
             }
             None => {
@@ -127,7 +132,7 @@ impl CapabilityCommands {
                     ctx.ui.detail(capability_id, &fields);
                     Ok(())
                 } else {
-                    ctx.ui.error(&format!(
+                    ctx.ui.info(&format!(
                         "Capability '{capability_id}' not found in registry."
                     ));
                     anyhow::bail!("Capability not found");
