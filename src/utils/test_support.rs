@@ -37,11 +37,7 @@ pub(crate) struct FakeProvider {
 impl ConfigConstructable for FakeProvider {
     type Config = crate::registry::NoConfig;
 
-    fn new(
-        _instance_id: &str,
-        _cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
         unimplemented!("not used in tests")
     }
 }
@@ -143,11 +139,7 @@ impl FakeModel {
 impl ConfigConstructable for FakeModel {
     type Config = crate::registry::NoConfig;
 
-    fn new(
-        _instance_id: &str,
-        _cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
         unimplemented!("not used in tests")
     }
 }

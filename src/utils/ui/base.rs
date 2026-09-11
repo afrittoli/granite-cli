@@ -335,11 +335,7 @@ pub(crate) mod tests {
     impl ConfigConstructable for CaptureUi {
         type Config = crate::registry::NoConfig;
 
-        fn new(
-            _instance_id: &str,
-            _cfg: &serde_json::Value,
-            _global_config: &crate::config::Config,
-        ) -> Self {
+        fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
             Self::default()
         }
     }
@@ -518,12 +514,7 @@ pub(crate) mod tests {
 
     #[test]
     fn ui_registry_construct_unknown_returns_err() {
-        let result = UI_REGISTRY.construct(
-            "nonexistent",
-            "nonexistent",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let result = UI_REGISTRY.construct("nonexistent", "nonexistent", &serde_json::json!({}));
         assert!(result.is_err());
     }
 

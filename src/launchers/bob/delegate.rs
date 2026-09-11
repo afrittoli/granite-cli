@@ -45,6 +45,7 @@ fn derived_ctx(ctx: &LaunchContext, launcher_id: String) -> LaunchContext {
         working_dir: ctx.working_dir.clone(),
         base_env: ctx.base_env.clone(),
         dry_run: ctx.dry_run,
+        model_proxy: ctx.model_proxy.clone(),
     }
 }
 
@@ -104,11 +105,7 @@ async fn build_delegate_sub_agent(
     outer_ctx: &LaunchContext,
 ) -> anyhow::Result<DelegateSubAgent> {
     let launcher_id = format!("bob-delegate-{tool_name}");
-    let mut pi = PiLauncher::new(
-        &launcher_id,
-        &serde_json::json!({}),
-        &crate::config::Config::default(),
-    );
+    let mut pi = PiLauncher::new(&launcher_id, &serde_json::json!({}));
     let wrapper = StaticCapabilityBinding {
         instance_id: tool_name.clone(),
         binding: Binding::AgentModel(binding.model.clone()),
@@ -318,6 +315,7 @@ mod tests {
             working_dir: std::env::temp_dir(),
             base_env: HashMap::new(),
             dry_run: true,
+            model_proxy: None,
         }
     }
 

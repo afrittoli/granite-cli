@@ -60,11 +60,7 @@ pub struct BobLauncher {
 impl ConfigConstructable for BobLauncher {
     type Config = BobLauncherConfig;
 
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: BobLauncherConfig = serde_json::from_value(cfg.clone()).unwrap_or_default();
         Self {
             instance_id: instance_id.to_string(),
@@ -214,11 +210,7 @@ mod tests {
 
     #[test]
     fn command_defaults_to_bob() {
-        let l = BobLauncher::new(
-            "my-bob",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let l = BobLauncher::new("my-bob", &serde_json::json!({}));
         assert_eq!(l.command(), "bob");
     }
 
@@ -229,7 +221,6 @@ mod tests {
             &serde_json::json!({
                 "command_path": "/opt/bin/bob"
             }),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.command(), "/opt/bin/bob");
     }
@@ -241,7 +232,6 @@ mod tests {
             &serde_json::json!({
                 "command_path": "/no/such/path/bob"
             }),
-            &crate::config::Config::default(),
         );
         assert!(l.validate_command().is_err());
     }
@@ -253,7 +243,6 @@ mod tests {
             &serde_json::json!({
                 "command_path": "ls"
             }),
-            &crate::config::Config::default(),
         );
         assert!(l.validate_command().is_ok());
     }
@@ -286,7 +275,6 @@ mod tests {
         let l = BobLauncher::new(
             "my-bob",
             &serde_json::json!({ "command_path": "/opt/bin/bob" }),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.config.command_path, Some("/opt/bin/bob".to_string()));
         assert_eq!(l.config.pi_command_path, None);
@@ -370,11 +358,7 @@ mod tests {
     }
 
     fn bob() -> BobLauncher {
-        BobLauncher::new(
-            "my-bob",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        )
+        BobLauncher::new("my-bob", &serde_json::json!({}))
     }
 
     #[tokio::test]

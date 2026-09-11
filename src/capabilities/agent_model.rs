@@ -39,11 +39,7 @@ impl ConfigConstructable for AgentModelCapability {
     /// Builds the capability from its own config alone. `cfg` holds the
     /// capability's instance config (e.g. `{"model_id": "my-model"}`), where
     /// `model_id` is a name resolved later by `resolve_refs`.
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: AgentModelCapabilityConfig =
             serde_json::from_value(cfg.clone()).unwrap_or_default();
         Self {
@@ -215,7 +211,6 @@ mod tests {
         let cap = AgentModelCapability::new(
             "my-agent",
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-            &config,
         );
         // Replace the real model with our test double that has a custom provider
         // and the specified variants list.
@@ -235,7 +230,6 @@ mod tests {
         let cap = AgentModelCapability::new(
             "my-agent",
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-            &Config::default(),
         );
 
         let result = cap
@@ -368,7 +362,6 @@ mod tests {
         let cap = AgentModelCapability::new(
             "my-agent",
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-            &config,
         );
         assert_eq!(
             cap.binding_types(),
