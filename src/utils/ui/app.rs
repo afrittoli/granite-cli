@@ -145,7 +145,7 @@ impl App {
             let source = crate::providers::ProviderSource::from_config(&ctx.config);
             let instances = source.instances();
             let providers: Vec<&dyn crate::providers::Provider> =
-                instances.iter().map(|(_, p)| *p).collect();
+                instances.iter().map(|(_, p)| &**p).collect();
             ModelCommands::recommend_rows(
                 None,
                 Some(&providers),

@@ -253,12 +253,10 @@ impl ConfiguredModel {
             .models
             .get(model_id)
             .and_then(|mc| mc.variant.clone());
-        let mut source = crate::models::ModelSource::from_config(global_config);
-        let model = source
-            .take(model_id, configured_variant.as_deref())
-            .unwrap_or_else(|| {
-                panic!("Configured model '{model_id}' not found or could not be constructed")
-            });
+        let source = crate::models::ModelSource::from_config(global_config);
+        let model = source.get(model_id).unwrap_or_else(|e| {
+            panic!("Configured model '{model_id}' not found or could not be constructed: {e}")
+        });
         Self {
             model,
             configured_variant,
