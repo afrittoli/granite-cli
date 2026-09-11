@@ -226,7 +226,7 @@ mod tests {
                 model_id: "granite-3.1-8b-instruct".to_string(),
                 model_type: "granite-3.1-8b-instruct".to_string(),
                 config: serde_json::json!({}),
-                provider_id: None,
+                provider_id: "ollama".to_string(),
                 variant: None,
             },
         );
@@ -266,7 +266,7 @@ mod tests {
                 model_id: "granite-3.1-8b-instruct".to_string(),
                 model_type: "granite-3.1-8b-instruct".to_string(),
                 config: serde_json::json!({}),
-                provider_id: None,
+                provider_id: "ollama".to_string(),
                 variant: None,
             },
         );
@@ -314,13 +314,12 @@ mod tests {
     }
 
     #[test]
-    fn dependencies_carry_resolved_model_id() {
-        let cap = explore_capability_with_test_model(vec![ModelFunction::Chat], ok_provider());
-        let deps = cap.dependencies();
+    fn metadata_declares_a_required_model_dependency() {
+        let deps = ExploreSubAgentCapability::metadata().dependencies;
         assert_eq!(deps.len(), 1);
         assert!(deps.iter().any(|d| matches!(
             d,
-            Dependency::Model { resolved_id: Some(id), .. } if id == "granite-3.1-8b-instruct"
+            Dependency::Model { config_key, required: true, .. } if config_key == "model_id"
         )));
     }
 

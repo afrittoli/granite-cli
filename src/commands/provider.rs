@@ -2,6 +2,7 @@
 use anyhow::Result;
 
 // Local
+use crate::config::validation::RefKind;
 use crate::providers::{HealthStatus, PROVIDER_REGISTRY};
 use crate::utils::prompt_from_schema;
 
@@ -76,6 +77,7 @@ impl ProviderCommands {
     }
 
     pub fn list(ctx: &crate::AppContext) -> Result<()> {
+        let notes = crate::commands::shared::remediation::dangling_notes(ctx, RefKind::Provider);
         let mut rows: Vec<Vec<String>> = ctx
             .config
             .providers
@@ -87,7 +89,12 @@ impl ProviderCommands {
                     .and_then(|v| v.as_str())
                     .unwrap_or("-")
                     .to_string();
-                vec![id.clone(), cfg.provider_type.clone(), base_url]
+                vec![
+                    id.clone(),
+                    cfg.provider_type.clone(),
+                    base_url,
+                    notes.get(id).cloned().unwrap_or_default(),
+                ]
             })
             .collect();
         rows.sort_by(|a, b| {
@@ -100,7 +107,7 @@ impl ProviderCommands {
 
         ctx.ui.table(
             &format!("Configured Providers ({} providers)", rows.len()),
-            &["ID", "TYPE", "BASE URL"],
+            &["ID", "TYPE", "BASE URL", "NOTES"],
             &rows,
         );
         Ok(())

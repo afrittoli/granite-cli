@@ -1031,12 +1031,9 @@ impl App {
                         .collect();
                     lines.push(Line::from(""));
                     if let Some(mc) = self.ctx.config.get_model(id) {
-                        let provider_val = match &mc.provider_id {
-                            None => "(not set)".to_string(),
-                            Some(pid) => match self.ctx.config.get_provider(pid) {
-                                None => pid.clone(),
-                                Some(pc) => format!("{pid} ({})", pc.provider_type),
-                            },
+                        let provider_val = match self.ctx.config.get_provider(&mc.provider_id) {
+                            None => mc.provider_id.clone(),
+                            Some(pc) => format!("{} ({})", mc.provider_id, pc.provider_type),
                         };
                         let variant_val = match &mc.variant {
                             Some(v) => v.clone(),
