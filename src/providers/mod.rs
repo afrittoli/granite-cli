@@ -32,23 +32,59 @@ pub struct ProviderSource {
     /// `HashMap<String, ProviderConfig>` once `construct` stops taking the
     /// whole configuration.
     config: crate::config::Config,
-    cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Provider>>>,
+    /// When a session proxy is running, every provider handed out by `get`
+    /// points at it instead of the real upstream. Read from the
+    /// configuration for now; Sub-Task 5 has the launch pass it in directly.
+    model_proxy: Option<crate::proxy::ProxyHandle>,
+    /// Providers as configured, carrying their real connection details.
+    upstream: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Provider>>>,
+    /// The same providers pointed at the session proxy, built only while one
+    /// is running. Two views of one instance, so a launch can read a route's
+    /// upstream target without a second source holding a second copy of
+    /// every provider.
+    proxied: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Provider>>>,
 }
 
 impl ProviderSource {
     pub fn from_config(config: &crate::config::Config) -> Self {
         Self {
             config: config.clone(),
-            cache: std::sync::Mutex::new(HashMap::new()),
+            model_proxy: config.model_proxy.clone(),
+            upstream: std::sync::Mutex::new(HashMap::new()),
+            proxied: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
-    /// The provider configured under `provider_id`, built on the first ask
-    /// and returned from the cache on every one after it. Errors when no
-    /// entry is configured under that id, or when its `provider_type` is not
-    /// in the registry.
+    /// The provider configured under `provider_id`, pointed at the session
+    /// proxy when one is running, built on the first ask and returned from
+    /// the cache on every one after it. Errors when no entry is configured
+    /// under that id, or when its `provider_type` is not in the registry.
     pub fn get(&self, provider_id: &str) -> anyhow::Result<std::sync::Arc<dyn Provider>> {
-        if let Some(built) = self.cache.lock().unwrap().get(provider_id) {
+        let upstream = self.upstream(provider_id)?;
+        let Some(handle) = &self.model_proxy else {
+            return Ok(upstream);
+        };
+        if let Some(built) = self.proxied.lock().unwrap().get(provider_id) {
+            return Ok(built.clone());
+        }
+        let wrapped: std::sync::Arc<dyn Provider> = std::sync::Arc::new(
+            crate::proxy::ProxiedProvider::wrap(upstream, handle.local_base_url.clone()),
+        );
+        Ok(self
+            .proxied
+            .lock()
+            .unwrap()
+            .entry(provider_id.to_string())
+            .or_insert(wrapped)
+            .clone())
+    }
+
+    /// The provider configured under `provider_id` carrying its real
+    /// connection details, whether or not a session proxy is running. The
+    /// launch reads a route's upstream target from here, since a provider
+    /// handed out by `get` reports the proxy's own address.
+    pub fn upstream(&self, provider_id: &str) -> anyhow::Result<std::sync::Arc<dyn Provider>> {
+        if let Some(built) = self.upstream.lock().unwrap().get(provider_id) {
             return Ok(built.clone());
         }
         let provider_config = self
@@ -69,7 +105,7 @@ impl ProviderSource {
         // `or_insert` keeps whichever landed first and drops the other, so
         // the id has one instance however the calls interleave.
         Ok(self
-            .cache
+            .upstream
             .lock()
             .unwrap()
             .entry(provider_id.to_string())

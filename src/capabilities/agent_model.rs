@@ -142,7 +142,7 @@ impl HasCapabilityMetadata for AgentModelCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ModelConfig};
+    use crate::config::{Config, ModelConfig, ProviderConfig};
     use crate::models::Model;
     use crate::providers::{
         ApiEndpoint, ApiType, HealthStatus, ModelFormat, Provider, ProviderError,
@@ -258,6 +258,14 @@ mod tests {
             .map(|(s, v)| (Some(s.to_string()), v))
             .unwrap_or((None, vec![]));
         let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
         config.models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {
@@ -281,9 +289,9 @@ mod tests {
             configured_model: crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModelWithVariants {
                     supported_functions: functions,
-                    provider,
                     variants,
                 }),
+                std::sync::Arc::new(provider),
                 variant_str,
             ),
         }
@@ -292,7 +300,6 @@ mod tests {
     /// Extended test model that carries a mutable variants list.
     struct TestModelWithVariants {
         supported_functions: Vec<ModelFunction>,
-        provider: FakeProvider,
         variants: Vec<crate::models::ModelVariant>,
     }
 
@@ -349,9 +356,6 @@ mod tests {
         }
         fn supported_functions(&self) -> &[ModelFunction] {
             &self.supported_functions
-        }
-        fn provider(&self) -> anyhow::Result<Box<dyn Provider>> {
-            Ok(Box::new(self.provider.clone()))
         }
     }
 
@@ -470,6 +474,14 @@ mod tests {
     #[test]
     fn binding_types_reports_agent_model() {
         let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
         config.models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {

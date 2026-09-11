@@ -454,7 +454,7 @@ impl CapabilityCommands {
                             .supported_functions
                             .iter()
                             .all(|f| model_functions.contains(f));
-                        match model.provider() {
+                        match source.provider_for(id) {
                             Ok(p) => {
                                 model_ok
                                     && requirement

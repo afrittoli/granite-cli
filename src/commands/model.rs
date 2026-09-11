@@ -754,7 +754,7 @@ impl ModelCommands {
                         .instances()
                         .into_iter()
                         .find(|(id, _)| id == &instance_id)
-                        .map(|(_, m)| m.provider())
+                        .map(|(id, _)| source.provider_for(&id))
                     {
                         Some(Ok(provider)) => {
                             ensure_model_pulled(
@@ -825,7 +825,7 @@ impl ModelCommands {
                 )
             })?;
 
-        let provider = model.provider().map_err(|e| {
+        let provider = source.provider_for(model_id).map_err(|e| {
             anyhow::anyhow!(
                 "Provider '{provider_id}' is not configured or enabled. Run `provider setup` first: {e}"
             )
