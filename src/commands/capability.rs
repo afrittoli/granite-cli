@@ -5,6 +5,7 @@ use anyhow::Result;
 // Local
 use super::{ModelCommands, ProviderCommands};
 use crate::capabilities::{CAPABILITY_REGISTRY, Dependency, ModelRequirement, ProviderRequirement};
+use crate::config::validation::RefKind;
 use crate::dependency::{self, Configured};
 use crate::utils::prompt_from_schema;
 
@@ -39,11 +40,18 @@ impl CapabilityCommands {
     }
 
     pub fn list(ctx: &crate::AppContext) -> Result<()> {
+        let notes = crate::commands::shared::remediation::dangling_notes(ctx, RefKind::Capability);
         let mut rows: Vec<Vec<String>> = ctx
             .config
             .capabilities
             .iter()
-            .map(|(id, cfg)| vec![id.clone(), cfg.capability_type.clone()])
+            .map(|(id, cfg)| {
+                vec![
+                    id.clone(),
+                    cfg.capability_type.clone(),
+                    notes.get(id).cloned().unwrap_or_default(),
+                ]
+            })
             .collect();
         rows.sort_by(|a, b| {
             let type_cmp = a[1].cmp(&b[1]);
@@ -55,13 +63,32 @@ impl CapabilityCommands {
 
         ctx.ui.table(
             &format!("Configured Capabilities ({} capabilities)", rows.len()),
-            &["ID", "TYPE"],
+            &["ID", "TYPE", "NOTES"],
             &rows,
         );
         Ok(())
     }
 
-    pub fn info(ctx: &crate::AppContext, capability_id: &str) -> Result<()> {
+    pub async fn info(ctx: &mut crate::AppContext, capability_id: &str) -> Result<()> {
+        // Only a configured instance can have a broken reference. An id that
+        // names a catalog type is being browsed, not diagnosed.
+        if ctx.config.get_capability(capability_id).is_some() {
+            crate::commands::shared::remediation::remediate(
+                ctx,
+                RefKind::Capability,
+                capability_id,
+                crate::commands::shared::remediation::OnDecline::Skip,
+                true,
+            )
+            .await?;
+
+            // Removing it is one of the choices offered above, and leaves
+            // nothing to show.
+            if ctx.config.get_capability(capability_id).is_none() {
+                return Ok(());
+            }
+        }
+
         let configured = ctx.config.get_capability(capability_id);
 
         let catalog_entry = configured
@@ -623,29 +650,108 @@ mod tests {
         assert_eq!(rows[0][1], "agent-model");
     }
 
-    // -- info -----------------------------------------------------------------
+    fn capture(ctx: &crate::AppContext) -> &CaptureUi {
+        (&*ctx.ui as &dyn std::any::Any)
+            .downcast_ref::<CaptureUi>()
+            .expect("test contexts are built with a CaptureUi")
+    }
+
+    /// Capability `chat` points at a model that is not configured.
+    fn ctx_with_a_dangling_model_ref() -> crate::AppContext {
+        let mut ctx = ctx_with_chat_capable_model();
+        ctx.config.capabilities.insert(
+            "chat".to_string(),
+            CapabilityConfig {
+                capability_id: "chat".to_string(),
+                capability_type: "agent-model".to_string(),
+                config: serde_json::json!({ "model_id": "gone" }),
+            },
+        );
+        ctx
+    }
 
     #[test]
-    fn info_unknown_capability_returns_err() {
-        let ctx = test_ctx();
-        let result = CapabilityCommands::info(&ctx, "does-not-exist");
+    fn list_annotates_a_broken_capability_and_never_prompts() {
+        let ctx = ctx_with_a_dangling_model_ref();
+
+        CapabilityCommands::list(&ctx).unwrap();
+
+        let tables = tables!(ctx);
+        let (_, headers, rows) = &tables[0];
+        let notes = headers.iter().position(|h| h == "NOTES").unwrap();
+        let row = rows.iter().find(|r| r[0] == "chat").unwrap();
+        assert!(row[notes].contains("is not configured"), "{row:?}");
+        // A list reports that a problem exists. Acting on it is left to a
+        // command the user chooses to run next.
+        assert!(capture(&ctx).select_prompts.borrow().is_empty());
+    }
+
+    // -- info -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn info_unknown_capability_returns_err() {
+        let mut ctx = test_ctx();
+        let result = CapabilityCommands::info(&mut ctx, "does-not-exist").await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn info_configured_only_capability_renders_detail_not_err() {
-        let ctx = ctx_with_capability("custom-cap", "not-a-real-type");
-        let result = CapabilityCommands::info(&ctx, "custom-cap");
+    #[tokio::test]
+    async fn info_configured_only_capability_renders_detail_not_err() {
+        let mut ctx = ctx_with_capability("custom-cap", "not-a-real-type");
+        let result = CapabilityCommands::info(&mut ctx, "custom-cap").await;
         assert!(result.is_ok());
         assert!(!details!(ctx).is_empty());
     }
 
-    #[test]
-    fn info_configured_agent_model_resolves_via_catalog_type() {
-        let ctx = ctx_with_capability("chat", "agent-model");
-        let result = CapabilityCommands::info(&ctx, "chat");
+    #[tokio::test]
+    async fn info_configured_agent_model_resolves_via_catalog_type() {
+        let mut ctx = ctx_with_capability("chat", "agent-model");
+        let result = CapabilityCommands::info(&mut ctx, "chat").await;
         assert!(result.is_ok());
         assert!(!details!(ctx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn info_offers_remediation_and_removing_leaves_the_capability_gone() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_a_dangling_model_ref();
+        capture(&ctx).select_answers.borrow_mut().push_back(1);
+
+        CapabilityCommands::info(&mut ctx, "chat").await.unwrap();
+
+        assert!(ctx.config.get_capability("chat").is_none());
+    }
+
+    #[tokio::test]
+    async fn info_reconfigures_a_broken_capability_when_asked() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_a_dangling_model_ref();
+        capture(&ctx).select_answers.borrow_mut().push_back(0);
+        capture(&ctx).confirm_answers.borrow_mut().push_back(true);
+
+        CapabilityCommands::info(&mut ctx, "chat").await.unwrap();
+
+        assert_eq!(
+            ctx.config
+                .get_capability("chat")
+                .and_then(|c| c.config.get("model_id"))
+                .and_then(|v| v.as_str()),
+            Some("granite-3.1-8b-instruct")
+        );
+    }
+
+    #[tokio::test]
+    async fn info_on_a_catalog_type_does_not_prompt() {
+        let mut ctx = test_ctx();
+
+        // `agent-model` names a type being browsed, not a configured
+        // instance, so there is nothing to diagnose.
+        CapabilityCommands::info(&mut ctx, "agent-model")
+            .await
+            .unwrap();
+
+        assert!(capture(&ctx).select_prompts.borrow().is_empty());
+        assert!(capture(&ctx).warns.borrow().is_empty());
     }
 
     // -- setup ------------------------------------------------------------------
@@ -675,7 +781,7 @@ mod tests {
                 model_id: "granite-3.1-8b-instruct".to_string(),
                 model_type: "granite-3.1-8b-instruct".to_string(),
                 config: serde_json::json!({}),
-                provider_id: Some("ollama".to_string()),
+                provider_id: "ollama".to_string(),
                 variant: None,
             },
         );
@@ -711,33 +817,6 @@ mod tests {
     // a new instance" option would auto-select and recurse into a real,
     // live `ModelCommands::setup`/`ProviderCommands::setup` call against the
     // real registries -- unsafe/nondeterministic for a unit test.
-
-    #[test]
-    fn model_candidates_excludes_providerless_model() {
-        use crate::config::ModelConfig;
-        use crate::models::ModelFunction;
-
-        let mut ctx = test_ctx();
-        // Configured model with no provider_id -- Model::provider() errs, so
-        // it must not be offered as a usable candidate.
-        ctx.config.models.insert(
-            "granite-3.1-8b-instruct".to_string(),
-            ModelConfig {
-                model_id: "granite-3.1-8b-instruct".to_string(),
-                model_type: "granite-3.1-8b-instruct".to_string(),
-                config: serde_json::json!({}),
-                provider_id: None,
-                variant: None,
-            },
-        );
-
-        let requirement = ModelRequirement {
-            supported_functions: vec![ModelFunction::Chat],
-            ..Default::default()
-        };
-        let (usable, _) = CapabilityCommands::model_candidates(&ctx, &requirement);
-        assert!(!usable.contains(&"granite-3.1-8b-instruct".to_string()));
-    }
 
     #[test]
     fn model_candidates_offers_configurable_types_when_nothing_configured() {

@@ -546,7 +546,7 @@ async fn main() {
                 .map_err(|e| ctx.ui.error(&e.to_string()))
         }
         Some(Commands::Launch(wrapper)) => {
-            let ctx = construct_context(
+            let mut ctx = construct_context(
                 &wrapper.output,
                 &log_level,
                 &log_filters,
@@ -554,7 +554,7 @@ async fn main() {
                 log_thread_id,
             );
             run_launch(
-                &*ctx.ui,
+                &mut ctx,
                 &wrapper.launcher_id,
                 &wrapper.args,
                 wrapper.dry_run,
@@ -641,7 +641,7 @@ async fn run_model_command(ctx: &mut AppContext, subcmd: ModelSubcommands) -> an
             };
             ModelCommands::recommend(ctx, filter, &providers, wide)
         }
-        ModelSubcommands::Info { model_id } => ModelCommands::info(ctx, &model_id),
+        ModelSubcommands::Info { model_id } => ModelCommands::info(ctx, &model_id).await,
         ModelSubcommands::Setup {
             model_type,
             instance_id,
@@ -659,7 +659,7 @@ async fn run_capability_command(
         CapabilitySubcommands::Catalog => CapabilityCommands::catalog(ctx),
         CapabilitySubcommands::List => CapabilityCommands::list(ctx),
         CapabilitySubcommands::Info { capability_id } => {
-            CapabilityCommands::info(ctx, &capability_id)
+            CapabilityCommands::info(ctx, &capability_id).await
         }
         CapabilitySubcommands::Setup {
             capability_type,
@@ -707,7 +707,7 @@ async fn run_launcher_command(
 }
 
 async fn run_launch(
-    ui: &dyn Ui,
+    ctx: &mut AppContext,
     launcher_id: &str,
     args: &[String],
     dry_run: bool,
@@ -719,7 +719,13 @@ async fn run_launch(
     use crate::proxy::ProxyServer;
 
     // Load config fresh so we always pick up the latest saved state.
-    let mut config = crate::config::Config::new()?;
+    ctx.config = crate::config::Config::new()?;
+
+    // Configuration integrity first, before anything about the environment.
+    LauncherCommands::prelaunch(ctx, launcher_id).await?;
+
+    let ui: &dyn Ui = &*ctx.ui;
+    let mut config = ctx.config.clone();
 
     let lc = config
         .get_launcher(launcher_id)
