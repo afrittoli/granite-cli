@@ -72,6 +72,84 @@ impl LauncherCommands {
         Ok(())
     }
 
+    pub fn info(ctx: &crate::AppContext, id: &str) -> Result<()> {
+        let configured = ctx.config.get_launcher(id);
+
+        let metadata = configured
+            .and_then(|c| LAUNCHER_REGISTRY.get(&c.launcher_type))
+            .or_else(|| LAUNCHER_REGISTRY.get(id));
+
+        match metadata {
+            Some(md) => {
+                let mut type_fields: Vec<(&str, String)> = vec![
+                    ("Name", md.name.clone()),
+                    ("Description", md.description.clone()),
+                    ("Default Command", md.default_command.clone()),
+                ];
+
+                let mut caps: Vec<_> = md
+                    .supported_capabilities
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect();
+                if !caps.is_empty() {
+                    caps.sort();
+                    type_fields.push(("Supported Capabilities", caps.join(", ")));
+                }
+
+                if !md.tags.is_empty() {
+                    type_fields.push(("Tags", md.tags.join(", ")));
+                }
+
+                ctx.ui.detail("Type Metadata", &type_fields);
+
+                if let Some(cfg) = configured {
+                    let mut instance_fields: Vec<(&str, String)> = Vec::new();
+
+                    instance_fields.push(("Config: Type", cfg.launcher_type.clone()));
+
+                    if !cfg.enabled_capabilities.is_empty() {
+                        instance_fields
+                            .push(("Enabled Capabilities", cfg.enabled_capabilities.join(", ")));
+                    }
+
+                    if let Some(obj) = cfg.config.as_object() {
+                        for (k, v) in obj {
+                            instance_fields.push(("Config", format!("{k} = {v}")))
+                        }
+                    }
+
+                    ctx.ui.detail(id, &instance_fields);
+                }
+
+                Ok(())
+            }
+            None => {
+                if configured.is_some() {
+                    let fields: Vec<(&str, String)> = vec![(
+                        "Note",
+                        "Configured but its type is not found in the bundled registry".to_string(),
+                    )];
+                    ctx.ui.detail(id, &fields);
+                    Ok(())
+                } else {
+                    ctx.ui
+                        .info(&format!("Launcher '{id}' not found in registry."));
+
+                    let available: Vec<_> = crate::launchers::LAUNCHER_REGISTRY
+                        .entries()
+                        .keys()
+                        .map(|k| k.to_string())
+                        .collect();
+                    ctx.ui
+                        .info(&format!("Available launchers: {}", available.join(", ")));
+
+                    anyhow::bail!("Launcher not found");
+                }
+            }
+        }
+    }
+
     /// Interactive launcher setup wizard.
     ///
     /// `launcher_type` is the catalog/registry key (e.g. `claude`).
@@ -487,6 +565,16 @@ mod tests {
         };
     }
 
+    macro_rules! details {
+        ($ctx:expr) => {
+            (&*($ctx.ui) as &dyn std::any::Any)
+                .downcast_ref::<CaptureUi>()
+                .unwrap()
+                .details
+                .borrow()
+        };
+    }
+
     macro_rules! infos {
         ($ctx:expr) => {
             (&*($ctx.ui) as &dyn std::any::Any)
@@ -579,6 +667,101 @@ mod tests {
         assert_eq!(rows[0][1], "bob");
         assert_eq!(rows[1][0], "a-claude");
         assert_eq!(rows[2][0], "z-claude");
+    }
+
+    // -- info -----------------------------------------------------------------
+
+    #[test]
+    fn info_unknown_launcher_returns_err() {
+        let ctx = test_ctx();
+        let result = LauncherCommands::info(&ctx, "does-not-exist");
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Launcher not found")
+        );
+    }
+
+    #[test]
+    fn info_catalog_launcher_renders_detail() {
+        let ctx = test_ctx();
+        let result = LauncherCommands::info(&ctx, "claude");
+
+        assert!(result.is_ok());
+
+        let details = details!(ctx);
+        assert_eq!(details.len(), 1);
+
+        let (id, fields) = &details[0];
+        assert_eq!(id, "Type Metadata");
+        assert!(fields.iter().any(|(k, _)| *k == "Name"));
+        // Config fields should not be present for catalog-only lookups
+        assert!(!fields.iter().any(|(k, _)| k.starts_with("Config")));
+    }
+
+    #[test]
+    fn info_configured_launcher_renders_detail_with_config() {
+        let mut ctx = ctx_with_launcher("my-claude", "claude");
+
+        if let Some(cfg) = ctx.config.launchers.get_mut("my-claude") {
+            cfg.enabled_capabilities = vec!["chat".to_string(), "plan".to_string()];
+        }
+
+        let result = LauncherCommands::info(&ctx, "my-claude");
+
+        assert!(result.is_ok());
+
+        let details = details!(ctx);
+        assert_eq!(details.len(), 2);
+
+        let (id1, fields1) = &details[0];
+        assert_eq!(id1, "Type Metadata");
+        assert!(fields1.iter().any(|(k, _)| *k == "Name"));
+
+        let (id2, fields2) = &details[1];
+        assert_eq!(id2, "my-claude");
+
+        assert!(
+            fields2
+                .iter()
+                .any(|(k, v)| *k == "Config: Type" && v == "claude")
+        );
+        assert!(
+            fields2
+                .iter()
+                .any(|(k, v)| *k == "Enabled Capabilities" && v == "chat, plan")
+        );
+    }
+
+    #[test]
+    fn info_configured_unknown_type_renders_note() {
+        let mut ctx = test_ctx();
+        ctx.config.launchers.insert(
+            "custom-launcher".to_string(),
+            LauncherConfig {
+                launcher_id: "custom-launcher".to_string(),
+                launcher_type: "not-a-real-type".to_string(),
+                ..LauncherConfig::default()
+            },
+        );
+
+        let result = LauncherCommands::info(&ctx, "custom-launcher");
+
+        assert!(result.is_ok());
+
+        let details = details!(ctx);
+        assert_eq!(details.len(), 1);
+
+        let (id, fields) = &details[0];
+        assert_eq!(id, "custom-launcher");
+        assert!(
+            fields
+                .iter()
+                .any(|(k, v)| *k == "Note" && v.contains("not found in the bundled registry"))
+        );
     }
 
     // -- setup (type-aware clash detection) ------------------------------------
