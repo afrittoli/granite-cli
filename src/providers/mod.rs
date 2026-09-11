@@ -32,30 +32,28 @@ pub struct ProviderSource {
     /// `HashMap<String, ProviderConfig>` once `construct` stops taking the
     /// whole configuration.
     config: crate::config::Config,
-    /// When a session proxy is running, every provider handed out points at
-    /// it instead of the real upstream. Read from the configuration for now;
-    /// Sub-Task 5 has the launch pass it in directly.
+    /// When a launch passes a session proxy, every provider handed out
+    /// points at it instead of the real upstream.
     model_proxy: Option<crate::proxy::ProxyHandle>,
     cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Provider>>>,
 }
 
 impl ProviderSource {
+    /// Providers carrying their real connection details. This is what the
+    /// launch path reads to register a route's upstream target, which has to
+    /// happen before the proxy swap rather than from behind it.
     pub fn from_config(config: &crate::config::Config) -> Self {
-        Self {
-            config: config.clone(),
-            model_proxy: config.model_proxy.clone(),
-            cache: std::sync::Mutex::new(HashMap::new()),
-        }
+        Self::with_proxy(config, None)
     }
 
-    /// A source whose providers carry their real connection details even
-    /// when a session proxy is running. The launch path needs these to
-    /// register a route's upstream target, which has to be read before the
-    /// proxy swap rather than from behind it.
-    pub fn unproxied_from_config(config: &crate::config::Config) -> Self {
+    /// Providers pointed at `model_proxy` when a launch started one.
+    pub fn with_proxy(
+        config: &crate::config::Config,
+        model_proxy: Option<crate::proxy::ProxyHandle>,
+    ) -> Self {
         Self {
             config: config.clone(),
-            model_proxy: None,
+            model_proxy,
             cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -78,7 +76,6 @@ impl ProviderSource {
                 &provider_config.provider_type,
                 &provider_config.provider_id,
                 &provider_config.config,
-                &self.config,
             )
             .map_err(|e| anyhow::anyhow!("could not construct provider '{provider_id}': {e}"))?;
         let built: std::sync::Arc<dyn Provider> = std::sync::Arc::from(built);

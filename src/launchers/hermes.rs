@@ -54,11 +54,7 @@ pub struct HermesLauncher {
 impl ConfigConstructable for HermesLauncher {
     type Config = HermesLauncherConfig;
 
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: HermesLauncherConfig = serde_json::from_value(cfg.clone()).unwrap_or_default();
         Self {
             instance_id: instance_id.to_string(),
@@ -465,7 +461,7 @@ mod tests {
     use crate::utils::ui::base::tests::CaptureUi;
 
     fn launcher(cfg: serde_json::Value) -> HermesLauncher {
-        HermesLauncher::new("hermes", &cfg, &crate::config::Config::default())
+        HermesLauncher::new("hermes", &cfg)
     }
 
     fn binding() -> AgentModelBinding {
@@ -494,6 +490,7 @@ mod tests {
             working_dir: PathBuf::from("/tmp"),
             base_env: std::collections::HashMap::new(),
             dry_run,
+            model_proxy: None,
         }
     }
 
@@ -538,11 +535,7 @@ mod tests {
 
     #[test]
     fn instance_id_round_trips_from_construction() {
-        let l = HermesLauncher::new(
-            "hermes-local",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let l = HermesLauncher::new("hermes-local", &serde_json::json!({}));
         assert_eq!(l.instance_id(), "hermes-local");
     }
 

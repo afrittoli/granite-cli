@@ -10,11 +10,7 @@ pub struct MarkdownOutput;
 impl ConfigConstructable for MarkdownOutput {
     type Config = NoConfig;
 
-    fn new(
-        _instance_id: &str,
-        _cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
         Self
     }
 }
@@ -136,19 +132,11 @@ mod tests {
     use super::*;
     use crate::utils::ui::base::tests::CaptureUi;
 
-    crate::output_contract_tests!(MarkdownOutput::new(
-        "markdown",
-        &serde_json::json!({}),
-        &crate::config::Config::default()
-    ));
+    crate::output_contract_tests!(MarkdownOutput::new("markdown", &serde_json::json!({}),));
 
     #[test]
     fn markdown_output_is_not_interactive() {
-        let out = MarkdownOutput::new(
-            "markdown",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let out = MarkdownOutput::new("markdown", &serde_json::json!({}));
         assert!(!out.is_interactive());
     }
 
@@ -168,11 +156,7 @@ mod tests {
     #[test]
     fn markdown_table_has_header_separator() {
         // Invoke the real MarkdownOutput (print-only) — just verifies no panic
-        let md = MarkdownOutput::new(
-            "markdown",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let md = MarkdownOutput::new("markdown", &serde_json::json!({}));
         md.table(
             "T",
             &["ID", "NAME"],
@@ -182,21 +166,13 @@ mod tests {
 
     #[test]
     fn markdown_detail_is_two_column_table() {
-        let md = MarkdownOutput::new(
-            "markdown",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let md = MarkdownOutput::new("markdown", &serde_json::json!({}));
         md.detail("My Item", &[("Family", "Granite 3.1".to_string())]);
     }
 
     #[test]
     fn markdown_status_ok_contains_checkmark() {
-        let md = MarkdownOutput::new(
-            "markdown",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let md = MarkdownOutput::new("markdown", &serde_json::json!({}));
         md.status("my-service", true, "");
         md.status("my-service", false, "timeout");
     }

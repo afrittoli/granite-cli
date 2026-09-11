@@ -129,12 +129,7 @@ impl Discover {
             let default_config = PROVIDER_REGISTRY
                 .default_config(provider_type)
                 .unwrap_or_default();
-            let result = PROVIDER_REGISTRY.construct(
-                provider_type,
-                provider_type,
-                &default_config,
-                &ctx.config,
-            );
+            let result = PROVIDER_REGISTRY.construct(provider_type, provider_type, &default_config);
 
             match result {
                 Ok(provider) => match Self::run_health_check(&*provider).await {
@@ -313,7 +308,7 @@ impl Discover {
             .filter_map(|pid| ctx.config.get_provider(pid))
             .filter_map(|pc| {
                 PROVIDER_REGISTRY
-                    .construct(&pc.provider_type, &pc.provider_id, &pc.config, &ctx.config)
+                    .construct(&pc.provider_type, &pc.provider_id, &pc.config)
                     .ok()
                     .filter(|p| p.can_run_model(&variant.format, &variant.precision))
             })
@@ -339,12 +334,7 @@ impl Discover {
             let default_config = LAUNCHER_REGISTRY
                 .default_config(launcher_type)
                 .unwrap_or_default();
-            match LAUNCHER_REGISTRY.construct(
-                launcher_type,
-                launcher_type,
-                &default_config,
-                &ctx.config,
-            ) {
+            match LAUNCHER_REGISTRY.construct(launcher_type, launcher_type, &default_config) {
                 Ok(launcher) => match launcher.validate_command() {
                     Ok(path) => recommendations.push(Recommendation::Launcher {
                         launcher_type: launcher_type.to_string(),
@@ -1079,7 +1069,7 @@ impl SetupCommands {
                 continue;
             };
 
-            let candidates = Self::candidate_variants(&md, selected_providers, ctx);
+            let candidates = Self::candidate_variants(&md, selected_providers);
             if candidates.is_empty() {
                 ctx.ui.warn(&format!(
                     "No selected provider can run any variant of '{model_id}'; leaving its variant unset."
@@ -1140,15 +1130,12 @@ impl SetupCommands {
     fn candidate_variants(
         md: &ModelMetadata,
         selected_providers: &HashSet<String>,
-        ctx: &crate::AppContext,
     ) -> Vec<(ModelVariant, f64)> {
         let providers: Vec<Box<dyn Provider>> = selected_providers
             .iter()
             .filter_map(|pid| {
                 let default_config = PROVIDER_REGISTRY.default_config(pid).unwrap_or_default();
-                PROVIDER_REGISTRY
-                    .construct(pid, pid, &default_config, &ctx.config)
-                    .ok()
+                PROVIDER_REGISTRY.construct(pid, pid, &default_config).ok()
             })
             .collect();
 
@@ -1525,7 +1512,7 @@ impl SetupCommands {
                     .get_provider(pid)
                     .and_then(|pc| {
                         PROVIDER_REGISTRY
-                            .construct(&pc.provider_type, &pc.provider_id, &pc.config, &ctx.config)
+                            .construct(&pc.provider_type, &pc.provider_id, &pc.config)
                             .ok()
                     })
                     .is_some_and(|p| p.can_run_model(&variant.format, &variant.precision))
@@ -2280,13 +2267,13 @@ mod tests {
 
     #[test]
     fn candidate_variants_excludes_formats_no_selected_provider_supports() {
-        let ctx = test_ctx();
+        let _ctx = test_ctx();
         let md = MODEL_REGISTRY
             .get("granite-vision-4.1-4b")
             .expect("fixture model should exist in the catalog");
         let selected: HashSet<String> = ["lm-studio".to_string()].into_iter().collect();
 
-        let candidates = SetupCommands::candidate_variants(&md, &selected, &ctx);
+        let candidates = SetupCommands::candidate_variants(&md, &selected);
 
         assert!(
             !candidates.is_empty(),

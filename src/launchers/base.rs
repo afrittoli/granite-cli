@@ -274,6 +274,10 @@ pub struct LaunchContext {
     pub base_env: HashMap<String, String>,
     /// If true, only display what would be launched without executing.
     pub dry_run: bool,
+    /// The session proxy for this launch, when one was started. Carried here
+    /// rather than read from configuration at construction, so a launcher is
+    /// built from its own settings alone.
+    pub model_proxy: Option<crate::proxy::ProxyHandle>,
 }
 
 /// A single environment variable binding contributed to the subprocess overlay.
@@ -311,11 +315,7 @@ pub(crate) mod tests {
     impl ConfigConstructable for FakeLauncher {
         type Config = crate::registry::NoConfig;
 
-        fn new(
-            instance_id: &str,
-            cfg: &serde_json::Value,
-            _global_config: &crate::config::Config,
-        ) -> Self {
+        fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
             let command_name = cfg
                 .get("command_name")
                 .and_then(|v| v.as_str())
@@ -380,7 +380,6 @@ pub(crate) mod tests {
             &serde_json::json!({
                 "command_name": "this-binary-absolutely-does-not-exist-9x7z"
             }),
-            &crate::config::Config::default(),
         );
         assert!(launcher.validate_command().is_err());
     }
@@ -393,7 +392,6 @@ pub(crate) mod tests {
                 "command_name": "fake",
                 "command_path": "/this/path/does/not/exist/fake"
             }),
-            &crate::config::Config::default(),
         );
         assert!(launcher.validate_command().is_err());
     }
@@ -405,23 +403,19 @@ pub(crate) mod tests {
             &serde_json::json!({
                 "command_path": "ls"
             }),
-            &crate::config::Config::default(),
         );
         assert!(launcher.validate_command().is_ok());
     }
 
     #[tokio::test]
     async fn env_overlay_default_is_empty() {
-        let launcher = FakeLauncher::new(
-            "my-fake",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let launcher = FakeLauncher::new("my-fake", &serde_json::json!({}));
         let ctx = LaunchContext {
             launcher_id: "test".to_string(),
             working_dir: PathBuf::from("/tmp"),
             base_env: HashMap::new(),
             dry_run: false,
+            model_proxy: None,
         };
         let overlay = launcher.env_overlay(&ctx).await.unwrap();
         assert!(overlay.is_empty());
@@ -429,11 +423,7 @@ pub(crate) mod tests {
 
     #[test]
     fn map_tool_name_default_passes_through_other_and_returns_none_for_everything_else() {
-        let launcher = FakeLauncher::new(
-            "my-fake",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let launcher = FakeLauncher::new("my-fake", &serde_json::json!({}));
         assert_eq!(
             launcher.map_tool_name(&ToolName::Other("SomeRawTool".to_string())),
             Some("SomeRawTool".to_string())
@@ -460,12 +450,7 @@ pub(crate) mod tests {
     fn launcher_factory_construct() {
         let mut factory = LauncherFactory::new();
         factory.register::<FakeLauncher>("fake");
-        let result = factory.construct(
-            "fake",
-            "my-fake",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let result = factory.construct("fake", "my-fake", &serde_json::json!({}));
         assert!(result.is_ok());
     }
 
@@ -490,6 +475,7 @@ pub(crate) mod tests {
             working_dir: PathBuf::from("/tmp"),
             base_env: HashMap::new(),
             dry_run: true,
+            model_proxy: None,
         };
         let status = run_command(
             PathBuf::from("/usr/bin/echo"),
@@ -512,6 +498,7 @@ pub(crate) mod tests {
             working_dir: PathBuf::from("/tmp"),
             base_env: HashMap::new(),
             dry_run: false,
+            model_proxy: None,
         };
         let status = run_command(
             PathBuf::from("/bin/echo"),

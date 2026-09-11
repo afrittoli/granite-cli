@@ -643,7 +643,7 @@ mod configured_model_tests {
 
     impl ConfigConstructable for FakeProvider {
         type Config = crate::registry::NoConfig;
-        fn new(_: &str, _: &serde_json::Value, _: &crate::config::Config) -> Self {
+        fn new(_: &str, _: &serde_json::Value) -> Self {
             unimplemented!("not used in tests")
         }
     }

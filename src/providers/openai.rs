@@ -107,11 +107,7 @@ impl OpenAIProvider {
 impl ConfigConstructable for OpenAIProvider {
     type Config = OpenAIProviderConfig;
 
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: OpenAIProviderConfig = serde_json::from_value(cfg.clone()).unwrap_or_default();
 
         let client = reqwest::Client::builder()
@@ -373,7 +369,7 @@ mod tests {
             "api_key": "test-key",
             "timeout_secs": 30
         });
-        let provider = OpenAIProvider::new("my-openai", &cfg, &crate::config::Config::default());
+        let provider = OpenAIProvider::new("my-openai", &cfg);
         assert_eq!(provider.config.base_url, "http://example.com:8080");
         assert_eq!(
             provider.config.api_key,
@@ -402,7 +398,7 @@ mod tests {
             }
         });
 
-        let provider = OpenAIProvider::new("my-openai", &cfg, &crate::config::Config::default());
+        let provider = OpenAIProvider::new("my-openai", &cfg);
         assert!(provider.config.custom_headers.is_some());
         let headers = provider.config.custom_headers.as_ref().unwrap();
         assert_eq!(headers.len(), 2);
@@ -419,7 +415,7 @@ mod tests {
     #[test]
     fn test_provider_function_endpoints() {
         let cfg = serde_json::json!({});
-        let provider = OpenAIProvider::new("my-openai", &cfg, &crate::config::Config::default());
+        let provider = OpenAIProvider::new("my-openai", &cfg);
         let endpoints = provider.function_endpoints();
         assert!(endpoints.contains_key(&ModelFunction::Chat));
         assert!(endpoints.contains_key(&ModelFunction::Embeddings));
@@ -432,7 +428,7 @@ mod tests {
         let cfg = serde_json::json!({
             "base_url": "http://example.com:8080"
         });
-        let provider = OpenAIProvider::new("my-openai", &cfg, &crate::config::Config::default());
+        let provider = OpenAIProvider::new("my-openai", &cfg);
         let endpoints = provider.function_endpoints();
         // Default config has all three functions
         assert!(endpoints.contains_key(&ModelFunction::Chat));

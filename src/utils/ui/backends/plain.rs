@@ -10,11 +10,7 @@ pub struct PlainOutput;
 impl ConfigConstructable for PlainOutput {
     type Config = NoConfig;
 
-    fn new(
-        _instance_id: &str,
-        _cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
         Self
     }
 }
@@ -138,9 +134,5 @@ impl HasUiMetadata for PlainOutput {
 mod tests {
     use super::*;
 
-    crate::output_contract_tests!(PlainOutput::new(
-        "plain",
-        &serde_json::json!({}),
-        &crate::config::Config::default()
-    ));
+    crate::output_contract_tests!(PlainOutput::new("plain", &serde_json::json!({}),));
 }

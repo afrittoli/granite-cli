@@ -94,11 +94,7 @@ impl ConfigConstructable for VisionMCPCapability {
     /// `ConfiguredModel`, exactly like `AgentModelCapability::new` -- so
     /// `model.provider()` works at bind time and, when a usage-tracking
     /// session is active, the model is transparently tracked.
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: VisionMCPCapabilityConfig =
             serde_json::from_value(cfg.clone()).unwrap_or_default();
         Self {
@@ -261,7 +257,7 @@ mod tests {
 
     impl ConfigConstructable for FakeProvider {
         type Config = crate::registry::NoConfig;
-        fn new(_: &str, _: &serde_json::Value, _: &crate::config::Config) -> Self {
+        fn new(_: &str, _: &serde_json::Value) -> Self {
             unimplemented!("not used in tests")
         }
     }
@@ -330,7 +326,7 @@ mod tests {
 
     impl ConfigConstructable for TestVisionModel {
         type Config = crate::registry::NoConfig;
-        fn new(_: &str, _: &serde_json::Value, _: &crate::config::Config) -> Self {
+        fn new(_: &str, _: &serde_json::Value) -> Self {
             unimplemented!("not used in tests")
         }
     }
@@ -409,7 +405,6 @@ mod tests {
         let cap = VisionMCPCapability::new(
             "vision",
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-            &config,
         );
         VisionMCPCapability {
             instance_id: cap.instance_id,
@@ -437,6 +432,7 @@ mod tests {
             working_dir: std::env::temp_dir(),
             base_env: HashMap::new(),
             dry_run: false,
+            model_proxy: None,
         }
     }
 

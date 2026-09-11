@@ -62,7 +62,6 @@ impl CapabilitySource {
                 &capability_config.capability_type,
                 &capability_config.capability_id,
                 &capability_config.config,
-                &self.config,
             )
             .map_err(|e| {
                 anyhow::anyhow!("could not construct capability '{capability_id}': {e}")
@@ -231,7 +230,7 @@ mod tests {
                 "prompt": "a probe",
             });
             let mut capability = CAPABILITY_REGISTRY
-                .construct(type_name, "an-instance", &cfg, &Config::default())
+                .construct(type_name, "an-instance", &cfg)
                 .unwrap_or_else(|e| panic!("{type_name} must construct from its own config: {e}"));
 
             let lookup = RecordingLookup {

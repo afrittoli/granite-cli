@@ -81,7 +81,7 @@ mod tests {
 
     impl ConfigConstructable for FakeProvider {
         type Config = crate::registry::NoConfig;
-        fn new(_: &str, _: &serde_json::Value, _: &crate::config::Config) -> Self {
+        fn new(_: &str, _: &serde_json::Value) -> Self {
             unimplemented!("not used in tests")
         }
     }
@@ -153,7 +153,7 @@ mod tests {
 
     impl ConfigConstructable for TestModel {
         type Config = crate::registry::NoConfig;
-        fn new(_: &str, _: &serde_json::Value, _: &crate::config::Config) -> Self {
+        fn new(_: &str, _: &serde_json::Value) -> Self {
             unimplemented!("not used in tests")
         }
     }
@@ -231,7 +231,6 @@ mod tests {
             &serde_json::json!({
                 "model_id": "granite-3.1-8b-instruct",
             }),
-            &config,
         );
         CodeSubAgentCapability {
             instance_id: cap.instance_id,
@@ -279,7 +278,6 @@ mod tests {
             &serde_json::json!({
                 "model_id": "granite-3.1-8b-instruct",
             }),
-            &config,
         );
         let cap = CodeSubAgentCapability {
             instance_id: cap.instance_id,

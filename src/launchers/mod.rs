@@ -59,7 +59,7 @@ impl LauncherSource {
             .get(launcher_id)
             .ok_or_else(|| anyhow::anyhow!("launcher '{launcher_id}' is not configured"))?;
         let built = LAUNCHER_REGISTRY
-            .construct(&lc.launcher_type, &lc.launcher_id, &lc.config, &self.config)
+            .construct(&lc.launcher_type, &lc.launcher_id, &lc.config)
             .map_err(|e| anyhow::anyhow!("could not construct launcher '{launcher_id}': {e}"))?;
         let built: std::sync::Arc<dyn Launcher> = std::sync::Arc::from(built);
         self.cache

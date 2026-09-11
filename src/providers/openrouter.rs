@@ -82,11 +82,7 @@ impl OpenRouterProvider {
 impl ConfigConstructable for OpenRouterProvider {
     type Config = OpenRouterProviderConfig;
 
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: OpenRouterProviderConfig =
             serde_json::from_value(cfg.clone()).unwrap_or_default();
 
@@ -213,8 +209,7 @@ mod tests {
             "api_key": "test-key",
             "timeout_secs": 30
         });
-        let provider =
-            OpenRouterProvider::new("my-openrouter", &cfg, &crate::config::Config::default());
+        let provider = OpenRouterProvider::new("my-openrouter", &cfg);
         assert_eq!(provider.config.base_url, "https://api.openrouter.ai/v1");
         assert_eq!(
             provider.config.api_key,
@@ -226,8 +221,7 @@ mod tests {
     #[test]
     fn test_provider_function_endpoints() {
         let cfg = serde_json::json!({});
-        let provider =
-            OpenRouterProvider::new("my-openrouter", &cfg, &crate::config::Config::default());
+        let provider = OpenRouterProvider::new("my-openrouter", &cfg);
         let endpoints = provider.function_endpoints();
         assert!(endpoints.contains_key(&ModelFunction::Chat));
         assert!(endpoints.contains_key(&ModelFunction::Embeddings));

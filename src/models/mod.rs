@@ -37,22 +37,22 @@ pub struct ModelSource {
 }
 
 impl ModelSource {
+    /// Models whose providers carry their real connection details.
     pub fn from_config(config: &crate::config::Config) -> Self {
-        Self {
-            config: config.clone(),
-            providers: Arc::new(crate::providers::ProviderSource::from_config(config)),
-            cache: std::sync::Mutex::new(HashMap::new()),
-        }
+        Self::with_proxy(config, None)
     }
 
-    /// A source whose models resolve to providers carrying their real
-    /// connection details, even when a session proxy is running. The launch
-    /// path needs these to register route targets.
-    pub fn unproxied_from_config(config: &crate::config::Config) -> Self {
+    /// Models whose providers point at `model_proxy` when a launch started
+    /// one, so a capability resolved against this source binds to the proxy.
+    pub fn with_proxy(
+        config: &crate::config::Config,
+        model_proxy: Option<crate::proxy::ProxyHandle>,
+    ) -> Self {
         Self {
             config: config.clone(),
-            providers: Arc::new(crate::providers::ProviderSource::unproxied_from_config(
+            providers: Arc::new(crate::providers::ProviderSource::with_proxy(
                 config,
+                model_proxy,
             )),
             cache: std::sync::Mutex::new(HashMap::new()),
         }
@@ -109,7 +109,6 @@ impl ModelSource {
                 &model_config.model_type,
                 &model_config.model_id,
                 &model_config.config,
-                &self.config,
             )
             .map_err(|e| anyhow::anyhow!("could not construct model '{model_id}': {e}"))?;
 
@@ -552,12 +551,11 @@ mod tests {
             },
         );
         let server = ProxyServer::start().unwrap();
-        config.model_proxy = Some(server.handle.clone());
 
         // Registering the route is the launch path's job, so do here what
         // `register_proxy_routes` does there: read the real upstream details
         // from an unproxied source, before any proxy swap hides them.
-        let real = ModelSource::unproxied_from_config(&config);
+        let real = ModelSource::from_config(&config);
         let upstream = real.provider_for("granite-3.1-8b-instruct").unwrap();
         assert_eq!(upstream.base_url(), format!("http://{addr}"));
         server
@@ -573,7 +571,7 @@ mod tests {
             )
             .unwrap();
 
-        let source = ModelSource::from_config(&config);
+        let source = ModelSource::with_proxy(&config, Some(server.handle.clone()));
         let provider = source.provider_for("granite-3.1-8b-instruct").unwrap();
         assert_eq!(provider.base_url(), server.handle.local_base_url);
         assert!(provider.api_key().is_none());

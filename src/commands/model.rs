@@ -669,7 +669,7 @@ impl ModelCommands {
         // placeholder as the source of truth for variants/description from
         // here on (real for catalog models, user-entered for custom).
         let live = MODEL_REGISTRY
-            .construct(model_type, &instance_id, &model_specific_cfg, &ctx.config)
+            .construct(model_type, &instance_id, &model_specific_cfg)
             .map_err(|e| anyhow::anyhow!("Failed to construct model '{model_type}': {e}"))?;
 
         let selected_variant: Option<ModelVariant> = if live.variants().is_empty() {
@@ -1319,7 +1319,6 @@ mod tests {
         let provider = crate::providers::OpenAIProvider::new(
             "my-openai",
             &serde_json::json!({ "base_url": "http://localhost:8080" }),
-            &crate::config::Config::default(),
         );
         assert!(requirement.admits_instance(&provider));
     }
