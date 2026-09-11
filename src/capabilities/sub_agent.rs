@@ -71,11 +71,7 @@ macro_rules! declare_sub_agent_basic {
         impl $crate::registry::ConfigConstructable for $name_struct {
             type Config = $config_struct;
 
-            fn new(
-                instance_id: &str,
-                cfg: &serde_json::Value,
-                _global_config: &$crate::config::Config,
-            ) -> Self {
+            fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
                 let config: $config_struct =
                     serde_json::from_value(cfg.clone()).unwrap_or_default();
                 let description = $description_expr;
@@ -260,11 +256,7 @@ macro_rules! declare_sub_agent_full {
         impl $crate::registry::ConfigConstructable for $name_struct {
             type Config = $config_struct;
 
-            fn new(
-                instance_id: &str,
-                cfg: &serde_json::Value,
-                _global_config: &$crate::config::Config,
-            ) -> Self {
+            fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
                 let config: $config_struct =
                     serde_json::from_value(cfg.clone()).unwrap_or_default();
                 let description = config.description.clone();
@@ -469,7 +461,6 @@ mod tests {
                 "prompt": "You are a meticulous code reviewer.",
                 "model_id": "granite-3.1-8b-instruct",
             }),
-            &config,
         );
         ResolvedSubAgentCapability {
             inner: cap,
@@ -514,7 +505,6 @@ mod tests {
                 "tools": ["FileRead", "Search", {"Other": "SomeRawClaudeTool"}],
                 "model_id": "granite-3.1-8b-instruct",
             }),
-            &config,
         );
         let cap = ResolvedSubAgentCapability {
             inner: cap,

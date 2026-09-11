@@ -50,11 +50,7 @@ pub struct GooseLauncher {
 impl ConfigConstructable for GooseLauncher {
     type Config = GooseLauncherConfig;
 
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: GooseLauncherConfig = serde_json::from_value(cfg.clone()).unwrap_or_default();
         Self {
             instance_id: instance_id.to_string(),
@@ -380,7 +376,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn launcher(cfg: serde_json::Value) -> GooseLauncher {
-        GooseLauncher::new("goose", &cfg, &crate::config::Config::default())
+        GooseLauncher::new("goose", &cfg)
     }
 
     fn binding() -> AgentModelBinding {
@@ -416,6 +412,7 @@ mod tests {
             base_env: std::collections::HashMap::new(),
             dry_run,
             usage_tracker: None,
+            model_proxy: None,
         }
     }
 
@@ -454,11 +451,7 @@ mod tests {
 
     #[test]
     fn instance_id_round_trips_from_construction() {
-        let l = GooseLauncher::new(
-            "goose-local",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let l = GooseLauncher::new("goose-local", &serde_json::json!({}));
         assert_eq!(l.instance_id(), "goose-local");
     }
 

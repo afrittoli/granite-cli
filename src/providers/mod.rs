@@ -31,9 +31,8 @@ pub struct ProviderSource {
     /// The configuration this source was built from. Only
     /// `config.providers` is read; `construct` takes the whole thing.
     config: crate::config::Config,
-    /// When a session proxy is running, every provider handed out by `get`
-    /// points at it instead of the real upstream. Read from
-    /// `Config.model_proxy`, which a launch sets when it starts one.
+    /// When a launch passes a session proxy, every provider handed out by
+    /// `get` points at it instead of the real upstream.
     model_proxy: Option<crate::proxy::ProxyHandle>,
     /// Providers as configured, carrying their real connection details.
     upstream: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Provider>>>,
@@ -45,10 +44,21 @@ pub struct ProviderSource {
 }
 
 impl ProviderSource {
+    /// Providers carrying their real connection details. This is what the
+    /// launch path reads to register a route's upstream target, which has to
+    /// happen before the proxy swap rather than from behind it.
     pub fn from_config(config: &crate::config::Config) -> Self {
+        Self::with_proxy(config, None)
+    }
+
+    /// Providers pointed at `model_proxy` when a launch started one.
+    pub fn with_proxy(
+        config: &crate::config::Config,
+        model_proxy: Option<crate::proxy::ProxyHandle>,
+    ) -> Self {
         Self {
             config: config.clone(),
-            model_proxy: config.model_proxy.clone(),
+            model_proxy,
             upstream: std::sync::Mutex::new(HashMap::new()),
             proxied: std::sync::Mutex::new(HashMap::new()),
         }
@@ -96,7 +106,6 @@ impl ProviderSource {
                 &provider_config.provider_type,
                 &provider_config.provider_id,
                 &provider_config.config,
-                &self.config,
             )
             .map_err(|e| anyhow::anyhow!("could not construct provider '{provider_id}': {e}"))?;
         let built: std::sync::Arc<dyn Provider> = std::sync::Arc::from(built);
