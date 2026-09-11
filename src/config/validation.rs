@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 
+// TODO: This is a circular dependency that needs to be untangled
 use crate::capabilities::Dependency;
 use crate::config::{
     CapabilityConfig, Config, ConfigId, LauncherConfig, ModelConfig, ProviderConfig,
