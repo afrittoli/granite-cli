@@ -751,26 +751,24 @@ fn register_proxy_routes(
     }
 }
 
-/// The model ids the given capabilities name, read from each capability
-/// type's declared model dependency rather than from a hard-coded key.
+/// The model ids the given capabilities name, read through `Validatable::refs`,
+/// the one declaration of an instance's outbound names that the validator's
+/// walk and the remove-time scan also read. A capability whose type is
+/// unknown, or whose required dependency holds no id, names nothing here and
+/// is reported by the check that runs before a launch reaches this.
 fn model_ids_named_by(config: &crate::config::Config, capability_ids: &[String]) -> Vec<String> {
+    use crate::config::validation::{RefKind, Validatable};
+
     let mut ids: Vec<String> = Vec::new();
     for capability_id in capability_ids {
         let Some(cc) = config.get_capability(capability_id) else {
             continue;
         };
-        let Some(metadata) = crate::capabilities::CAPABILITY_REGISTRY.get(&cc.capability_type)
-        else {
+        let Ok(refs) = cc.refs() else {
             continue;
         };
-        for dependency in &metadata.dependencies {
-            let crate::capabilities::Dependency::Model { config_key, .. } = dependency else {
-                continue;
-            };
-            if let Some(id) = cc.config.get(config_key).and_then(|v| v.as_str())
-                && !id.is_empty()
-                && !ids.iter().any(|seen| seen == id)
-            {
+        for (kind, id) in refs {
+            if kind == RefKind::Model && !ids.iter().any(|seen| seen == id) {
                 ids.push(id.to_string());
             }
         }
@@ -872,7 +870,7 @@ async fn run_launch(
                  which is not configured. Run `granite-cli capability setup` first."
             )
         })?;
-        let capability = CAPABILITY_REGISTRY
+        let mut capability = CAPABILITY_REGISTRY
             .construct(
                 &cap_cfg.capability_type,
                 &cap_cfg.capability_id,
@@ -880,6 +878,13 @@ async fn run_launch(
                 &config,
             )
             .map_err(|e| anyhow::anyhow!("Failed to construct capability '{cap_id}': {e}"))?;
+        // This path builds through the registry rather than through
+        // `CapabilitySource`, so it wires the capability to what it names
+        // itself. `models` is built from the launch's own configuration, so a
+        // proxied launch resolves proxied providers.
+        capability
+            .resolve_refs(&crate::models::ModelSource::from_config(&config))
+            .map_err(|e| anyhow::anyhow!("Capability '{cap_id}': {e}"))?;
         capability.on_setup().await?;
         launcher.bind_capability(capability.as_ref()).await?;
         bound_capabilities.push(capability);
