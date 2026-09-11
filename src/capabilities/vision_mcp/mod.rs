@@ -80,7 +80,8 @@ impl Default for VisionMCPCapabilityConfig {
 pub struct VisionMCPCapability {
     instance_id: String,
     config: VisionMCPCapabilityConfig,
-    configured_model: ConfiguredModel,
+    /// Set by `resolve_refs`, read by `bind`.
+    configured_model: Option<ConfiguredModel>,
     /// The in-process Streamable HTTP server started by `bind()`. `None`
     /// before `bind()` runs.
     http_server: Mutex<Option<SubServer>>,
@@ -96,15 +97,14 @@ impl ConfigConstructable for VisionMCPCapability {
     fn new(
         instance_id: &str,
         cfg: &serde_json::Value,
-        global_config: &crate::config::Config,
+        _global_config: &crate::config::Config,
     ) -> Self {
         let config: VisionMCPCapabilityConfig =
             serde_json::from_value(cfg.clone()).unwrap_or_default();
-        let configured_model = ConfiguredModel::resolve(&config.model_id, global_config);
         Self {
             instance_id: instance_id.to_string(),
             config,
-            configured_model,
+            configured_model: None,
             http_server: Mutex::new(None),
         }
     }
@@ -130,6 +130,15 @@ impl Capability for VisionMCPCapability {
         HashSet::from([BindingType::Mcp])
     }
 
+    fn resolve_refs(&mut self, models: &dyn crate::models::ModelLookup) -> anyhow::Result<()> {
+        self.configured_model = Some(crate::capabilities::base::resolve_declared_model(
+            models,
+            &Self::metadata(),
+            &self.config.model_id,
+        )?);
+        Ok(())
+    }
+
     async fn bind(&self, request: BindingRequest) -> anyhow::Result<Binding> {
         let McpBindingRequest {
             supported_transports,
@@ -153,10 +162,11 @@ impl Capability for VisionMCPCapability {
         // support ImageUnderstanding, but the endpoint is looked up via
         // Chat, since that's the endpoint that actually serves vision
         // requests.
-        let (provider, endpoint, model_name) = self.configured_model.resolve_provider_endpoint(
+        let configured_model =
+            crate::capabilities::base::resolved_model(&self.configured_model, &self.instance_id)?;
+        let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
             model_id,
             ApiType::OpenAI,
-            ModelFunction::ImageUnderstanding,
             ModelFunction::Chat,
         )?;
 
@@ -404,13 +414,13 @@ mod tests {
         VisionMCPCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: ConfiguredModel::for_test(
+            configured_model: Some(ConfiguredModel::for_test(
                 Arc::new(TestVisionModel {
                     supported_functions: functions,
                 }),
                 Arc::new(provider),
                 None,
-            ),
+            )),
             http_server: Mutex::new(None),
         }
     }
@@ -493,19 +503,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no MCP transport in common"));
-    }
-
-    #[tokio::test]
-    async fn bind_fails_when_model_lacks_image_understanding() {
-        let cap = capability_with_test_model(vec![ModelFunction::Chat], ok_provider());
-        let err = cap
-            .bind(request([McpTransportKind::Http]))
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("does not support Image Understanding")
-        );
     }
 
     #[tokio::test]

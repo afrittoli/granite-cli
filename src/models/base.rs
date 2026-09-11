@@ -181,6 +181,25 @@ pub trait Model: crate::registry::Named + Send + Sync {
     }
 }
 
+/*-- ModelLookup ---------------------------------------------------------------*/
+
+/// The narrow view of the model collection a dependent needs: turn a name into
+/// the model it refers to, together with the provider and variant that go with
+/// it. `ModelSource` is the production implementation; a capability sees only
+/// this, so it can be resolved against a collection built for one launch
+/// without knowing how that collection was built.
+pub trait ModelLookup: Sync {
+    /// The model configured under `model_id`, or an error naming what did not
+    /// resolve. `requirement`, when given, is what the caller declared it
+    /// needs of the model, and a model that does not satisfy it is an error
+    /// rather than a silent mismatch found later at bind.
+    fn resolve(
+        &self,
+        model_id: &str,
+        requirement: Option<&crate::capabilities::ModelRequirement>,
+    ) -> anyhow::Result<ConfiguredModel>;
+}
+
 /*-- ConfiguredModel -----------------------------------------------------------*/
 
 /// Resolves a capability's `model_id` config field into a live model plus
@@ -217,23 +236,17 @@ pub(crate) fn find_variant<'a>(
 }
 
 impl ConfiguredModel {
-    /// Resolves `model_id` and the provider it names through a
-    /// `ModelSource`, so the pair is fixed once here rather than rebuilt at
-    /// every bind. Panics if either does not resolve -- capabilities'
-    /// `ConfigConstructable::new` is infallible by trait signature, so this
-    /// preserves that contract exactly.
-    pub fn resolve(model_id: &str, global_config: &crate::config::Config) -> Self {
-        let source = crate::models::ModelSource::from_config(global_config);
-        let model = source.get(model_id).unwrap_or_else(|e| {
-            panic!("Configured model '{model_id}' not found or could not be constructed: {e}")
-        });
-        let provider = source
-            .provider_for(model_id)
-            .unwrap_or_else(|e| panic!("Configured model '{model_id}': {e}"));
+    /// The model, the provider it names, and the variant it was pinned to,
+    /// assembled by the collection that owns all three.
+    pub fn new(
+        model: std::sync::Arc<dyn Model>,
+        provider: std::sync::Arc<dyn crate::providers::Provider>,
+        configured_variant: Option<String>,
+    ) -> Self {
         Self {
             model,
             provider,
-            configured_variant: source.configured_variant(model_id),
+            configured_variant,
         }
     }
 
@@ -259,21 +272,23 @@ impl ConfiguredModel {
         find_variant(self.model.variants(), self.configured_variant.as_deref())
     }
 
-    /// The common core of every model-backed `Capability::bind()`: resolves
-    /// the provider, checks it supports `api_type`, checks the model
-    /// supports `required_function`, finds the `api_type` endpoint for
+    /// The common core of every model-backed `Capability::bind()`: checks the
+    /// provider supports `api_type`, finds the `api_type` endpoint for
     /// `endpoint_function`, and computes the provider-specific model
-    /// name/alias to send. `required_function` and `endpoint_function` are
-    /// separate parameters because a capability's model-support requirement
-    /// and its endpoint lookup can differ (e.g. `VisionMCPCapability` needs
-    /// `ImageUnderstanding` on the model but looks up the endpoint via
-    /// `Chat`, since that's the endpoint that actually serves vision
-    /// requests). `model_id` is used only for error messages.
+    /// name/alias to send. `model_id` is used only for error messages.
+    ///
+    /// Whether the model supports what the capability needs is settled at
+    /// resolution, against the `ModelRequirement` the capability's metadata
+    /// declares, so binding makes no judgement about the model. What stays
+    /// here is per-request: `api_type` arrives on the `BindingRequest`, and
+    /// `endpoint_function` selects which endpoint to look up rather than
+    /// stating what the model must support -- `VisionMCPCapability` requires
+    /// `ImageUnderstanding` of its model but looks the endpoint up via
+    /// `Chat`, since that's the endpoint that actually serves vision requests.
     pub fn resolve_provider_endpoint(
         &self,
         model_id: &str,
         api_type: crate::providers::ApiType,
-        required_function: ModelFunction,
         endpoint_function: ModelFunction,
     ) -> anyhow::Result<(
         std::sync::Arc<dyn crate::providers::Provider>,
@@ -284,12 +299,6 @@ impl ConfiguredModel {
         anyhow::ensure!(
             provider.supported_api_types().contains(&api_type),
             "provider for model '{model_id}' does not support {api_type}"
-        );
-        anyhow::ensure!(
-            self.model
-                .supported_functions()
-                .contains(&required_function),
-            "model '{model_id}' does not support {required_function}"
         );
         let endpoint = provider
             .endpoints_for_function(&endpoint_function)
@@ -769,12 +778,7 @@ mod configured_model_tests {
     fn resolve_provider_endpoint_succeeds_for_matching_provider_and_model() {
         let cm = configured_model(vec![ModelFunction::Chat], ok_provider(), None);
         let (provider, endpoint, model_name) = cm
-            .resolve_provider_endpoint(
-                "test-model",
-                ApiType::OpenAI,
-                ModelFunction::Chat,
-                ModelFunction::Chat,
-            )
+            .resolve_provider_endpoint("test-model", ApiType::OpenAI, ModelFunction::Chat)
             .unwrap();
         assert_eq!(provider.base_url(), "http://localhost:11434");
         assert_eq!(endpoint, ApiEndpoint::OpenAIChat);
@@ -792,30 +796,10 @@ mod configured_model_tests {
             None,
         );
         let err = cm
-            .resolve_provider_endpoint(
-                "test-model",
-                ApiType::OpenAI,
-                ModelFunction::Chat,
-                ModelFunction::Chat,
-            )
+            .resolve_provider_endpoint("test-model", ApiType::OpenAI, ModelFunction::Chat)
             .err()
             .unwrap();
         assert!(err.to_string().contains("does not support OpenAI"));
-    }
-
-    #[test]
-    fn resolve_provider_endpoint_fails_when_model_lacks_required_function() {
-        let cm = configured_model(vec![ModelFunction::Embeddings], ok_provider(), None);
-        let err = cm
-            .resolve_provider_endpoint(
-                "test-model",
-                ApiType::OpenAI,
-                ModelFunction::Chat,
-                ModelFunction::Chat,
-            )
-            .err()
-            .unwrap();
-        assert!(err.to_string().contains("does not support Chat"));
     }
 
     #[test]
@@ -830,12 +814,7 @@ mod configured_model_tests {
             None,
         );
         let err = cm
-            .resolve_provider_endpoint(
-                "test-model",
-                ApiType::OpenAI,
-                ModelFunction::Chat,
-                ModelFunction::Chat,
-            )
+            .resolve_provider_endpoint("test-model", ApiType::OpenAI, ModelFunction::Chat)
             .err()
             .unwrap();
         assert!(err.to_string().contains("has no OpenAI endpoint for Chat"));
@@ -847,12 +826,7 @@ mod configured_model_tests {
         // but the endpoint is looked up via Chat.
         let cm = configured_model(vec![ModelFunction::ImageUnderstanding], ok_provider(), None);
         let (_, endpoint, _) = cm
-            .resolve_provider_endpoint(
-                "test-model",
-                ApiType::OpenAI,
-                ModelFunction::ImageUnderstanding,
-                ModelFunction::Chat,
-            )
+            .resolve_provider_endpoint("test-model", ApiType::OpenAI, ModelFunction::Chat)
             .unwrap();
         assert_eq!(endpoint, ApiEndpoint::OpenAIChat);
     }
@@ -874,12 +848,7 @@ mod configured_model_tests {
             Some(("Ollama/Q4_K_M", vec![variant])),
         );
         let (_, _, model_name) = cm
-            .resolve_provider_endpoint(
-                "test-model",
-                ApiType::OpenAI,
-                ModelFunction::Chat,
-                ModelFunction::Chat,
-            )
+            .resolve_provider_endpoint("test-model", ApiType::OpenAI, ModelFunction::Chat)
             .unwrap();
         assert_eq!(model_name, "granite4.1:8b");
     }
@@ -898,12 +867,7 @@ mod configured_model_tests {
             Some(("Ollama/Q4_K_M", vec![variant])),
         );
         let (_, _, model_name) = cm
-            .resolve_provider_endpoint(
-                "test-model",
-                ApiType::OpenAI,
-                ModelFunction::Chat,
-                ModelFunction::Chat,
-            )
+            .resolve_provider_endpoint("test-model", ApiType::OpenAI, ModelFunction::Chat)
             .unwrap();
         assert_eq!(model_name, "test-model");
     }

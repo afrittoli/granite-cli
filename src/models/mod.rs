@@ -131,6 +131,73 @@ impl ModelSource {
     }
 }
 
+impl base::ModelLookup for ModelSource {
+    fn resolve(
+        &self,
+        model_id: &str,
+        requirement: Option<&crate::capabilities::ModelRequirement>,
+    ) -> anyhow::Result<ConfiguredModel> {
+        let model = self.get(model_id)?;
+        if let Some(requirement) = requirement {
+            use crate::dependency::Requirement;
+            anyhow::ensure!(
+                requirement.admits_instance(&*model),
+                "model '{model_id}' does not satisfy what this capability requires of it: {}",
+                describe_unmet(requirement, &*model)
+            );
+        }
+        Ok(ConfiguredModel::new(
+            model,
+            self.provider_for(model_id)?,
+            self.configured_variant(model_id),
+        ))
+    }
+}
+
+/// The parts of `requirement` this model does not meet, for an error that
+/// says which one failed rather than that one did.
+fn describe_unmet(
+    requirement: &crate::capabilities::ModelRequirement,
+    model: &dyn Model,
+) -> String {
+    let mut unmet: Vec<String> = Vec::new();
+    if let Some(family) = &requirement.family
+        && family != model.family()
+    {
+        unmet.push(format!("family '{family}'"));
+    }
+    if let Some(model_type) = &requirement.model_type
+        && model_type != model.model_type()
+    {
+        unmet.push(format!("type {model_type:?}"));
+    }
+    if let Some(min) = requirement.min_context_length
+        && model.context_length() < min
+    {
+        unmet.push(format!("context length at least {min}"));
+    }
+    if let Some(min) = requirement.min_size
+        && model.size() < min
+    {
+        unmet.push(format!("size at least {min}"));
+    }
+    for tag in &requirement.tags {
+        if !model.tags().contains(tag) {
+            unmet.push(format!("tag '{tag}'"));
+        }
+    }
+    for function in &requirement.supported_functions {
+        if !model.supported_functions().contains(function) {
+            unmet.push(format!("{function}"));
+        }
+    }
+    if unmet.is_empty() {
+        "nothing identifiable".to_string()
+    } else {
+        unmet.join(", ")
+    }
+}
+
 impl crate::dependency::Configured<dyn Model> for ModelSource {
     fn instances(&self) -> Vec<(String, Arc<dyn Model + 'static>)> {
         self.config
@@ -160,7 +227,7 @@ mod base;
 pub(crate) use base::find_variant;
 pub use base::{
     ConfiguredModel, LayerKind, LayerTypeCount, MambaShape, Model, ModelArchitecture,
-    ModelFunction, ModelMetadata, ModelType, ModelVariant,
+    ModelFunction, ModelLookup, ModelMetadata, ModelType, ModelVariant,
 };
 
 mod custom;
@@ -526,6 +593,97 @@ mod tests {
         assert_eq!(resp["model"], "granite-3.1-8b-instruct");
 
         server.shutdown().await;
+    }
+
+    fn configured(model_id: &str) -> crate::config::Config {
+        use crate::config::{Config, ModelConfig, ProviderConfig};
+        let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
+        config.models.insert(
+            model_id.to_string(),
+            ModelConfig {
+                model_id: model_id.to_string(),
+                model_type: model_id.to_string(),
+                config: serde_json::json!({}),
+                provider_id: "ollama".to_string(),
+                variant: None,
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn resolve_refuses_a_model_that_does_not_meet_the_requirement() {
+        use crate::capabilities::ModelRequirement;
+        use base::ModelLookup;
+
+        let config = configured("granite-3.1-8b-instruct");
+        let source = ModelSource::from_config(&config);
+
+        // The catalog model is a text model with no vision support.
+        let wants_vision = ModelRequirement {
+            supported_functions: vec![ModelFunction::ImageUnderstanding],
+            ..Default::default()
+        };
+        let err = source
+            .resolve("granite-3.1-8b-instruct", Some(&wants_vision))
+            .err()
+            .expect("a model that does not meet the requirement must not resolve")
+            .to_string();
+        assert!(
+            err.contains("granite-3.1-8b-instruct") && err.contains("Image Understanding"),
+            "the error must name the model and the part of the requirement it misses, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_accepts_the_same_model_for_a_dependent_that_does_not_require_it() {
+        use crate::capabilities::ModelRequirement;
+        use base::ModelLookup;
+
+        let config = configured("granite-3.1-8b-instruct");
+        let source = ModelSource::from_config(&config);
+
+        assert!(
+            source.resolve("granite-3.1-8b-instruct", None).is_ok(),
+            "no requirement means nothing to fail"
+        );
+        let wants_chat = ModelRequirement {
+            supported_functions: vec![ModelFunction::Chat],
+            ..Default::default()
+        };
+        assert!(
+            source
+                .resolve("granite-3.1-8b-instruct", Some(&wants_chat))
+                .is_ok(),
+            "a requirement the model does meet must resolve"
+        );
+    }
+
+    #[test]
+    fn resolve_names_the_provider_when_it_is_the_provider_that_is_gone() {
+        use base::ModelLookup;
+
+        let mut config = configured("granite-3.1-8b-instruct");
+        config.providers.clear();
+        let source = ModelSource::from_config(&config);
+
+        let err = source
+            .resolve("granite-3.1-8b-instruct", None)
+            .err()
+            .expect("a model whose provider is gone must not resolve")
+            .to_string();
+        assert!(
+            err.contains("ollama"),
+            "the error must name the provider rather than stopping one hop short, got: {err}"
+        );
     }
 
     #[test]

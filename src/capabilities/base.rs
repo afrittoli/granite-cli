@@ -268,6 +268,17 @@ pub trait Capability: crate::registry::Named + Send + Sync {
     /// Which binding surfaces this capability instance can fill.
     fn binding_types(&self) -> HashSet<BindingType>;
 
+    /// Turn the names this capability holds into the objects they refer to.
+    /// Called once after construction, before any bind. A capability that
+    /// names nothing keeps the default.
+    ///
+    /// Returning `Err` is how a capability reports that its configuration
+    /// points at something missing or unsuitable, which construction cannot
+    /// do: `ConfigConstructable::new` returns the object, not a result.
+    fn resolve_refs(&mut self, _models: &dyn crate::models::ModelLookup) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Resolve a `BindingRequest` into a concrete `Binding`.
     async fn bind(&self, request: BindingRequest) -> anyhow::Result<Binding>;
 
@@ -308,6 +319,39 @@ impl std::fmt::Display for CapabilityMetadata {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.description)
     }
+}
+
+/*-- Reference resolution ----------------------------------------------------*/
+
+/// Resolve the model a capability names, against the `ModelRequirement` its
+/// own type declared. The requirement is read from metadata rather than
+/// passed in, so the demand a capability states and the one checked at
+/// resolution cannot drift apart.
+pub fn resolve_declared_model(
+    models: &dyn crate::models::ModelLookup,
+    metadata: &CapabilityMetadata,
+    model_id: &str,
+) -> anyhow::Result<crate::models::ConfiguredModel> {
+    let requirement = metadata
+        .dependencies
+        .iter()
+        .find_map(|dependency| match dependency {
+            Dependency::Model { requirement, .. } => Some(requirement),
+            _ => None,
+        });
+    models.resolve(model_id, requirement)
+}
+
+/// The model `resolve_refs` stored, for a `bind` that needs it.
+pub fn resolved_model<'a>(
+    configured_model: &'a Option<crate::models::ConfiguredModel>,
+    capability_id: &str,
+) -> anyhow::Result<&'a crate::models::ConfiguredModel> {
+    configured_model.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "capability '{capability_id}' was bound before its references were resolved"
+        )
+    })
 }
 
 /*-- Supporting Types --------------------------------------------------------*/

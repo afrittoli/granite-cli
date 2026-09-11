@@ -34,7 +34,7 @@ macro_rules! declare_sub_agent_basic {
         pub struct $name_struct {
             instance_id: String,
             config: $config_struct,
-            configured_model: $crate::models::ConfiguredModel,
+            configured_model: Option<$crate::models::ConfiguredModel>,
             /// Description shown to the parent agent for deciding when to delegate.
             pub description: String,
             /// Static prompt for this sub-agent.
@@ -49,18 +49,17 @@ macro_rules! declare_sub_agent_basic {
             fn new(
                 instance_id: &str,
                 cfg: &serde_json::Value,
-                global_config: &$crate::config::Config,
+                _global_config: &$crate::config::Config,
             ) -> Self {
                 let config: $config_struct =
                     serde_json::from_value(cfg.clone()).unwrap_or_default();
-                let configured_model = $crate::models::ConfiguredModel::resolve(&config.model_id, global_config);
                 let description = $description_expr;
                 let prompt = $prompt_expr;
                 let tools = $tools_expr;
                 Self {
                     instance_id: instance_id.to_string(),
                     config,
-                    configured_model,
+                    configured_model: None,
                     description,
                     prompt,
                     tools,
@@ -88,6 +87,15 @@ macro_rules! declare_sub_agent_basic {
                 std::collections::HashSet::from([$crate::capabilities::base::BindingType::SubAgent])
             }
 
+            fn resolve_refs(&mut self, models: &dyn $crate::models::ModelLookup) -> anyhow::Result<()> {
+                self.configured_model = Some($crate::capabilities::base::resolve_declared_model(
+                    models,
+                    &<Self as $crate::capabilities::base::HasCapabilityMetadata>::metadata(),
+                    &self.config.model_id,
+                )?);
+                Ok(())
+            }
+
             async fn bind(&self, request: $crate::capabilities::base::BindingRequest) -> anyhow::Result<$crate::capabilities::base::Binding> {
                 let api_type = match request {
                     $crate::capabilities::base::BindingRequest::SubAgent($crate::capabilities::base::SubAgentBindingRequest { api_type }) => api_type,
@@ -98,10 +106,13 @@ macro_rules! declare_sub_agent_basic {
                     ),
                 };
                 let model_id = &self.config.model_id;
-                let (provider, endpoint, model_name) = self.configured_model.resolve_provider_endpoint(
+                let configured_model = $crate::capabilities::base::resolved_model(
+                    &self.configured_model,
+                    &self.instance_id,
+                )?;
+                let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
                     model_id,
                     api_type.clone(),
-                    $crate::models::ModelFunction::Chat,
                     $crate::models::ModelFunction::Chat,
                 )?;
                 Ok($crate::capabilities::base::Binding::SubAgent($crate::capabilities::base::SubAgentBinding {
@@ -116,7 +127,7 @@ macro_rules! declare_sub_agent_basic {
                         endpoint_path: endpoint.path().to_string(),
                         api_key: provider.api_key().cloned(),
                         verify_ssl: provider.verify_ssl(),
-                        context_length: Some(self.configured_model.model.context_length()),
+                        context_length: Some(configured_model.model.context_length()),
                         custom_headers: provider.custom_headers(),
                     },
                     known_type: $known_type,
@@ -177,7 +188,7 @@ macro_rules! declare_sub_agent_full {
         pub struct $name_struct {
             instance_id: String,
             config: $config_struct,
-            configured_model: $crate::models::ConfiguredModel,
+            configured_model: Option<$crate::models::ConfiguredModel>,
             /// Description shown to the parent agent for deciding when to delegate.
             pub description: String,
             /// Configurable prompt for this sub-agent.
@@ -192,18 +203,17 @@ macro_rules! declare_sub_agent_full {
             fn new(
                 instance_id: &str,
                 cfg: &serde_json::Value,
-                global_config: &$crate::config::Config,
+                _global_config: &$crate::config::Config,
             ) -> Self {
                 let config: $config_struct =
                     serde_json::from_value(cfg.clone()).unwrap_or_default();
-                let configured_model = $crate::models::ConfiguredModel::resolve(&config.model_id, global_config);
                 let description = config.description.clone();
                 let prompt = config.prompt.clone();
                 let tools = config.tools.clone();
                 Self {
                     instance_id: instance_id.to_string(),
                     config,
-                    configured_model,
+                    configured_model: None,
                     description,
                     prompt,
                     tools,
@@ -231,6 +241,15 @@ macro_rules! declare_sub_agent_full {
                 std::collections::HashSet::from([$crate::capabilities::base::BindingType::SubAgent])
             }
 
+            fn resolve_refs(&mut self, models: &dyn $crate::models::ModelLookup) -> anyhow::Result<()> {
+                self.configured_model = Some($crate::capabilities::base::resolve_declared_model(
+                    models,
+                    &<Self as $crate::capabilities::base::HasCapabilityMetadata>::metadata(),
+                    &self.config.model_id,
+                )?);
+                Ok(())
+            }
+
             async fn bind(&self, request: $crate::capabilities::base::BindingRequest) -> anyhow::Result<$crate::capabilities::base::Binding> {
                 let api_type = match request {
                     $crate::capabilities::base::BindingRequest::SubAgent($crate::capabilities::base::SubAgentBindingRequest { api_type }) => api_type,
@@ -241,10 +260,13 @@ macro_rules! declare_sub_agent_full {
                     ),
                 };
                 let model_id = &self.config.model_id;
-                let (provider, endpoint, model_name) = self.configured_model.resolve_provider_endpoint(
+                let configured_model = $crate::capabilities::base::resolved_model(
+                    &self.configured_model,
+                    &self.instance_id,
+                )?;
+                let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
                     model_id,
                     api_type.clone(),
-                    $crate::models::ModelFunction::Chat,
                     $crate::models::ModelFunction::Chat,
                 )?;
                 Ok($crate::capabilities::base::Binding::SubAgent($crate::capabilities::base::SubAgentBinding {
@@ -259,7 +281,7 @@ macro_rules! declare_sub_agent_full {
                         endpoint_path: endpoint.path().to_string(),
                         api_key: provider.api_key().cloned(),
                         verify_ssl: provider.verify_ssl(),
-                        context_length: Some(self.configured_model.model.context_length()),
+                        context_length: Some(configured_model.model.context_length()),
                         custom_headers: provider.custom_headers(),
                     },
                     known_type: $known_type,
@@ -500,13 +522,13 @@ mod tests {
         SubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: crate::models::ConfiguredModel::for_test(
+            configured_model: Some(crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: functions,
                 }),
                 Arc::new(provider),
                 None,
-            ),
+            )),
             description: cap.description,
             prompt: cap.prompt,
             tools: cap.tools,
@@ -551,13 +573,13 @@ mod tests {
         let cap = SubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: crate::models::ConfiguredModel::for_test(
+            configured_model: Some(crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: vec![ModelFunction::Chat],
                 }),
                 Arc::new(ok_provider()),
                 None,
-            ),
+            )),
             description: cap.description,
             prompt: cap.prompt,
             tools: cap.tools,
@@ -597,17 +619,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("does not support Anthropic"));
-    }
-
-    #[tokio::test]
-    async fn bind_fails_when_model_lacks_chat() {
-        let cap = capability_with_test_model(vec![ModelFunction::Embeddings], ok_provider());
-        let err = cap
-            .bind(request(ApiType::Anthropic))
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("does not support Chat"));
     }
 
     #[tokio::test]
