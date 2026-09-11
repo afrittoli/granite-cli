@@ -678,7 +678,7 @@ async fn run_provider_command(
     match subcmd {
         ProviderSubcommands::Catalog { wide } => ProviderCommands::catalog(ctx, wide),
         ProviderSubcommands::List => ProviderCommands::list(ctx),
-        ProviderSubcommands::Info {provider_id} => ProviderCommands::info(ctx, &provider_id),
+        ProviderSubcommands::Info { provider_id } => ProviderCommands::info(ctx, &provider_id),
         ProviderSubcommands::Setup {
             provider_type,
             instance_id,
