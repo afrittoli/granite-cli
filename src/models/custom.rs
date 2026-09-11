@@ -1,5 +1,5 @@
 // Third Party
-use alog::{MessageLevel, alog_channel, use_channel};
+use alog::use_channel;
 use serde::{Deserialize, Serialize};
 
 // Local
@@ -71,7 +71,6 @@ fn empty_architecture() -> ModelArchitecture {
 pub struct CustomModel {
     instance_id: String,
     config: CustomModelConfig,
-    provider_config: Option<crate::config::ProviderConfig>,
 }
 
 impl ConfigConstructable for CustomModel {
@@ -83,21 +82,9 @@ impl ConfigConstructable for CustomModel {
         _global_config: &crate::config::Config,
     ) -> Self {
         let config: CustomModelConfig = serde_json::from_value(cfg.clone()).unwrap_or_default();
-        let provider_config = cfg.get("provider_config").and_then(|v| {
-            serde_json::from_value(v.clone())
-                .map_err(|e| {
-                    alog_channel!(
-                        MessageLevel::Warning,
-                        "Failed to deserialize provider_config: {}",
-                        e
-                    )
-                })
-                .ok()
-        });
         Self {
             instance_id: instance_id.to_string(),
             config,
-            provider_config,
         }
     }
 }
@@ -157,10 +144,6 @@ impl Model for CustomModel {
 
     fn supported_functions(&self) -> &[ModelFunction] {
         &self.config.supported_functions
-    }
-
-    fn provider_config(&self) -> Option<&crate::config::ProviderConfig> {
-        self.provider_config.as_ref()
     }
 }
 
@@ -226,24 +209,6 @@ mod tests {
         assert_eq!(model.tags(), &["chat".to_string()]);
         assert_eq!(model.supported_functions(), &[ModelFunction::Chat]);
         assert!(model.architecture().layer_types.is_empty());
-        assert!(model.provider_config().is_none());
-    }
-
-    #[test]
-    fn new_extracts_provider_config_from_sibling_key() {
-        let provider_config = crate::config::ProviderConfig {
-            provider_id: "my-openai".to_string(),
-            provider_type: "openai-compatible".to_string(),
-            config: serde_json::json!({ "base_url": "http://localhost:8080" }),
-        };
-        let cfg = serde_json::json!({
-            "family": "My Local Model",
-            "provider_config": provider_config,
-        });
-        let model = CustomModel::new("my-nickname", &cfg, &crate::config::Config::default());
-        let pc = model.provider_config().expect("provider_config present");
-        assert_eq!(pc.provider_id, "my-openai");
-        assert_eq!(pc.provider_type, "openai-compatible");
     }
 
     #[test]

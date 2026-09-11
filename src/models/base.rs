@@ -158,30 +158,6 @@ pub trait Model: crate::registry::Named + Send + Sync {
         )
     }
 
-    /// Resolved provider-construction data this instance was built with (see
-    /// `ModelSource::from_config`). `None` for bare catalog instances that
-    /// weren't constructed from a configured model.
-    fn provider_config(&self) -> Option<&crate::config::ProviderConfig> {
-        None
-    }
-
-    /// Construct this model's provider from its resolved `provider_config`.
-    /// Consolidates the provider_id -> Provider construction that used to be
-    /// duplicated at each call site in `commands/model.rs`.
-    fn provider(&self) -> anyhow::Result<Box<dyn crate::providers::Provider>> {
-        let pc = self
-            .provider_config()
-            .ok_or_else(|| anyhow::anyhow!("model has no configured provider"))?;
-        crate::providers::PROVIDER_REGISTRY
-            .construct(
-                &pc.provider_type,
-                &pc.provider_id,
-                &pc.config,
-                &crate::config::Config::default(),
-            )
-            .map_err(|e| anyhow::anyhow!(e))
-    }
-
     /// Snapshot this instance's data into a `ModelMetadata` value, using the
     /// same accessors the registry uses to describe a catalog entry. Lets
     /// command code display a model uniformly whether it came from a static
@@ -214,6 +190,9 @@ pub trait Model: crate::registry::Named + Send + Sync {
 /// reimplement the same `ModelSource`/variant-resolution logic.
 pub struct ConfiguredModel {
     pub model: std::sync::Arc<dyn Model>,
+    /// The provider `ModelConfig.provider_id` names, resolved alongside the
+    /// model rather than rebuilt on each call.
+    pub provider: std::sync::Arc<dyn crate::providers::Provider>,
     /// The raw `"format/precision"` string from `ModelConfig.variant`, if the
     /// user configured a specific variant. Used at bind time to resolve the
     /// provider-specific model alias.
@@ -238,28 +217,23 @@ pub(crate) fn find_variant<'a>(
 }
 
 impl ConfiguredModel {
-    /// Resolves `model_id` through `ModelSource::from_config`, which handles
-    /// provider resolution (so `model.provider()` works at bind time) and,
-    /// when a session proxy is active, registers this model's route and
-    /// transparently wraps it to point at the proxy. `configured_variant` is
-    /// computed first (rather than after, as it used to be) so it can be
-    /// passed into `take`, which needs it to compute the same provider alias
-    /// `resolve_provider_endpoint` will use later as the route's dispatch
-    /// key. Panics if the model isn't found/constructible -- capabilities'
+    /// Resolves `model_id` and the provider it names through a
+    /// `ModelSource`, so the pair is fixed once here rather than rebuilt at
+    /// every bind. Panics if either does not resolve -- capabilities'
     /// `ConfigConstructable::new` is infallible by trait signature, so this
     /// preserves that contract exactly.
     pub fn resolve(model_id: &str, global_config: &crate::config::Config) -> Self {
-        let configured_variant = global_config
-            .models
-            .get(model_id)
-            .and_then(|mc| mc.variant.clone());
         let source = crate::models::ModelSource::from_config(global_config);
         let model = source.get(model_id).unwrap_or_else(|e| {
             panic!("Configured model '{model_id}' not found or could not be constructed: {e}")
         });
+        let provider = source
+            .provider_for(model_id)
+            .unwrap_or_else(|e| panic!("Configured model '{model_id}': {e}"));
         Self {
             model,
-            configured_variant,
+            provider,
+            configured_variant: source.configured_variant(model_id),
         }
     }
 
@@ -268,10 +242,12 @@ impl ConfiguredModel {
     #[cfg(test)]
     pub(crate) fn for_test(
         model: std::sync::Arc<dyn Model>,
+        provider: std::sync::Arc<dyn crate::providers::Provider>,
         configured_variant: Option<String>,
     ) -> Self {
         Self {
             model,
+            provider,
             configured_variant,
         }
     }
@@ -300,14 +276,11 @@ impl ConfiguredModel {
         required_function: ModelFunction,
         endpoint_function: ModelFunction,
     ) -> anyhow::Result<(
-        Box<dyn crate::providers::Provider>,
+        std::sync::Arc<dyn crate::providers::Provider>,
         crate::providers::ApiEndpoint,
         String,
     )> {
-        let provider = self
-            .model
-            .provider()
-            .map_err(|e| anyhow::anyhow!("model '{model_id}' has no usable provider: {e}"))?;
+        let provider = self.provider.clone();
         anyhow::ensure!(
             provider.supported_api_types().contains(&api_type),
             "provider for model '{model_id}' does not support {api_type}"
@@ -726,7 +699,6 @@ mod configured_model_tests {
 
     struct TestModel {
         supported_functions: Vec<ModelFunction>,
-        provider: FakeProvider,
         variants: Vec<ModelVariant>,
     }
 
@@ -773,9 +745,6 @@ mod configured_model_tests {
         fn supported_functions(&self) -> &[ModelFunction] {
             &self.supported_functions
         }
-        fn provider(&self) -> anyhow::Result<Box<dyn Provider>> {
-            Ok(Box::new(self.provider.clone()))
-        }
     }
 
     fn configured_model(
@@ -789,9 +758,9 @@ mod configured_model_tests {
         ConfiguredModel::for_test(
             std::sync::Arc::new(TestModel {
                 supported_functions: functions,
-                provider,
                 variants,
             }),
+            std::sync::Arc::new(provider),
             variant_str,
         )
     }

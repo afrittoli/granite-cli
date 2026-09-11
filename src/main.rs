@@ -758,6 +758,7 @@ async fn run_launch(
     };
     if let Some(server) = &proxy_server {
         config.model_proxy = Some(server.handle.clone());
+        crate::proxy::register_proxy_routes(&config, &lc.enabled_capabilities, &server.handle, ui);
     }
 
     // Build capability configs with their dependencies for session metadata

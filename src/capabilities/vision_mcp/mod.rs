@@ -233,7 +233,7 @@ fn vlm_base_url(base_url: &str, endpoint_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ModelConfig};
+    use crate::config::{Config, ModelConfig, ProviderConfig};
     use crate::models::{Model, ModelVariant};
     use crate::providers::{ApiEndpoint, HealthStatus, ModelFormat, Provider, ProviderError};
     use crate::registry::Secret;
@@ -317,7 +317,6 @@ mod tests {
 
     struct TestVisionModel {
         supported_functions: Vec<ModelFunction>,
-        provider: FakeProvider,
     }
 
     impl ConfigConstructable for TestVisionModel {
@@ -370,9 +369,6 @@ mod tests {
         fn supported_functions(&self) -> &[ModelFunction] {
             &self.supported_functions
         }
-        fn provider(&self) -> anyhow::Result<Box<dyn Provider>> {
-            Ok(Box::new(self.provider.clone()))
-        }
     }
 
     /// Builds a `VisionMCPCapability` with a real registry model id (so
@@ -383,6 +379,14 @@ mod tests {
         provider: FakeProvider,
     ) -> VisionMCPCapability {
         let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
         config.models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {
@@ -404,8 +408,8 @@ mod tests {
             configured_model: ConfiguredModel::for_test(
                 Arc::new(TestVisionModel {
                     supported_functions: functions,
-                    provider,
                 }),
+                Arc::new(provider),
                 None,
             ),
             http_server: Mutex::new(None),
