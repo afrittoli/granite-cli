@@ -107,7 +107,7 @@ impl CapabilityCommands {
                 }
 
                 ctx.ui
-                    .detail(&format!("{capability_id} (metadata)"), &type_fields);
+                    .detail("Type Metadata", &type_fields);
 
                 if let Some(configured) = configured {
                     let mut instance_fields: Vec<(&str, String)> = Vec::new();

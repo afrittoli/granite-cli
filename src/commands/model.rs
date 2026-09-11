@@ -554,7 +554,7 @@ impl ModelCommands {
                 let md = model.to_metadata();
                 let type_fields = Self::metadata_fields(&md);
 
-                ctx.ui.detail(&format!("{id} (metadata)"), &type_fields);
+                ctx.ui.detail("Type Metadata", &type_fields);
 
                 let mut instance_fields: Vec<(&str, String)> = Vec::new();
                 instance_fields.push(("Config: Type", model_config.model_type.clone()));
@@ -570,7 +570,7 @@ impl ModelCommands {
 
         match Self::info_fields(id) {
             Some(type_fields) => {
-                ctx.ui.detail(&format!("{id} (metadata)"), &type_fields);
+                ctx.ui.detail("Type Metadata", &type_fields);
 
                 if let Some(configured) = ctx.config.get_model(id) {
                     let mut instance_fields: Vec<(&str, String)> = Vec::new();
@@ -1219,7 +1219,7 @@ mod tests {
         let details = details!(ctx);
         assert_eq!(details.len(), 1);
         let (title, fields) = &details[0];
-        assert_eq!(title, "granite-3.1-8b-instruct (metadata)");
+        assert_eq!(title, "Type Metadata");
         assert!(fields.iter().any(|(k, _)| k == "Family"));
         assert!(fields.iter().any(|(k, _)| k == "Context Length"));
         assert!(fields.iter().any(|(k, _)| k == "Supported Functions"));
@@ -1758,7 +1758,7 @@ mod tests {
         let details = details!(ctx);
         assert_eq!(details.len(), 2);
         let (title1, fields1) = &details[0];
-        assert_eq!(title1, "my-custom (metadata)");
+        assert_eq!(title1, "Type Metadata");
         assert!(
             fields1
                 .iter()

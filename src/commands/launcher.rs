@@ -101,7 +101,7 @@ impl LauncherCommands {
                     type_fields.push(("Tags", md.tags.join(", ")));
                 }
 
-                ctx.ui.detail(&format!("{id} (metadata)"), &type_fields);
+                ctx.ui.detail("Type Metadata", &type_fields);
 
                 if let Some(cfg) = configured {
                     let mut instance_fields: Vec<(&str, String)> = Vec::new();
@@ -681,7 +681,7 @@ mod tests {
         assert_eq!(details.len(), 1);
 
         let (id, fields) = &details[0];
-        assert_eq!(id, "claude (metadata)");
+        assert_eq!(id, "Type Metadata");
         assert!(fields.iter().any(|(k, _)| *k == "Name"));
         // Config fields should not be present for catalog-only lookups
         assert!(!fields.iter().any(|(k, _)| k.starts_with("Config")));
@@ -703,7 +703,7 @@ mod tests {
         assert_eq!(details.len(), 2);
 
         let (id1, fields1) = &details[0];
-        assert_eq!(id1, "my-claude (metadata)");
+        assert_eq!(id1, "Type Metadata");
         assert!(fields1.iter().any(|(k, _)| *k == "Name"));
 
         let (id2, fields2) = &details[1];
