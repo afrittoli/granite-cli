@@ -237,8 +237,9 @@ impl CapabilityCommands {
                     required,
                     ..
                 } => {
+                    let current = defaults.get(config_key).and_then(|v| v.as_str());
                     if let Some(id) =
-                        Self::resolve_model_dependency(ctx, requirement, *required).await?
+                        Self::resolve_model_dependency(ctx, requirement, *required, current).await?
                     {
                         config
                             // NOTE: Safe since config MUST be an object when registered
@@ -253,8 +254,10 @@ impl CapabilityCommands {
                     required,
                     ..
                 } => {
+                    let current = defaults.get(config_key).and_then(|v| v.as_str());
                     if let Some(id) =
-                        Self::resolve_provider_dependency(ctx, requirement, *required).await?
+                        Self::resolve_provider_dependency(ctx, requirement, *required, current)
+                            .await?
                     {
                         config
                             // NOTE: Safe since config MUST be an object when registered
@@ -311,6 +314,7 @@ impl CapabilityCommands {
         ctx: &mut crate::AppContext,
         requirement: &ModelRequirement,
         required: bool,
+        current: Option<&str>,
     ) -> Result<Option<String>> {
         alog_channel!(
             MessageLevel::Debug2,
@@ -344,8 +348,13 @@ impl CapabilityCommands {
         let choice_idx = if options.len() == 1 {
             0
         } else {
-            ctx.ui
-                .select("Select a model for this capability:", &options, 0)?
+            let prompt = crate::commands::shared::remediation::prompt_with_current(
+                ctx,
+                "Select a model for this capability",
+                RefKind::Model,
+                current,
+            );
+            ctx.ui.select(&prompt, &options, 0)?
         };
         let choice = options[choice_idx].clone();
         if configure_new_idx.is_none_or(|v| v != choice_idx) {
@@ -363,7 +372,33 @@ impl CapabilityCommands {
             configurable_types[index]
         };
 
+        let before: std::collections::HashSet<String> = ctx.config.models.keys().cloned().collect();
         ModelCommands::setup(ctx, model_type, None).await?;
+
+        // Setup reports success even when it configured nothing, so take the
+        // ids it actually left behind rather than its return value. A new
+        // model that does not itself resolve is no use as a dependency.
+        let added: Vec<String> = ctx
+            .config
+            .models
+            .keys()
+            .filter(|id| !before.contains(*id))
+            .filter(|id| {
+                crate::config::validation::validate_ref(RefKind::Model, id, &ctx.config).is_ok()
+            })
+            .cloned()
+            .collect();
+        if added.is_empty() {
+            if required {
+                anyhow::bail!(
+                    "Model setup did not leave a usable model configured, so this capability has nothing to bind to. Configure a model and try again."
+                );
+            }
+            ctx.ui.warn(
+                "Model setup did not leave a usable model configured; skipping this dependency.",
+            );
+            return Ok(None);
+        }
 
         alog_channel!(
             MessageLevel::Debug3,
@@ -450,6 +485,7 @@ impl CapabilityCommands {
         ctx: &mut crate::AppContext,
         requirement: &ProviderRequirement,
         required: bool,
+        current: Option<&str>,
     ) -> Result<Option<String>> {
         let (existing, configurable_types) = Self::provider_candidates(ctx, requirement);
         if existing.is_empty() && configurable_types.is_empty() {
@@ -472,8 +508,13 @@ impl CapabilityCommands {
         let choice_idx = if options.len() == 1 {
             0
         } else {
-            ctx.ui
-                .select("Select a provider for this capability:", &options, 0)?
+            let prompt = crate::commands::shared::remediation::prompt_with_current(
+                ctx,
+                "Select a provider for this capability",
+                RefKind::Provider,
+                current,
+            );
+            ctx.ui.select(&prompt, &options, 0)?
         };
         let choice = options[choice_idx].clone();
         if configure_new_idx.is_none_or(|v| v != choice_idx) {
@@ -533,6 +574,22 @@ impl CapabilityCommands {
     pub fn remove(ctx: &mut crate::AppContext, capability_id: &str) -> Result<()> {
         if ctx.config.get_capability(capability_id).is_none() {
             anyhow::bail!("No capability configured with id '{capability_id}'. Nothing to remove.");
+        }
+
+        // Anything pointing at it would be stranded by this removal.
+        match crate::commands::shared::remediation::confirm_removal(
+            ctx,
+            RefKind::Capability,
+            capability_id,
+        )? {
+            crate::commands::shared::remediation::Removal::Cancel => {
+                ctx.ui
+                    .info(&format!("Keeping capability '{capability_id}'."));
+                return Ok(());
+            }
+            crate::commands::shared::remediation::Removal::Proceed { with } => {
+                crate::commands::shared::remediation::remove_all(ctx, &with)?;
+            }
         }
 
         if let Err(e) = ctx.config.remove_capability(capability_id) {
@@ -753,6 +810,53 @@ mod tests {
         assert!(capture(&ctx).warns.borrow().is_empty());
     }
 
+    #[tokio::test]
+    async fn a_dangling_current_value_is_flagged_in_the_selection_prompt() {
+        let mut ctx = ctx_with_chat_capable_model();
+        capture(&ctx).select_answers.borrow_mut().push_back(0);
+
+        let picked = CapabilityCommands::resolve_model_dependency(
+            &mut ctx,
+            &ModelRequirement::default(),
+            true,
+            Some("granite-4.2-8b"),
+        )
+        .await
+        .unwrap();
+
+        // The current value is not among the options, since it resolves to
+        // nothing, so the prompt is the only place that can say what
+        // pressing Enter would be replacing.
+        let prompts = capture(&ctx).select_prompts.borrow();
+        let (prompt, _, _) = &prompts[0];
+        assert!(prompt.contains("current: 'granite-4.2-8b'"), "{prompt}");
+        assert!(prompt.contains("no longer resolves"), "{prompt}");
+        assert_eq!(picked.as_deref(), Some("granite-3.1-8b-instruct"));
+    }
+
+    #[tokio::test]
+    async fn a_current_value_that_still_resolves_is_named_without_a_flag() {
+        let mut ctx = ctx_with_chat_capable_model();
+        capture(&ctx).select_answers.borrow_mut().push_back(0);
+
+        CapabilityCommands::resolve_model_dependency(
+            &mut ctx,
+            &ModelRequirement::default(),
+            true,
+            Some("granite-3.1-8b-instruct"),
+        )
+        .await
+        .unwrap();
+
+        let prompts = capture(&ctx).select_prompts.borrow();
+        let (prompt, _, _) = &prompts[0];
+        assert!(
+            prompt.contains("current: 'granite-3.1-8b-instruct'"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("no longer resolves"), "{prompt}");
+    }
+
     // -- setup ------------------------------------------------------------------
 
     #[tokio::test]
@@ -837,7 +941,7 @@ mod tests {
             ..Default::default()
         };
         let result =
-            CapabilityCommands::resolve_model_dependency(&mut ctx, &requirement, true).await;
+            CapabilityCommands::resolve_model_dependency(&mut ctx, &requirement, true, None).await;
         assert!(result.is_err());
         assert!(
             result
@@ -854,9 +958,10 @@ mod tests {
             family: Some("NoSuchFamilyXYZ".to_string()),
             ..Default::default()
         };
-        let result = CapabilityCommands::resolve_model_dependency(&mut ctx, &requirement, false)
-            .await
-            .unwrap();
+        let result =
+            CapabilityCommands::resolve_model_dependency(&mut ctx, &requirement, false, None)
+                .await
+                .unwrap();
         assert!(result.is_none());
     }
 
@@ -885,7 +990,8 @@ mod tests {
             ..Default::default()
         };
         let result =
-            CapabilityCommands::resolve_provider_dependency(&mut ctx, &requirement, true).await;
+            CapabilityCommands::resolve_provider_dependency(&mut ctx, &requirement, true, None)
+                .await;
         assert!(result.is_err());
         assert!(
             result
@@ -906,9 +1012,10 @@ mod tests {
             functions: vec![ModelFunction::KeywordBiasing],
             ..Default::default()
         };
-        let result = CapabilityCommands::resolve_provider_dependency(&mut ctx, &requirement, false)
-            .await
-            .unwrap();
+        let result =
+            CapabilityCommands::resolve_provider_dependency(&mut ctx, &requirement, false, None)
+                .await
+                .unwrap();
         assert!(result.is_none());
     }
 

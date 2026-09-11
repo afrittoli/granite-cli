@@ -241,6 +241,22 @@ it (Sub-Task 5).
   is two confirmations for one decision, and accepting the default leaves the
   reference broken. Fixing it means changing how the four setup commands
   treat an explicit instance id, which affects every caller of them.
+- A flag for non-interactive removal (issue to file). A session with nobody
+  to ask always removes only what was asked and warns about what that broke.
+  A script has no way to say that it wants the dependents removed too, or
+  that it wants the removal refused when anything depends on the target. A
+  flag on the four removal commands would give it both, and would give the
+  refusal a non-zero exit to act on.
+- Removing a capability without breaking or deleting its launcher (issue to
+  file). A launcher depends on a capability by listing it in
+  `enabled_capabilities`, so the removal prompt's three answers are: delete
+  the launcher too, do nothing, or leave the launcher pointing at something
+  that is gone. None of them deletes exactly what was asked and leaves the
+  launcher working. A fourth choice would drop the id from that list as part
+  of the removal. Reaching that end state today takes two commands: remove
+  only the capability, then accept the disable the next `launch` offers.
+  The behaviour exists in `remediation::disable` and needs extracting to
+  take an explicit launcher and capability id.
 - Sibling problems a declined prompt hides (issue to file). Remediation
   reports one problem at a time and stops when the user declines, so a
   launcher with two broken capabilities only ever names the first. Reporting
@@ -537,31 +553,49 @@ Stop `Remove` from stranding whatever pointed at what it just deleted.
 
 **Expected Outcomes**
 
-Before any of the four removal methods on `Config` deletes an entry, we scan
-the other configuration maps for anything that depends on the id being
-removed. If something does, the command layer, not `Config` itself per Spec
-0001, offers a choice: remove both together, cancel, or remove only what was
-asked for. Non-interactive backends default to removing only what was asked,
-with a warning.
+Before any of the four removal commands deletes an entry, we scan the other
+configuration maps for anything that depends on the id being removed. If
+something does, the command layer, not `Config` itself per Spec 0001, offers
+a choice: remove both together, cancel, or remove only what was asked for.
+Non-interactive backends default to removing only what was asked, with a
+warning.
+
+Finding the dependents is `Validatable::refs` read backwards: an instance
+depends on the target when the target appears among the references it
+declares. It lives beside the walk in the validation module and needs no
+knowledge of its own about which field holds what.
+
+Cancelling is the default answer, since this is the destructive prompt and
+the other two both delete something. It reports what was kept and succeeds
+rather than failing: the user made a deliberate choice, and a script never
+reaches it, since a session with nobody to ask does not prompt.
 
 ```
-⚠ Removing 'granite-3.1-8b-instruct' will break:
+⚠ Removing model 'granite-3.1-8b-instruct' will break:
   - capability 'chat' (agent-model)
 
-  [1] Remove 'granite-3.1-8b-instruct' and 'chat' together
-  [2] Cancel — keep 'granite-3.1-8b-instruct'
-  [3] Remove only 'granite-3.1-8b-instruct' — fix 'chat' later
->
+? What would you like to do?
+  [1] Remove model 'granite-3.1-8b-instruct' and capability 'chat' together
+> [2] Cancel, keep model 'granite-3.1-8b-instruct'
+  [3] Remove only model 'granite-3.1-8b-instruct', fix the rest later
 ```
+
+Removing the dependents goes through their own removal commands, so anything
+depending on *them* gets the same question in turn. Removing a model the user
+agrees to take a capability with will ask again about the launcher enabling
+that capability. The reference graph runs launcher to capability to model to
+provider, so the questions are bounded by its depth.
 
 Tests cover: a model with one dependent capability producing the right final
 configuration for each of the three outcomes, including the non-interactive
-default.
+default; a removal with no dependents, confirming it does not prompt; and the
+dependents scan itself, in each direction and for a target nothing points
+at.
 
 **Relevant Context**
 - `src/config/mod.rs:318-418` (`remove_model`/`remove_provider`/`remove_capability`/`remove_launcher`, all currently unconditional)
 
-**Status** — `[ ]` not started
+**Status** — `[x] done`
 
 ---
 
@@ -586,7 +620,11 @@ Separately, the provider-selection helper does not re-validate the id it
 returns at all. If a user picks "configure a new provider," types a name that
 collides with an existing provider, and declines to overwrite it, the helper
 still returns that existing provider's id, even if it does not satisfy what
-the model needs. It should get the same re-validation.
+the model needs. It gets the same re-validation, by reading what is
+configured under that id after setup returns and comparing its type against
+the one being configured. A mismatch is rejected with an error naming the
+collision, rather than re-prompted: the wizard has no loop to return to, and
+the message says what to do differently.
 
 The overwrite wizard is the third case. When `setup` presents an existing
 instance's current values as defaults, a default that is itself a dangling
@@ -594,21 +632,94 @@ reference is flagged inline, so pressing Enter through the wizard cannot
 silently re-save it:
 
 ```
-Model for 'chat' [current: granite-4.2-8b — ⚠ no longer configured]:
+Select a model for this capability [current: 'granite-4.2-8b', ⚠ no longer resolves]
   > granite-vision
     granite-3.1-8b
+    Configure a new model...
 ```
+
+The flag says the reference no longer resolves rather than naming which of
+the four problems it is, since the prompt is asking for a replacement either
+way. A current value that still resolves is named without a flag, so the
+wizard always says what pressing Enter would be replacing. The same applies
+to a model's provider, whose current value comes from the instance being
+overwritten.
 
 Tests cover: inserting a provider into an unwritable configuration directory
 returns an error while the entry still appears in memory, which is the root
 cause this sub-task addresses; declining an overwrite onto a mismatched
-existing provider is rejected or re-prompted rather than silently reused; and
-an overwrite wizard whose current value is dangling renders the flag rather
-than offering it as a clean default.
+existing provider is rejected rather than silently reused; and an overwrite
+wizard whose current value is dangling renders the flag, while one that still
+resolves is named without it.
 
 **Relevant Context**
 - `src/config/mod.rs:313-413` (`insert_model`/`insert_provider`/`insert_capability`/`insert_launcher`, `save()`)
 - `src/commands/capability.rs:334-352` (`resolve_model_dependency`)
 - `src/commands/model.rs:722-770` (`select_provider`)
 
-**Status** — `[ ]` not started
+**Status** — `[x] done`
+
+---
+
+## Implementation Summary
+
+Measured against `main` at bf117bb, the commit merged into the branch carrying
+Sub-Tasks 1 to 3. Every production figure excludes the file's own `#[cfg(test)]`
+items. The figures cover everything the two branches carry, which includes
+making `ModelConfig.provider_id` required, a change that came out of the review
+of Sub-Tasks 1 to 3.
+
+### New modules
+
+| Module | Production | Tests | Line coverage |
+|---|---:|---:|---:|
+| `src/config/validation.rs` | 436 | 412 | 98.64% |
+| `src/commands/shared/remediation.rs` | 430 | 552 | 97.92% |
+
+The validator answers three questions, `validate_ref`, `find_dangling` and
+`dependents`, over one `Validatable` implementation per config type.
+Remediation drives the prompts: `remediate`, `confirm_removal`,
+`dangling_notes` and `prompt_with_current`. A third new file,
+`src/commands/shared/mod.rs`, declares the remediation module in four lines.
+
+### Existing code
+
+| | Added | Removed |
+|---|---:|---:|
+| Production | 382 | 110 |
+| Tests | 376 | 145 |
+
+Twenty-four files: the five command modules and the `mod.rs` that declares
+them, the capability registrations, the `Ui` trait with its JSON and Markdown
+backends and the TUI app, `Config`, the model source, the registry macro,
+`main`, and the two launchers whose test doubles implemented the removed
+`dependencies` method.
+
+### Tests
+
+55 new, 27 updated, 8 removed or renamed away. The suite goes from 692 test
+functions to 739, and from 720 passing tests to 767. The gap between the two
+counts is the macro-generated output-contract tests each `Ui` backend gets.
+
+### Coverage
+
+| | Before | After |
+|---|---:|---:|
+| Lines | 78.79% | 80.38% |
+| Regions | 78.45% | 79.91% |
+| Functions | 77.14% | 78.75% |
+
+Measured with `cargo llvm-cov`. Per-file coverage counts a file's own
+`#[cfg(test)]` module, which runs in full, so a file that is half tests reads
+higher than its production half alone. Where the misses sit is exact, since
+test code always executes: `validation.rs` leaves 7 of 516 instrumented lines
+uncovered and `remediation.rs` 14 of 672, and all of those are production
+lines.
+
+### Other
+
+27 Rust files changed, plus this document, and no new dependencies. The
+declaration sites for a capability's `model_id` config key drop from eight to
+four, one per capability type, which is what removing
+`Capability::dependencies(&self)` was for. Neither new module carries
+`#![allow(dead_code)]`: every item has a production caller.

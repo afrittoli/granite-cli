@@ -109,6 +109,47 @@ pub(crate) fn find_dangling(kind: RefKind, config: &Config) -> Vec<DanglingRef> 
         .collect()
 }
 
+/// The configured instances that point at `(kind, id)`, which is what
+/// removing it would strand. Sorted, so a caller listing them is stable.
+///
+/// This is [`Validatable::refs`] read backwards: an instance depends on the
+/// target when the target appears among the references it declares.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Before `model remove granite-3.1-8b-instruct` deletes anything.
+/// let stranded = dependents(RefKind::Model, "granite-3.1-8b-instruct", &config);
+/// // -> [(RefKind::Capability, "chat")]
+/// ```
+pub(crate) fn dependents(kind: RefKind, id: &str, config: &Config) -> Vec<(RefKind, String)> {
+    let mut found: Vec<(RefKind, String)> = [
+        RefKind::Launcher,
+        RefKind::Capability,
+        RefKind::Model,
+        RefKind::Provider,
+    ]
+    .into_iter()
+    .flat_map(|referrer_kind| {
+        config_entries(config, referrer_kind)
+            .into_iter()
+            .map(move |entry| (referrer_kind, entry))
+    })
+    .filter(|(_, entry)| {
+        // An instance that cannot name its references, such as a capability
+        // missing a required dependency, points at nothing.
+        entry.refs().is_ok_and(|refs| {
+            refs.iter()
+                .any(|(target_kind, target_id)| *target_kind == kind && *target_id == id)
+        })
+    })
+    .map(|(referrer_kind, entry)| (referrer_kind, entry.config_id().to_string()))
+    .collect();
+
+    found.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()).then(a.1.cmp(&b.1)));
+    found
+}
+
 /// The `*_type` of a configured instance: the registry key that its setup
 /// command needs to reconfigure it. `None` when `id` names nothing.
 pub(crate) fn type_name<'a>(kind: RefKind, id: &str, config: &'a Config) -> Option<&'a str> {
@@ -751,6 +792,44 @@ mod tests {
             assert_eq!(found, expected, "{kind}");
             assert!(find_dangling(kind, &config).iter().all(|d| d.kind == kind));
         }
+    }
+
+    #[test]
+    fn dependents_are_the_instances_pointing_at_the_target() {
+        let config = healthy();
+
+        assert_eq!(
+            dependents(RefKind::Provider, "p1", &config),
+            vec![(RefKind::Model, "m1".to_string())]
+        );
+        assert_eq!(
+            dependents(RefKind::Model, "m1", &config),
+            vec![(RefKind::Capability, "chat".to_string())]
+        );
+        assert_eq!(
+            dependents(RefKind::Capability, "chat", &config),
+            vec![(RefKind::Launcher, "claude".to_string())]
+        );
+        // Nothing points at a launcher, and nothing points at what is not
+        // configured.
+        assert!(dependents(RefKind::Launcher, "claude", &config).is_empty());
+        assert!(dependents(RefKind::Model, "gone", &config).is_empty());
+    }
+
+    #[test]
+    fn dependents_lists_every_referrer_of_one_target() {
+        let mut config = healthy();
+        config
+            .capabilities
+            .insert("second".into(), capability("second", "agent-model", "m1"));
+
+        assert_eq!(
+            dependents(RefKind::Model, "m1", &config),
+            vec![
+                (RefKind::Capability, "chat".to_string()),
+                (RefKind::Capability, "second".to_string()),
+            ]
+        );
     }
 
     #[test]

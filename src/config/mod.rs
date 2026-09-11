@@ -762,6 +762,36 @@ mod tests {
     }
 
     #[test]
+    fn an_insert_that_cannot_be_saved_still_lands_in_memory() {
+        let _home = TestConfigHome::new();
+        // Point the home at a file, so writing any config file under it
+        // fails.
+        let home = std::env::var("GRANITE_CLI_HOME").unwrap();
+        let blocked = Path::new(&home).join("blocked");
+        fs::write(&blocked, "not a directory").unwrap();
+        // SAFETY: serialized by CONFIG_HOME_LOCK, held by `_home`.
+        unsafe { std::env::set_var("GRANITE_CLI_HOME", &blocked) };
+
+        let mut config = Config::default();
+        let result = config.insert_provider(
+            "p1",
+            ProviderConfig {
+                provider_id: "p1".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
+
+        // The caller is told, and the entry is in memory regardless. Callers
+        // treat that error as a warning, which is how a setup step can report
+        // success over configuration that was never written, and why the
+        // helpers that configure something new check what is actually there
+        // afterwards.
+        assert!(result.is_err());
+        assert!(config.get_provider("p1").is_some());
+    }
+
+    #[test]
     fn insert_and_remove_launcher() {
         let _home = TestConfigHome::new();
 

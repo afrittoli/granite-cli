@@ -701,16 +701,17 @@ impl ModelCommands {
         };
 
         let provider_source = ProviderSource::from_config(&ctx.config);
+        let current_provider = existing_config.as_ref().map(|c| c.provider_id.clone());
         let provider_id = if let Some(variant) = &selected_variant {
             let requirement = VariantRequirement {
                 format: variant.format.clone(),
                 precision: variant.precision.clone(),
             };
             let resolution = dependency::resolve(&requirement, &provider_source);
-            Self::select_provider(ctx, &resolution).await?
+            Self::select_provider(ctx, &resolution, current_provider.as_deref()).await?
         } else {
             let resolution = dependency::resolve(&AnyProviderRequirement, &provider_source);
-            Self::select_provider(ctx, &resolution).await?
+            Self::select_provider(ctx, &resolution, current_provider.as_deref()).await?
         };
 
         let model_config = crate::config::ModelConfig {
@@ -864,6 +865,18 @@ impl ModelCommands {
             anyhow::bail!("No model configured with id '{model_id}'. Nothing to remove.");
         }
 
+        // Anything pointing at it would be stranded by this removal.
+        match crate::commands::shared::remediation::confirm_removal(ctx, RefKind::Model, model_id)?
+        {
+            crate::commands::shared::remediation::Removal::Cancel => {
+                ctx.ui.info(&format!("Keeping model '{model_id}'."));
+                return Ok(());
+            }
+            crate::commands::shared::remediation::Removal::Proceed { with } => {
+                crate::commands::shared::remediation::remove_all(ctx, &with)?;
+            }
+        }
+
         if let Err(e) = ctx.config.remove_model(model_id) {
             ctx.ui
                 .warn(&format!("failed to persist model removal: {e}"));
@@ -878,6 +891,7 @@ impl ModelCommands {
     async fn select_provider(
         ctx: &mut crate::AppContext,
         resolution: &dependency::Resolution,
+        current: Option<&str>,
     ) -> Result<String> {
         if resolution.is_unsatisfiable() {
             anyhow::bail!(
@@ -894,8 +908,13 @@ impl ModelCommands {
         let choice = if options.len() == 1 {
             0
         } else {
-            ctx.ui
-                .select("Select a provider for this model", &options, 0)?
+            let prompt = crate::commands::shared::remediation::prompt_with_current(
+                ctx,
+                "Select a provider for this model",
+                RefKind::Provider,
+                current,
+            );
+            ctx.ui.select(&prompt, &options, 0)?
         };
 
         if options[choice] != CONFIGURE_NEW {
@@ -920,7 +939,22 @@ impl ModelCommands {
 
         ProviderCommands::setup(ctx, provider_type, Some(&nickname)).await?;
 
-        Ok(nickname)
+        // Setup reports success even when it configured nothing: a name that
+        // collides with an existing provider, and an overwrite the user then
+        // declines, both land here. Check what is configured under that id
+        // rather than trusting the id we asked for.
+        match ctx.config.get_provider(&nickname) {
+            Some(provider) if provider.provider_type == provider_type => Ok(nickname),
+            Some(provider) => anyhow::bail!(
+                "Provider '{nickname}' is already configured as '{}', which is not what \
+                 this model needs. Re-run setup and give the new provider a different name.",
+                provider.provider_type
+            ),
+            None => anyhow::bail!(
+                "Provider '{nickname}' was not configured, so this model would have \
+                 nothing to run on. Re-run setup once the provider is in place."
+            ),
+        }
     }
 }
 
@@ -1852,6 +1886,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn select_provider_rejects_a_name_colliding_with_a_provider_it_did_not_overwrite() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = empty_ctx();
+        ctx.config.providers.insert(
+            "shared".to_string(),
+            crate::config::ProviderConfig {
+                provider_id: "shared".to_string(),
+                provider_type: "openai-compatible".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
+        // Configuring a new one is the only choice, and the name typed for it
+        // collides. The overwrite confirmation inside provider setup defaults
+        // to no, so nothing is written.
+        let ui = (&*ctx.ui as &dyn std::any::Any)
+            .downcast_ref::<CaptureUi>()
+            .unwrap();
+        ui.text_answers.borrow_mut().push_back("shared".to_string());
+
+        let resolution = dependency::Resolution {
+            existing_instances: vec![],
+            configurable_types: vec!["ollama"],
+        };
+        let err = ModelCommands::select_provider(&mut ctx, &resolution, None)
+            .await
+            .unwrap_err();
+
+        // Silently handing back the provider that was already there would
+        // attach this model to something that cannot run it.
+        assert!(err.to_string().contains("already configured as"), "{err}");
+        assert_eq!(
+            ctx.config.get_provider("shared").unwrap().provider_type,
+            "openai-compatible"
+        );
+    }
+
+    #[tokio::test]
     async fn select_provider_bails_when_no_provider_type_can_ever_satisfy_the_requirement() {
         let mut ctx = empty_ctx();
         let resolution = dependency::Resolution {
@@ -1859,7 +1930,7 @@ mod tests {
             configurable_types: vec![],
         };
 
-        let err = ModelCommands::select_provider(&mut ctx, &resolution)
+        let err = ModelCommands::select_provider(&mut ctx, &resolution, None)
             .await
             .unwrap_err();
         assert!(
