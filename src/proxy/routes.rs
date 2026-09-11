@@ -53,26 +53,24 @@ pub(crate) fn register_proxy_routes(
 
 /*-- private --*/
 
-/// The model ids the given capabilities name, read from each capability
-/// type's declared model dependency rather than from a hard-coded key.
+/// The model ids the given capabilities name, read through `Validatable::refs`,
+/// the one declaration of an instance's outbound names that the validator's
+/// walk and the remove-time scan also read. A capability whose type is
+/// unknown, or whose required dependency holds no id, names nothing here and
+/// is reported by the check that runs before a launch reaches this.
 fn model_ids_named_by(config: &crate::config::Config, capability_ids: &[String]) -> Vec<String> {
+    use crate::config::validation::{RefKind, Validatable};
+
     let mut ids: Vec<String> = Vec::new();
     for capability_id in capability_ids {
         let Some(cc) = config.get_capability(capability_id) else {
             continue;
         };
-        let Some(metadata) = crate::capabilities::CAPABILITY_REGISTRY.get(&cc.capability_type)
-        else {
+        let Ok(refs) = cc.refs() else {
             continue;
         };
-        for dependency in &metadata.dependencies {
-            let crate::capabilities::Dependency::Model { config_key, .. } = dependency else {
-                continue;
-            };
-            if let Some(id) = cc.config.get(config_key).and_then(|v| v.as_str())
-                && !id.is_empty()
-                && !ids.iter().any(|seen| seen == id)
-            {
+        for (kind, id) in refs {
+            if kind == RefKind::Model && !ids.iter().any(|seen| seen == id) {
                 ids.push(id.to_string());
             }
         }

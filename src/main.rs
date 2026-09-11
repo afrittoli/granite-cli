@@ -808,7 +808,7 @@ async fn run_launch(
                  which is not configured. Run `granite-cli capability setup` first."
             )
         })?;
-        let capability = CAPABILITY_REGISTRY
+        let mut capability = CAPABILITY_REGISTRY
             .construct(
                 &cap_cfg.capability_type,
                 &cap_cfg.capability_id,
@@ -816,6 +816,13 @@ async fn run_launch(
                 &config,
             )
             .map_err(|e| anyhow::anyhow!("Failed to construct capability '{cap_id}': {e}"))?;
+        // This path builds through the registry rather than through
+        // `CapabilitySource`, so it wires the capability to what it names
+        // itself. `models` is built from the launch's own configuration, so a
+        // proxied launch resolves proxied providers.
+        capability
+            .resolve_refs(&crate::models::ModelSource::from_config(&config))
+            .map_err(|e| anyhow::anyhow!("Capability '{cap_id}': {e}"))?;
         capability.on_setup().await?;
         launcher.bind_capability(capability.as_ref()).await?;
         bound_capabilities.push(capability);

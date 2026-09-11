@@ -198,7 +198,7 @@ impl std::error::Error for ValidationError {}
 /// implementation type, whether that name is registered, and the ids it
 /// points at. Everything else about validating an instance is the same for
 /// every kind and lives in [`validate`].
-trait Validatable: ConfigId {
+pub(crate) trait Validatable: ConfigId {
     /// The `*_type` field: the registry key this instance was configured
     /// from.
     fn type_name(&self) -> &str;

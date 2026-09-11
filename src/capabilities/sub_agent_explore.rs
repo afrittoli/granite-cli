@@ -244,13 +244,13 @@ mod tests {
         ExploreSubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: crate::models::ConfiguredModel::for_test(
+            configured_model: Some(crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: functions,
                 }),
                 Arc::new(provider),
                 None,
-            ),
+            )),
             description: cap.description,
             prompt: cap.prompt,
             tools: cap.tools,
@@ -292,13 +292,13 @@ mod tests {
         let cap = ExploreSubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
-            configured_model: crate::models::ConfiguredModel::for_test(
+            configured_model: Some(crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: vec![ModelFunction::Chat],
                 }),
                 Arc::new(ok_provider()),
                 None,
-            ),
+            )),
             description: cap.description,
             prompt: cap.prompt,
             tools: cap.tools,
