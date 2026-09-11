@@ -166,7 +166,7 @@ impl ModelCommands {
     pub(crate) fn recommend_rows(
         filter_type: Option<&ModelType>,
         filter_providers: Option<&[&dyn Provider]>,
-        display_providers: &[(String, &dyn Provider)],
+        display_providers: &[(String, std::sync::Arc<dyn Provider>)],
         wide: bool,
         ui: &dyn crate::utils::ui::base::Ui,
     ) -> Vec<Vec<String>> {
@@ -290,7 +290,7 @@ impl ModelCommands {
         let providers: Option<Vec<&dyn Provider>> = if skip_all {
             None
         } else if providers_arg.is_empty() {
-            Some(instances.iter().map(|(_, p)| *p).collect())
+            Some(instances.iter().map(|(_, p)| &**p).collect())
         } else {
             let unknown: Vec<&str> = providers_arg
                 .iter()
@@ -317,7 +317,7 @@ impl ModelCommands {
                 instances
                     .iter()
                     .filter(|(iid, _)| providers_arg.contains(iid))
-                    .map(|(_, p)| *p)
+                    .map(|(_, p)| &**p)
                     .collect(),
             )
         };

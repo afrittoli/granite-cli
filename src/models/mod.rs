@@ -21,113 +21,142 @@ pub static MODEL_REGISTRY: LazyLock<base::ModelFactory> = LazyLock::new(|| {
 
 /*-- ModelSource ---------------------------------------------------------------*/
 
-/// The real `Configured<dyn Model>`: eagerly constructs a live model instance
-/// for every model referenced by the config's `models` map, keyed by its
-/// instance id (`ModelConfig.model_id`) -- distinct from the registry key
-/// it's constructed from (`ModelConfig.model_type`), so the same catalog
-/// type can be configured more than once.
+/// The real `Configured<dyn Model>`: builds a live model instance the first
+/// time one is asked for by its instance id (`ModelConfig.model_id`) --
+/// distinct from the registry key it's constructed from
+/// (`ModelConfig.model_type`), so the same catalog type can be configured
+/// more than once. The instance is kept, so every later ask for that id
+/// returns the same object.
 pub struct ModelSource {
-    constructed: Vec<(String, Box<dyn Model>)>,
+    /// The configuration this source was built from. Narrows to
+    /// `HashMap<String, ModelConfig>` once `construct` stops taking the whole
+    /// configuration.
+    config: crate::config::Config,
     model_proxy: Option<crate::proxy::ProxyHandle>,
+    cache: std::sync::Mutex<HashMap<String, Arc<dyn Model>>>,
 }
 
 impl ModelSource {
     pub fn from_config(config: &crate::config::Config) -> Self {
-        let constructed = config
-            .models
-            .values()
-            .filter_map(|model_config| {
-                let mut cfg = model_config.config.clone();
-                if let Some(provider_config) = config.get_provider(&model_config.provider_id) {
-                    cfg["provider_config"] =
-                        serde_json::to_value(provider_config).unwrap_or_default();
-                }
-                let result = MODEL_REGISTRY.construct(
-                    &model_config.model_type,
-                    &model_config.model_id,
-                    &cfg,
-                    config,
-                );
-                if result.is_err() {
-                    alog_channel!(
-                        MessageLevel::Warning,
-                        "Could not construct model '{}'",
-                        model_config.model_id
-                    );
-                }
-                result
-                    .ok()
-                    .map(|model| (model_config.model_id.clone(), model))
-            })
-            .collect();
         Self {
-            constructed,
+            config: config.clone(),
             model_proxy: config.model_proxy.clone(),
+            cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
-    /// Removes and returns the constructed model for `model_id` (the
-    /// instance id -- matches `ModelConfig.model_id`, which config loading
-    /// enforces equals the outer `config.models` key). `configured_variant`
-    /// is the caller's already-resolved `"format/precision"` string, used (on the
-    /// real, unwrapped provider) to compute the same alias
-    /// `resolve_provider_endpoint` will use later, so the route registered
-    /// here is keyed exactly how the launched process will address it.
-    ///
-    /// When a session proxy is active, registers this model's real
-    /// connection details as a route on it (best-effort -- a registration
-    /// failure is logged and the model is returned untracked/unrouted rather
-    /// than failing construction over an accounting/routing feature) and
-    /// returns a model wrapped to point at the proxy instead of the real
-    /// upstream.
-    pub fn take(
-        &mut self,
-        model_id: &str,
-        configured_variant: Option<&str>,
-    ) -> Option<Arc<dyn Model>> {
-        let idx = self.constructed.iter().position(|(id, _)| id == model_id)?;
-        let (_, model) = self.constructed.remove(idx);
-        let model: Arc<dyn Model> = Arc::from(model);
-        let Some(handle) = &self.model_proxy else {
-            return Some(model);
-        };
-        match model.provider() {
-            Ok(provider) => {
-                let variant = base::find_variant(model.variants(), configured_variant);
-                let route_key = provider
-                    .model_alias(model_id.to_string(), variant)
-                    .unwrap_or_else(|| model_id.to_string());
-                let target = crate::proxy::UpstreamTarget {
-                    base_url: provider.base_url().to_string(),
-                    verify_ssl: provider.verify_ssl(),
-                    auth: crate::proxy::UpstreamAuth::Inject(provider.api_key().cloned()),
-                };
-                if let Err(e) = handle.register_route(route_key, target, model_id.to_string()) {
-                    alog_channel!(
-                        MessageLevel::Warning,
-                        "failed to register proxy route for model '{model_id}': {e}"
-                    );
-                }
-            }
-            Err(e) => {
-                alog_channel!(
-                    MessageLevel::Warning,
-                    "model '{model_id}' has no usable provider, skipping proxy route: {e}"
-                );
-            }
+    /// The model configured under `model_id` (the instance id -- matches
+    /// `ModelConfig.model_id`, which config loading enforces equals the outer
+    /// `config.models` key), built on the first ask and returned from the
+    /// cache on every one after it, so two capabilities naming one model
+    /// share one object. Errors when no entry is configured under that id, or
+    /// when its `model_type` is not in the registry.
+    pub fn get(&self, model_id: &str) -> anyhow::Result<Arc<dyn Model>> {
+        if let Some(built) = self.cache.lock().unwrap().get(model_id) {
+            return Ok(built.clone());
         }
-        Some(Arc::new(crate::proxy::ProxiedModel::wrap(
-            model,
-            handle.local_base_url.clone(),
-        )))
+        let model_config = self
+            .config
+            .models
+            .get(model_id)
+            .ok_or_else(|| anyhow::anyhow!("model '{model_id}' is not configured"))?;
+
+        let mut cfg = model_config.config.clone();
+        if let Some(provider_config) = self.config.get_provider(&model_config.provider_id) {
+            cfg["provider_config"] = serde_json::to_value(provider_config).unwrap_or_default();
+        }
+        let built = MODEL_REGISTRY
+            .construct(
+                &model_config.model_type,
+                &model_config.model_id,
+                &cfg,
+                &self.config,
+            )
+            .map_err(|e| anyhow::anyhow!("could not construct model '{model_id}': {e}"))?;
+
+        let built: Arc<dyn Model> = Arc::from(built);
+        let built = match &self.model_proxy {
+            Some(handle) => {
+                route_and_wrap(built, model_id, model_config.variant.as_deref(), handle)
+            }
+            None => built,
+        };
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(model_id.to_string(), built.clone());
+        Ok(built)
+    }
+
+    /// Instance ids built so far, sorted. Lets a test tell what a call
+    /// built from what it merely could have built.
+    #[cfg(test)]
+    pub(crate) fn cached_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.cache.lock().unwrap().keys().cloned().collect();
+        ids.sort();
+        ids
     }
 }
 
+/*-- private ------------------------------------------------------------------*/
+
+/// Registers `model`'s real connection details as a route on the session
+/// proxy and returns it wrapped to point at the proxy instead of the real
+/// upstream. The route key is computed on the real, unwrapped provider from
+/// the variant the model was configured with, so it matches the alias
+/// `resolve_provider_endpoint` computes later and the launched process
+/// addresses the model by. Registration is best-effort: a failure is logged
+/// and the model is returned unrouted rather than failing construction over
+/// an accounting feature.
+fn route_and_wrap(
+    model: Arc<dyn Model>,
+    model_id: &str,
+    configured_variant: Option<&str>,
+    handle: &crate::proxy::ProxyHandle,
+) -> Arc<dyn Model> {
+    match model.provider() {
+        Ok(provider) => {
+            let variant = base::find_variant(model.variants(), configured_variant);
+            let route_key = provider
+                .model_alias(model_id.to_string(), variant)
+                .unwrap_or_else(|| model_id.to_string());
+            let target = crate::proxy::UpstreamTarget {
+                base_url: provider.base_url().to_string(),
+                verify_ssl: provider.verify_ssl(),
+                auth: crate::proxy::UpstreamAuth::Inject(provider.api_key().cloned()),
+            };
+            if let Err(e) = handle.register_route(route_key, target, model_id.to_string()) {
+                alog_channel!(
+                    MessageLevel::Warning,
+                    "failed to register proxy route for model '{model_id}': {e}"
+                );
+            }
+        }
+        Err(e) => {
+            alog_channel!(
+                MessageLevel::Warning,
+                "model '{model_id}' has no usable provider, skipping proxy route: {e}"
+            );
+        }
+    }
+    Arc::new(crate::proxy::ProxiedModel::wrap(
+        model,
+        handle.local_base_url.clone(),
+    ))
+}
+
 impl crate::dependency::Configured<dyn Model> for ModelSource {
-    fn instances(&self) -> Vec<(String, &(dyn Model + 'static))> {
-        self.constructed
-            .iter()
-            .map(|(id, model)| (id.clone(), model.as_ref()))
+    fn instances(&self) -> Vec<(String, Arc<dyn Model + 'static>)> {
+        self.config
+            .models
+            .keys()
+            .filter_map(|id| match self.get(id) {
+                Ok(model) => Some((id.clone(), model)),
+                Err(e) => {
+                    alog_channel!(MessageLevel::Warning, "{e}");
+                    None
+                }
+            })
             .collect()
     }
 
@@ -283,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn take_removes_and_returns_configured_model() {
+    fn get_returns_the_same_instance_for_every_call() {
         use crate::config::{Config, ModelConfig};
 
         let mut config = Config::default();
@@ -298,17 +327,142 @@ mod tests {
             },
         );
 
-        let mut source = ModelSource::from_config(&config);
-        assert!(source.take("granite-3.1-8b-instruct", None).is_some());
-        assert!(source.take("granite-3.1-8b-instruct", None).is_none());
+        let source = ModelSource::from_config(&config);
+        let first = source.get("granite-3.1-8b-instruct").unwrap();
+        let second = source.get("granite-3.1-8b-instruct").unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a second get must return the same object, not a rebuilt one"
+        );
     }
 
     #[test]
-    fn take_returns_none_for_unknown_model_id() {
+    fn instances_hands_out_the_same_object_get_does() {
+        use crate::config::{Config, ModelConfig};
+        use crate::dependency::Configured;
+
+        let mut config = Config::default();
+        config.models.insert(
+            "granite-3.1-8b-instruct".to_string(),
+            ModelConfig {
+                model_id: "granite-3.1-8b-instruct".to_string(),
+                model_type: "granite-3.1-8b-instruct".to_string(),
+                config: serde_json::json!({}),
+                provider_id: "ollama".to_string(),
+                variant: None,
+            },
+        );
+
+        let source = ModelSource::from_config(&config);
+        let from_instances = source
+            .instances()
+            .into_iter()
+            .find(|(id, _)| id == "granite-3.1-8b-instruct")
+            .map(|(_, model)| model)
+            .unwrap();
+        let from_get = source.get("granite-3.1-8b-instruct").unwrap();
+        assert!(Arc::ptr_eq(&from_instances, &from_get));
+    }
+
+    #[test]
+    fn get_errs_naming_an_id_that_is_not_configured() {
         use crate::config::Config;
 
-        let mut source = ModelSource::from_config(&Config::default());
-        assert!(source.take("not-configured", None).is_none());
+        let source = ModelSource::from_config(&Config::default());
+        let err = source
+            .get("not-configured")
+            .err()
+            .expect("an unconfigured id must not resolve")
+            .to_string();
+        assert!(
+            err.contains("not-configured"),
+            "the error must name the id that was asked for, got: {err}"
+        );
+    }
+
+    #[test]
+    fn get_errs_for_a_configured_id_whose_type_is_unknown() {
+        use crate::config::{Config, ModelConfig};
+
+        let mut config = Config::default();
+        config.models.insert(
+            "mystery".to_string(),
+            ModelConfig {
+                model_id: "mystery".to_string(),
+                model_type: "not-a-catalog-id".to_string(),
+                config: serde_json::json!({}),
+                provider_id: "ollama".to_string(),
+                variant: None,
+            },
+        );
+
+        let source = ModelSource::from_config(&config);
+        let err = source
+            .get("mystery")
+            .err()
+            .expect("an unknown model_type must not construct")
+            .to_string();
+        assert!(err.contains("mystery"), "got: {err}");
+    }
+
+    #[test]
+    fn get_builds_only_the_model_it_was_asked_for() {
+        use crate::config::{Config, ModelConfig};
+
+        let mut config = Config::default();
+        for id in ["granite-3.1-8b-instruct", "granite-3.1-2b-instruct"] {
+            config.models.insert(
+                id.to_string(),
+                ModelConfig {
+                    model_id: id.to_string(),
+                    model_type: id.to_string(),
+                    config: serde_json::json!({}),
+                    provider_id: "ollama".to_string(),
+                    variant: None,
+                },
+            );
+        }
+
+        let source = ModelSource::from_config(&config);
+        assert!(source.cached_ids().is_empty(), "nothing is built up front");
+        source.get("granite-3.1-8b-instruct").unwrap();
+        assert_eq!(
+            source.cached_ids(),
+            vec!["granite-3.1-8b-instruct".to_string()],
+            "asking for one model must not drag in the other"
+        );
+    }
+
+    #[test]
+    fn instances_omits_a_model_that_cannot_be_built_and_keeps_the_rest() {
+        use crate::config::{Config, ModelConfig};
+        use crate::dependency::Configured;
+
+        let mut config = Config::default();
+        for (id, model_type) in [
+            ("granite-3.1-8b-instruct", "granite-3.1-8b-instruct"),
+            ("broken", "not-a-catalog-id"),
+        ] {
+            config.models.insert(
+                id.to_string(),
+                ModelConfig {
+                    model_id: id.to_string(),
+                    model_type: model_type.to_string(),
+                    config: serde_json::json!({}),
+                    provider_id: "ollama".to_string(),
+                    variant: None,
+                },
+            );
+        }
+
+        let source = ModelSource::from_config(&config);
+        // The healthy model is reachable on its own, without the broken one
+        // being touched at all.
+        assert!(source.get("granite-3.1-8b-instruct").is_ok());
+        assert_eq!(source.cached_ids(), vec!["granite-3.1-8b-instruct"]);
+
+        let ids: Vec<String> = source.instances().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec!["granite-3.1-8b-instruct".to_string()]);
     }
 
     #[tokio::test]
@@ -350,8 +504,8 @@ mod tests {
         let server = ProxyServer::start().unwrap();
         config.model_proxy = Some(server.handle.clone());
 
-        let mut source = ModelSource::from_config(&config);
-        let model = source.take("granite-3.1-8b-instruct", None).unwrap();
+        let source = ModelSource::from_config(&config);
+        let model = source.get("granite-3.1-8b-instruct").unwrap();
         let provider = model.provider().unwrap();
         assert_eq!(provider.base_url(), server.handle.local_base_url);
         assert!(provider.api_key().is_none());

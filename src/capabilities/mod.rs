@@ -20,66 +20,83 @@ pub static CAPABILITY_REGISTRY: LazyLock<base::CapabilityFactory> = LazyLock::ne
 
 /*-- CapabilitySource -----------------------------------------------------------*/
 
-/// The real `Configured<dyn Capability>`: eagerly constructs a live
-/// capability instance for every configured `CapabilityConfig`, keyed by its
-/// instance nickname (`capability_id`) rather than its catalog type
-/// (`capability_type`).
+/// The real `Configured<dyn Capability>`: builds a live capability instance
+/// the first time one is asked for by its instance nickname
+/// (`capability_id`) rather than its catalog type (`capability_type`). The
+/// instance is kept, so every later ask for that id returns the same object.
 pub struct CapabilitySource {
-    constructed: Vec<(String, Box<dyn Capability>)>,
+    /// The configuration this source was built from. Narrows to
+    /// `HashMap<String, CapabilityConfig>` once `construct` stops taking the
+    /// whole configuration.
+    config: crate::config::Config,
+    cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Capability>>>,
 }
 
 impl CapabilitySource {
     pub fn from_config(config: &crate::config::Config) -> Self {
-        let constructed = config
-            .capabilities
-            .values()
-            .filter_map(|capability_config| {
-                // A capability whose references do not resolve cannot bind:
-                // `model.provider()` fails without a provider, and a model
-                // that is gone panics inside `ConfiguredModel::resolve` (#90)
-                // before construction can even report the failure. Skip it
-                // rather than reach either.
-                if let Err(e) = crate::config::validation::validate_ref(
-                    crate::config::validation::RefKind::Capability,
-                    &capability_config.capability_id,
-                    config,
-                ) {
-                    alog_channel!(
-                        MessageLevel::Warning,
-                        "Skipping capability '{}': {}",
-                        capability_config.capability_id,
-                        e
-                    );
-                    return None;
-                }
+        Self {
+            config: config.clone(),
+            cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
 
-                let result = CAPABILITY_REGISTRY.construct(
-                    &capability_config.capability_type,
-                    &capability_config.capability_id,
-                    &capability_config.config,
-                    config,
-                );
-                if result.is_err() {
-                    alog_channel!(
-                        MessageLevel::Warning,
-                        "Could not construct capability '{}'",
-                        capability_config.capability_type
-                    );
-                }
-                result
-                    .ok()
-                    .map(|capability| (capability_config.capability_id.clone(), capability))
-            })
-            .collect();
-        Self { constructed }
+    /// The capability configured under `capability_id`, built on the first
+    /// ask and returned from the cache on every one after it. Errors when no
+    /// entry is configured under that id, when its references do not resolve,
+    /// or when its `capability_type` is not in the registry.
+    pub fn get(&self, capability_id: &str) -> anyhow::Result<std::sync::Arc<dyn Capability>> {
+        if let Some(built) = self.cache.lock().unwrap().get(capability_id) {
+            return Ok(built.clone());
+        }
+        let capability_config = self
+            .config
+            .capabilities
+            .get(capability_id)
+            .ok_or_else(|| anyhow::anyhow!("capability '{capability_id}' is not configured"))?;
+
+        // A capability whose references do not resolve cannot bind:
+        // `model.provider()` fails without a provider, and a model that is
+        // gone panics inside `ConfiguredModel::resolve` (#90) before
+        // construction can even report the failure. Refuse it rather than
+        // reach either.
+        crate::config::validation::validate_ref(
+            crate::config::validation::RefKind::Capability,
+            &capability_config.capability_id,
+            &self.config,
+        )
+        .map_err(|e| anyhow::anyhow!("Skipping capability '{capability_id}': {e}"))?;
+
+        let built = CAPABILITY_REGISTRY
+            .construct(
+                &capability_config.capability_type,
+                &capability_config.capability_id,
+                &capability_config.config,
+                &self.config,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!("could not construct capability '{capability_id}': {e}")
+            })?;
+        let built: std::sync::Arc<dyn Capability> = std::sync::Arc::from(built);
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(capability_id.to_string(), built.clone());
+        Ok(built)
     }
 }
 
 impl crate::dependency::Configured<dyn Capability> for CapabilitySource {
-    fn instances(&self) -> Vec<(String, &(dyn Capability + 'static))> {
-        self.constructed
-            .iter()
-            .map(|(id, capability)| (id.clone(), capability.as_ref()))
+    fn instances(&self) -> Vec<(String, std::sync::Arc<dyn Capability + 'static>)> {
+        self.config
+            .capabilities
+            .keys()
+            .filter_map(|id| match self.get(id) {
+                Ok(capability) => Some((id.clone(), capability)),
+                Err(e) => {
+                    alog_channel!(MessageLevel::Warning, "{e}");
+                    None
+                }
+            })
             .collect()
     }
 

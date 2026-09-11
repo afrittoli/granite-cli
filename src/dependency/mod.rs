@@ -66,7 +66,7 @@ pub trait DependsOn<U: Catalogued + ?Sized> {
 /// knowing anything about `U`'s concrete storage or construction.
 pub trait Configured<U: Catalogued + ?Sized> {
     /// Already-configured instances, keyed by their configured id.
-    fn instances(&self) -> Vec<(String, &U)>;
+    fn instances(&self) -> Vec<(String, std::sync::Arc<U>)>;
 
     /// Registered catalog types (type-level metadata), keyed by registry name.
     fn catalog(&self) -> HashMap<&'static str, U::Metadata>;
@@ -120,7 +120,7 @@ where
     let existing_instances: Vec<String> = source
         .instances()
         .into_iter()
-        .filter(|(_, instance)| requirement.admits_instance(*instance))
+        .filter(|(_, instance)| requirement.admits_instance(&**instance))
         .map(|(id, _)| id)
         .collect();
 
@@ -198,16 +198,16 @@ mod tests {
     // Toy `Configured<dyn Paint>` source: a fixed set of already-mixed cans,
     // plus a catalog of "recipes" that could be mixed on demand.
     struct PaintShop {
-        cans: Vec<(String, Box<dyn Paint>)>,
+        cans: Vec<(String, std::sync::Arc<dyn Paint>)>,
         recipes: HashMap<&'static str, PaintMetadata>,
         recipe_schemas: HashMap<&'static str, schemars::Schema>,
     }
 
     impl Configured<dyn Paint> for PaintShop {
-        fn instances(&self) -> Vec<(String, &(dyn Paint + 'static))> {
+        fn instances(&self) -> Vec<(String, std::sync::Arc<dyn Paint + 'static>)> {
             self.cans
                 .iter()
-                .map(|(id, p)| (id.clone(), p.as_ref()))
+                .map(|(id, p)| (id.clone(), p.clone()))
                 .collect()
         }
         fn catalog(&self) -> HashMap<&'static str, PaintMetadata> {
@@ -240,8 +240,8 @@ mod tests {
     fn resolution_includes_matching_instances() {
         let shop = PaintShop {
             cans: vec![
-                ("can-1".to_string(), Box::new(MixedPaint("red"))),
-                ("can-2".to_string(), Box::new(MixedPaint("blue"))),
+                ("can-1".to_string(), std::sync::Arc::new(MixedPaint("red"))),
+                ("can-2".to_string(), std::sync::Arc::new(MixedPaint("blue"))),
             ],
             recipes: HashMap::new(),
             recipe_schemas: HashMap::new(),
@@ -257,7 +257,7 @@ mod tests {
     fn resolution_includes_configurable_types_alongside_instances() {
         let mut shop = empty_shop();
         shop.cans
-            .push(("can-1".to_string(), Box::new(MixedPaint("blue"))));
+            .push(("can-1".to_string(), std::sync::Arc::new(MixedPaint("blue"))));
         shop.recipes.insert(
             "cyan-mix",
             PaintMetadata {
@@ -283,7 +283,7 @@ mod tests {
     fn resolution_is_configurable_only_when_no_instance_matches() {
         let mut shop = empty_shop();
         shop.cans
-            .push(("can-1".to_string(), Box::new(MixedPaint("red"))));
+            .push(("can-1".to_string(), std::sync::Arc::new(MixedPaint("red"))));
         shop.recipes.insert(
             "cyan-mix",
             PaintMetadata {

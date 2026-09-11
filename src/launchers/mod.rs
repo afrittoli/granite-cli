@@ -23,48 +23,65 @@ pub static LAUNCHER_REGISTRY: LazyLock<base::LauncherFactory> = LazyLock::new(||
 
 /*-- LauncherSource -----------------------------------------------------------*/
 
-/// The real `Configured<dyn Launcher>`: eagerly constructs a live launcher
-/// instance for every enabled `LauncherConfig`, keyed by its instance
-/// nickname (`launcher_id`) rather than its catalog type (`launcher_type`) --
-/// this is what lets multiple named instances of one catalog type coexist
-/// (e.g. `claude-local` and `claude-enterprise` both backed by `claude`).
+/// The real `Configured<dyn Launcher>`: builds a live launcher instance the
+/// first time one is asked for by its instance nickname (`launcher_id`)
+/// rather than its catalog type (`launcher_type`) -- this is what lets
+/// multiple named instances of one catalog type coexist (e.g. `claude-local`
+/// and `claude-enterprise` both backed by `claude`). The instance is kept, so
+/// every later ask for that id returns the same object.
 pub struct LauncherSource {
-    constructed: Vec<(String, Box<dyn Launcher>)>,
+    /// The configuration this source was built from. Narrows to
+    /// `HashMap<String, LauncherConfig>` once `construct` stops taking the
+    /// whole configuration.
+    config: crate::config::Config,
+    cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Launcher>>>,
 }
 
 impl LauncherSource {
     pub fn from_config(config: &crate::config::Config) -> Self {
-        let constructed = config
+        Self {
+            config: config.clone(),
+            cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The launcher configured under `launcher_id`, built on the first ask
+    /// and returned from the cache on every one after it. Errors when no
+    /// entry is configured under that id, or when its `launcher_type` is not
+    /// in the registry.
+    pub fn get(&self, launcher_id: &str) -> anyhow::Result<std::sync::Arc<dyn Launcher>> {
+        if let Some(built) = self.cache.lock().unwrap().get(launcher_id) {
+            return Ok(built.clone());
+        }
+        let lc = self
+            .config
             .launchers
-            .values()
-            .filter_map(|lc| {
-                let result = LAUNCHER_REGISTRY.construct(
-                    &lc.launcher_type,
-                    &lc.launcher_id,
-                    &lc.config,
-                    config,
-                );
-                if result.is_err() {
-                    alog_channel!(
-                        MessageLevel::Warning,
-                        "Could not construct launcher '{}'",
-                        lc.launcher_type
-                    );
-                }
-                result
-                    .ok()
-                    .map(|launcher| (lc.launcher_id.clone(), launcher))
-            })
-            .collect();
-        Self { constructed }
+            .get(launcher_id)
+            .ok_or_else(|| anyhow::anyhow!("launcher '{launcher_id}' is not configured"))?;
+        let built = LAUNCHER_REGISTRY
+            .construct(&lc.launcher_type, &lc.launcher_id, &lc.config, &self.config)
+            .map_err(|e| anyhow::anyhow!("could not construct launcher '{launcher_id}': {e}"))?;
+        let built: std::sync::Arc<dyn Launcher> = std::sync::Arc::from(built);
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(launcher_id.to_string(), built.clone());
+        Ok(built)
     }
 }
 
 impl crate::dependency::Configured<dyn Launcher> for LauncherSource {
-    fn instances(&self) -> Vec<(String, &(dyn Launcher + 'static))> {
-        self.constructed
-            .iter()
-            .map(|(id, l)| (id.clone(), l.as_ref()))
+    fn instances(&self) -> Vec<(String, std::sync::Arc<dyn Launcher + 'static>)> {
+        self.config
+            .launchers
+            .keys()
+            .filter_map(|id| match self.get(id) {
+                Ok(launcher) => Some((id.clone(), launcher)),
+                Err(e) => {
+                    alog_channel!(MessageLevel::Warning, "{e}");
+                    None
+                }
+            })
             .collect()
     }
 
