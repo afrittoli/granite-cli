@@ -96,6 +96,8 @@ pub struct AgentModelBinding {
     pub api_key: Option<Secret>,
     pub verify_ssl: bool,
     pub context_length: Option<u64>,
+    /// Custom headers to be sent with each request to the provider.
+    pub custom_headers: Option<HashMap<String, Secret>>,
 }
 
 /// Request payload for `BindingType::SubAgent` -- which `ApiType` the
@@ -262,7 +264,6 @@ impl McpBinding {
 pub trait Capability: crate::registry::Named + Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn dependencies(&self) -> Vec<Dependency>;
 
     /// Which binding surfaces this capability instance can fill.
     fn binding_types(&self) -> HashSet<BindingType>;
@@ -312,9 +313,10 @@ impl std::fmt::Display for CapabilityMetadata {
 /*-- Supporting Types --------------------------------------------------------*/
 
 /// A capability's declared dependency on a model, provider, or external shell
-/// command. `resolved_id` is `None` at the type level (catalog display,
-/// before any instance is configured) and `Some(id)` once a concrete
-/// instance has picked a specific dependency.
+/// command, as declared by `CapabilityMetadata` for a capability type.
+/// `config_key` names the key in a configured instance's own config JSON that
+/// holds the resolved id, which is how `config::validation` reads it without
+/// constructing anything.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Dependency {
     Model {
