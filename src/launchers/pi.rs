@@ -51,11 +51,7 @@ pub struct PiLauncher {
 impl ConfigConstructable for PiLauncher {
     type Config = PiLauncherConfig;
 
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: PiLauncherConfig = serde_json::from_value(cfg.clone()).unwrap_or_default();
         Self {
             instance_id: instance_id.to_string(),
@@ -708,7 +704,7 @@ mod tests {
     use crate::utils::ui::base::tests::CaptureUi;
 
     fn launcher(cfg: serde_json::Value) -> PiLauncher {
-        PiLauncher::new("pi", &cfg, &crate::config::Config::default())
+        PiLauncher::new("pi", &cfg)
     }
 
     fn binding() -> AgentModelBinding {
@@ -738,6 +734,7 @@ mod tests {
             base_env: std::collections::HashMap::new(),
             dry_run,
             usage_tracker: None,
+            model_proxy: None,
         }
     }
 
@@ -781,11 +778,7 @@ mod tests {
 
     #[test]
     fn instance_id_round_trips_from_construction() {
-        let l = PiLauncher::new(
-            "pi-local",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let l = PiLauncher::new("pi-local", &serde_json::json!({}));
         assert_eq!(l.instance_id(), "pi-local");
     }
 

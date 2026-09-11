@@ -75,11 +75,7 @@ pub struct BobLauncher {
 impl ConfigConstructable for BobLauncher {
     type Config = BobLauncherConfig;
 
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: BobLauncherConfig = serde_json::from_value(cfg.clone()).unwrap_or_default();
         Self {
             instance_id: instance_id.to_string(),
@@ -374,11 +370,7 @@ mod tests {
 
     #[test]
     fn command_defaults_to_bob() {
-        let l = BobLauncher::new(
-            "my-bob",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let l = BobLauncher::new("my-bob", &serde_json::json!({}));
         assert_eq!(l.command(), "bob");
     }
 
@@ -389,7 +381,6 @@ mod tests {
             &serde_json::json!({
                 "command_path": "/opt/bin/bob"
             }),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.command(), "/opt/bin/bob");
     }
@@ -401,7 +392,6 @@ mod tests {
             &serde_json::json!({
                 "command_path": "/no/such/path/bob"
             }),
-            &crate::config::Config::default(),
         );
         assert!(l.validate_command().is_err());
     }
@@ -413,7 +403,6 @@ mod tests {
             &serde_json::json!({
                 "command_path": "ls"
             }),
-            &crate::config::Config::default(),
         );
         assert!(l.validate_command().is_ok());
     }
@@ -448,7 +437,6 @@ mod tests {
         let l = BobLauncher::new(
             "my-bob",
             &serde_json::json!({ "command_path": "/opt/bin/bob" }),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.config.command_path, Some("/opt/bin/bob".to_string()));
         assert_eq!(l.config.pi_command_path, None);
@@ -466,7 +454,6 @@ mod tests {
         let l = BobLauncher::new(
             "my-bob",
             &serde_json::json!({}),
-            &crate::config::Config::default(),
         );
         let db_path = l.bob_db_path();
         assert!(db_path.ends_with(".bob/db/bob.db"));
@@ -479,7 +466,6 @@ mod tests {
             &serde_json::json!({
                 "bob_db_path": "/custom/path/bob.db"
             }),
-            &crate::config::Config::default(),
         );
         let db_path = l.bob_db_path();
         assert_eq!(db_path, std::path::PathBuf::from("/custom/path/bob.db"));
@@ -490,7 +476,6 @@ mod tests {
         let l = BobLauncher::new(
             "my-bob",
             &serde_json::json!({}),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.config.usage_poll_interval_secs, None);
     }
@@ -502,7 +487,6 @@ mod tests {
             &serde_json::json!({
                 "usage_poll_interval_secs": 10
             }),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.config.usage_poll_interval_secs, Some(10));
     }
@@ -515,7 +499,6 @@ mod tests {
                 "bob_db_path": "/other/db.db",
                 "usage_poll_interval_secs": 3
             }),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.config.bob_db_path, Some("/other/db.db".to_string()));
         assert_eq!(l.config.usage_poll_interval_secs, Some(3));
@@ -528,7 +511,6 @@ mod tests {
         let l = BobLauncher::new(
             "my-bob",
             &serde_json::json!({}),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(5));
     }
@@ -540,7 +522,6 @@ mod tests {
             &serde_json::json!({
                 "usage_poll_interval_secs": 15
             }),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(15));
     }
@@ -552,7 +533,6 @@ mod tests {
             &serde_json::json!({
                 "usage_poll_interval_secs": 0
             }),
-            &crate::config::Config::default(),
         );
         assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(1));
     }
@@ -634,11 +614,7 @@ mod tests {
     }
 
     fn bob() -> BobLauncher {
-        BobLauncher::new(
-            "my-bob",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        )
+        BobLauncher::new("my-bob", &serde_json::json!({}))
     }
 
     #[tokio::test]
@@ -668,6 +644,7 @@ mod tests {
             working_dir,
             base_env: std::collections::HashMap::new(),
             dry_run,
+            model_proxy: None,
             usage_tracker: None,
         }
     }

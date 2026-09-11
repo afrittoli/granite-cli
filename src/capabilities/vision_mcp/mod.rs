@@ -100,11 +100,7 @@ impl ConfigConstructable for VisionMCPCapability {
     /// `ConfiguredModel`, exactly like `AgentModelCapability::new` -- so
     /// `model.provider()` works at bind time and, when a usage-tracking
     /// session is active, the model is transparently tracked.
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: VisionMCPCapabilityConfig =
             serde_json::from_value(cfg.clone()).unwrap_or_default();
         Self {
@@ -330,7 +326,6 @@ mod tests {
         let cap = VisionMCPCapability::new(
             "vision",
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-            &config,
         );
         ResolvedVisionMCPCapability {
             inner: cap,
@@ -356,6 +351,7 @@ mod tests {
             base_env: HashMap::new(),
             dry_run: false,
             usage_tracker: None,
+            model_proxy: None,
         }
     }
 
@@ -450,7 +446,6 @@ mod tests {
         let cap = Box::new(VisionMCPCapability::new(
             "vision",
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-            &Config::default(),
         ));
         let lookup = CheckingLookup {
             model: Arc::new(FakeModel::vision(vec![ModelFunction::Chat])),

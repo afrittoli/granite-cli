@@ -43,11 +43,7 @@ pub struct OpenClawLauncher {
 impl ConfigConstructable for OpenClawLauncher {
     type Config = OpenClawLauncherConfig;
 
-    fn new(
-        instance_id: &str,
-        cfg: &serde_json::Value,
-        _global_config: &crate::config::Config,
-    ) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
         let config: OpenClawLauncherConfig =
             serde_json::from_value(cfg.clone()).unwrap_or_default();
         Self {
@@ -322,7 +318,7 @@ mod tests {
     use crate::utils::ui::base::tests::CaptureUi;
 
     fn launcher(cfg: serde_json::Value) -> OpenClawLauncher {
-        OpenClawLauncher::new("openclaw", &cfg, &crate::config::Config::default())
+        OpenClawLauncher::new("openclaw", &cfg)
     }
 
     fn binding() -> AgentModelBinding {
@@ -352,6 +348,7 @@ mod tests {
             base_env: std::collections::HashMap::new(),
             dry_run,
             usage_tracker: None,
+            model_proxy: None,
         }
     }
 
@@ -390,11 +387,7 @@ mod tests {
 
     #[test]
     fn instance_id_round_trips_from_construction() {
-        let l = OpenClawLauncher::new(
-            "openclaw-local",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let l = OpenClawLauncher::new("openclaw-local", &serde_json::json!({}));
         assert_eq!(l.instance_id(), "openclaw-local");
     }
 

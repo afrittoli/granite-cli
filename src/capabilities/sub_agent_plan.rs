@@ -146,7 +146,6 @@ mod tests {
             &serde_json::json!({
                 "model_id": "granite-3.1-8b-instruct",
             }),
-            &config,
         );
         ResolvedPlanSubAgentCapability {
             inner: cap,
@@ -188,7 +187,6 @@ mod tests {
             &serde_json::json!({
                 "model_id": "granite-3.1-8b-instruct",
             }),
-            &config,
         );
         let cap = ResolvedPlanSubAgentCapability {
             inner: cap,
