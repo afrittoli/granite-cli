@@ -281,9 +281,9 @@ impl ProviderCommands {
             config,
         };
 
-        if let Err(e) = ctx.config.insert_provider(&instance_id, provider_config) {
-            ctx.ui.warn(&format!("failed to save provider config: {e}"));
-        }
+        ctx.config
+            .insert_provider(&instance_id, provider_config)
+            .map_err(|e| anyhow::anyhow!("failed to save provider config: {e}"))?;
 
         // Health check
         ctx.ui.info("\nRunning health check...");
@@ -663,6 +663,34 @@ mod tests {
             fields
                 .iter()
                 .any(|(k, v)| *k == "Note" && v.contains("not found in the bundled registry"))
+        );
+    }
+
+    // -- setup -----------------------------------------------------------------
+
+    /// A provider that could not be saved must fail the setup, not report
+    /// success over configuration that never reached disk.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setup_fails_when_config_cannot_be_saved() {
+        let home = crate::config::TestConfigHome::new();
+        let mut ctx = test_ctx();
+
+        home.make_unwritable();
+        let result = ProviderCommands::setup(&mut ctx, "ollama", Some("test-ollama")).await;
+        home.make_writable();
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("failed to save provider config")
+        );
+        let infos = infos!(ctx);
+        assert!(
+            !infos.iter().any(|m| m.contains("configured successfully")),
+            "{infos:?}"
         );
     }
 

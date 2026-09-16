@@ -808,10 +808,42 @@ impl TestConfigHome {
         let tmp = tempfile::TempDir::new().unwrap();
         // SAFETY: serialized by CONFIG_HOME_LOCK, held for the guard's lifetime.
         unsafe { std::env::set_var("GRANITE_CLI_HOME", tmp.path()) };
+        // Lay the home out the way `Config::new()` does, so a test that
+        // builds a `Config::default()` and saves into it writes to the
+        // directories a real run has.
+        Config::ensure_directories().unwrap();
         Self {
             _tmp: tmp,
             _guard: guard,
         }
+    }
+}
+
+/// Makes every directory under the home unwritable, so a save into it fails
+/// the way an unwritable config directory does. Writes to existing files
+/// still succeed, so tests must use it before anything is saved. Restore with
+/// [`TestConfigHome::make_writable`] before the guard drops, or the temp
+/// directory cannot be cleaned up.
+#[cfg(all(test, unix))]
+impl TestConfigHome {
+    pub(crate) fn make_unwritable(&self) {
+        Self::set_directory_permissions(self._tmp.path(), 0o555);
+    }
+
+    pub(crate) fn make_writable(&self) {
+        Self::set_directory_permissions(self._tmp.path(), 0o755);
+    }
+
+    fn set_directory_permissions(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+
+        for entry in fs::read_dir(path).unwrap() {
+            let entry_path = entry.unwrap().path();
+            if entry_path.is_dir() {
+                Self::set_directory_permissions(&entry_path, mode);
+            }
+        }
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
     }
 }
 
