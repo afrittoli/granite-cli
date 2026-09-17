@@ -1,4 +1,4 @@
-use crate::registry::{ConfigConstructable, NoConfig};
+use crate::registry::{ConfigConstructable, ConstructError, NoConfig};
 use crate::utils::ui::base::{HasUiMetadata, Ui, UiMetadata};
 
 /*-- public --*/
@@ -10,8 +10,8 @@ pub struct PlainOutput;
 impl ConfigConstructable for PlainOutput {
     type Config = NoConfig;
 
-    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
-        Self
+    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Result<Self, ConstructError> {
+        Ok(Self)
     }
 }
 
@@ -134,5 +134,5 @@ impl HasUiMetadata for PlainOutput {
 mod tests {
     use super::*;
 
-    crate::output_contract_tests!(PlainOutput::new("plain", &serde_json::json!({}),));
+    crate::output_contract_tests!(PlainOutput::new("plain", &serde_json::json!({}),).unwrap());
 }

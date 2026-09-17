@@ -29,7 +29,7 @@ use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetada
 use crate::launchers::shared::mcp_cli::mcp_binding_request;
 use crate::providers::ApiType;
 use crate::proxy::ProxyHandle;
-use crate::registry::ConfigConstructable;
+use crate::registry::{ConfigConstructable, ConstructError};
 use crate::utils::resolve_shell_command;
 use crate::utils::ui::Ui;
 
@@ -75,16 +75,16 @@ pub struct OpenCodeLauncher {
 impl ConfigConstructable for OpenCodeLauncher {
     type Config = OpenCodeLauncherConfig;
 
-    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Result<Self, ConstructError> {
         let config: OpenCodeLauncherConfig =
-            serde_json::from_value(cfg.clone()).unwrap_or_default();
-        Self {
+            serde_json::from_value(cfg.clone()).map_err(ConstructError::settings)?;
+        Ok(Self {
             instance_id: instance_id.to_string(),
             config,
             bound_agent_model: None,
             bound_mcp_bindings: vec![],
             bound_sub_agents: vec![],
-        }
+        })
     }
 }
 
@@ -1035,7 +1035,7 @@ mod tests {
     use crate::utils::ui::base::tests::CaptureUi;
 
     fn launcher(cfg: serde_json::Value) -> OpenCodeLauncher {
-        OpenCodeLauncher::new("opencode", &cfg)
+        OpenCodeLauncher::new("opencode", &cfg).unwrap()
     }
 
     fn binding() -> AgentModelBinding {
@@ -1115,7 +1115,7 @@ mod tests {
 
     #[test]
     fn instance_id_round_trips_from_construction() {
-        let l = OpenCodeLauncher::new("opencode-local", &serde_json::json!({}));
+        let l = OpenCodeLauncher::new("opencode-local", &serde_json::json!({})).unwrap();
         assert_eq!(l.instance_id(), "opencode-local");
     }
 

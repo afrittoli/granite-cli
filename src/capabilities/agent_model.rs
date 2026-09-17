@@ -8,7 +8,7 @@ use crate::capabilities::base::{
 };
 use crate::capabilities::requirement::ModelRequirement;
 use crate::models::{ConfiguredModel, ModelFunction};
-use crate::registry::ConfigConstructable;
+use crate::registry::{ConfigConstructable, ConstructError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
@@ -44,13 +44,13 @@ impl ConfigConstructable for AgentModelCapability {
     /// Builds the capability from its own config alone. `cfg` holds the
     /// capability's instance config (e.g. `{"model_id": "my-model"}`), where
     /// `model_id` is a name resolved later by `resolve_refs`.
-    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Result<Self, ConstructError> {
         let config: AgentModelCapabilityConfig =
-            serde_json::from_value(cfg.clone()).unwrap_or_default();
-        Self {
+            serde_json::from_value(cfg.clone()).map_err(ConstructError::settings)?;
+        Ok(Self {
             instance_id: instance_id.to_string(),
             config,
-        }
+        })
     }
 }
 
@@ -245,7 +245,8 @@ mod tests {
         let cap = AgentModelCapability::new(
             "my-agent",
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-        );
+        )
+        .unwrap();
         // Replace the real model with our test double that has a custom provider
         // and the specified variants list.
         ResolvedAgentModelCapability {
@@ -374,7 +375,8 @@ mod tests {
         let cap = AgentModelCapability::new(
             "my-agent",
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-        );
+        )
+        .unwrap();
         assert_eq!(
             cap.binding_types(),
             HashSet::from([BindingType::AgentModel])

@@ -120,7 +120,8 @@ mod tests {
             &serde_json::json!({
                 "model_id": "granite-3.1-8b-instruct",
             }),
-        );
+        )
+        .unwrap();
         ResolvedExploreSubAgentCapability {
             inner: cap,
             configured_model: crate::models::ConfiguredModel::for_test(
@@ -161,7 +162,8 @@ mod tests {
             &serde_json::json!({
                 "model_id": "granite-3.1-8b-instruct",
             }),
-        );
+        )
+        .unwrap();
         let cap = ResolvedExploreSubAgentCapability {
             inner: cap,
             configured_model: crate::models::ConfiguredModel::for_test(
