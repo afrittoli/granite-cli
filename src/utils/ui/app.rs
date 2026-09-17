@@ -35,20 +35,11 @@ fn format_tokens(count: u64) -> String {
 }
 
 /// Format a session `launched_at` timestamp ("YYYYMMDDTHHMMSS") as
-/// "YYYY-MM-DD HH:MM".  Falls back to the raw string if the input is not
-/// exactly 15 characters.
+/// "YYYY-MM-DD HH:MM".  Falls back to the raw string if it cannot be parsed.
 fn format_launched_at(s: &str) -> String {
-    if s.len() != 15 {
-        return s.to_string();
-    }
-    format!(
-        "{}-{}-{} {}:{}",
-        &s[0..4],
-        &s[4..6],
-        &s[6..8],
-        &s[9..11],
-        &s[11..13]
-    )
+    chrono::NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%S")
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| s.to_string())
 }
 
 /// Returns `true` when a session has no `finished_at` but its `updated_at`
@@ -62,60 +53,11 @@ fn session_is_stale(session: &crate::session::SessionMeta) -> bool {
     if session.finished_at.is_some() || session.updated_at.is_empty() {
         return false;
     }
-    let s = &session.updated_at;
-    if s.len() != 15 {
-        return false;
-    }
-    let Ok(year): Result<u64, _> = s[0..4].parse() else {
+    let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&session.updated_at, "%Y%m%dT%H%M%S") else {
         return false;
     };
-    let Ok(month): Result<u64, _> = s[4..6].parse() else {
-        return false;
-    };
-    let Ok(day): Result<u64, _> = s[6..8].parse() else {
-        return false;
-    };
-    let Ok(hh): Result<u64, _> = s[9..11].parse() else {
-        return false;
-    };
-    let Ok(mm): Result<u64, _> = s[11..13].parse() else {
-        return false;
-    };
-    let Ok(ss): Result<u64, _> = s[13..15].parse() else {
-        return false;
-    };
-    // Approximate days since Unix epoch using a simple Gregorian formula.
-    let days = approximate_days_since_epoch(year, month, day);
-    let secs = days * 86400 + hh * 3600 + mm * 60 + ss;
-    let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs(),
-        Err(_) => return false,
-    };
-    now.saturating_sub(secs) > 2 * 3600
-}
-
-/// Gregorian days since Unix epoch (1970-01-01) for the given date.
-/// Uses a simplified but correct algorithm for dates after 1970.
-fn approximate_days_since_epoch(year: u64, month: u64, day: u64) -> u64 {
-    // Days in each month for a non-leap year
-    const MONTH_DAYS: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let is_leap = |y: u64| (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let mut days: u64 = 0;
-    // Full years from 1970 up to (but not including) year
-    for y in 1970..year {
-        days += if is_leap(y) { 366 } else { 365 };
-    }
-    // Full months in the current year
-    for m in 1..month {
-        let m_idx = (m - 1) as usize;
-        days += MONTH_DAYS[m_idx];
-        if m == 2 && is_leap(year) {
-            days += 1;
-        }
-    }
-    // Days in the current month (1-indexed, so subtract 1)
-    days += day.saturating_sub(1);
-    days
+    let now = chrono::Utc::now().naive_utc();
+    now.signed_duration_since(dt) > chrono::Duration::hours(2)
 }
 
 /// Strip ANSI escape sequences from a string.
