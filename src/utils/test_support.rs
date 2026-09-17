@@ -15,7 +15,7 @@ use crate::models::{Model, ModelArchitecture, ModelFunction, ModelType, ModelVar
 use crate::providers::{
     ApiEndpoint, ApiType, HealthStatus, ModelFormat, Provider, ProviderError, PullResult,
 };
-use crate::registry::{ConfigConstructable, Named, Secret};
+use crate::registry::{ConfigConstructable, ConstructError, Named, Secret};
 use crate::utils::ui::Ui;
 
 /*-- public --*/
@@ -37,7 +37,7 @@ pub(crate) struct FakeProvider {
 impl ConfigConstructable for FakeProvider {
     type Config = crate::registry::NoConfig;
 
-    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
+    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Result<Self, ConstructError> {
         unimplemented!("not used in tests")
     }
 }
@@ -139,7 +139,7 @@ impl FakeModel {
 impl ConfigConstructable for FakeModel {
     type Config = crate::registry::NoConfig;
 
-    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
+    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Result<Self, ConstructError> {
         unimplemented!("not used in tests")
     }
 }

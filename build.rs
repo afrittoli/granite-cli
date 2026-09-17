@@ -76,8 +76,10 @@ fn generate_model_struct(model: &YamlModel) -> String {
         "impl crate::registry::ConfigConstructable for {struct_name} {{\n"
     ));
     s.push_str("    type Config = crate::registry::NoConfig;\n\n");
-    s.push_str("    fn new(instance_id: &str, _cfg: &serde_json::Value) -> Self {\n");
-    s.push_str("        Self { instance_id: instance_id.to_string() }\n");
+    s.push_str(
+        "    fn new(instance_id: &str, _cfg: &serde_json::Value)\n         -> Result<Self, crate::registry::ConstructError> {\n",
+    );
+    s.push_str("        Ok(Self { instance_id: instance_id.to_string() })\n");
     s.push_str("    }\n");
     s.push_str("}\n\n");
 

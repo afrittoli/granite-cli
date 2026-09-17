@@ -16,7 +16,7 @@ use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetada
 use crate::launchers::shared::mcp_cli::{
     mcp_binding_request, register_mcp_server, remove_mcp_server,
 };
-use crate::registry::ConfigConstructable;
+use crate::registry::{ConfigConstructable, ConstructError};
 use crate::utils::resolve_shell_command;
 use crate::utils::ui::Ui;
 
@@ -53,15 +53,16 @@ pub struct ClaudeLauncher {
 impl ConfigConstructable for ClaudeLauncher {
     type Config = ClaudeLauncherConfig;
 
-    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
-        let config: ClaudeLauncherConfig = serde_json::from_value(cfg.clone()).unwrap_or_default();
-        Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Result<Self, ConstructError> {
+        let config: ClaudeLauncherConfig =
+            serde_json::from_value(cfg.clone()).map_err(ConstructError::settings)?;
+        Ok(Self {
             instance_id: instance_id.to_string(),
             config,
             bound_agent_model: None,
             bound_mcp_bindings: vec![],
             bound_sub_agents: vec![],
-        }
+        })
     }
 }
 
@@ -441,7 +442,7 @@ mod tests {
 
     #[test]
     fn command_defaults_to_claude() {
-        let l = ClaudeLauncher::new("my-claude", &serde_json::json!({}));
+        let l = ClaudeLauncher::new("my-claude", &serde_json::json!({})).unwrap();
         assert_eq!(l.command(), "claude");
     }
 
@@ -452,7 +453,8 @@ mod tests {
             &serde_json::json!({
                 "command_path": "/opt/bin/claude"
             }),
-        );
+        )
+        .unwrap();
         assert_eq!(l.command(), "/opt/bin/claude");
     }
 
@@ -463,7 +465,8 @@ mod tests {
             &serde_json::json!({
                 "command_path": "/no/such/path/claude"
             }),
-        );
+        )
+        .unwrap();
         assert!(l.validate_command().is_err());
     }
 
@@ -474,7 +477,8 @@ mod tests {
             &serde_json::json!({
                 "command_path": "ls"
             }),
-        );
+        )
+        .unwrap();
         assert!(l.validate_command().is_ok());
     }
 
@@ -584,7 +588,7 @@ mod tests {
 
     #[test]
     fn map_tool_name_covers_every_canonical_variant_and_formats_mcp_references() {
-        let l = ClaudeLauncher::new("my-claude", &serde_json::json!({}));
+        let l = ClaudeLauncher::new("my-claude", &serde_json::json!({})).unwrap();
         assert_eq!(
             l.map_tool_name(&ToolName::FileRead),
             Some("Read".to_string())
@@ -659,7 +663,7 @@ mod tests {
         bound_agent_model: Option<crate::capabilities::AgentModelBinding>,
         bound_sub_agents: Vec<(String, SubAgentBinding)>,
     ) -> ClaudeLauncher {
-        let mut l = ClaudeLauncher::new("my-claude", &serde_json::json!({}));
+        let mut l = ClaudeLauncher::new("my-claude", &serde_json::json!({})).unwrap();
         l.bound_agent_model = bound_agent_model;
         l.bound_sub_agents = bound_sub_agents;
         l
@@ -998,7 +1002,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_capability_pushes_sub_agent_binding() {
-        let mut l = ClaudeLauncher::new("my-claude", &serde_json::json!({}));
+        let mut l = ClaudeLauncher::new("my-claude", &serde_json::json!({})).unwrap();
         let cap = FakeSubAgentCapability {
             instance_id: "reviewer".to_string(),
             binding: sub_agent_binding("Reviews code", "granite-3.1-8b-instruct", vec![]),
