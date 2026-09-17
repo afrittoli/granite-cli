@@ -28,10 +28,9 @@ pub static PROVIDER_REGISTRY: LazyLock<base::ProviderFactory> = LazyLock::new(||
 /// backing `llama-cpp`, `ollama`, `lm-studio`) coexist. The instance is kept,
 /// so every later ask for that id returns the same object.
 pub struct ProviderSource {
-    /// The configuration this source was built from. Narrows to
-    /// `HashMap<String, ProviderConfig>` once `construct` stops taking the
-    /// whole configuration.
-    config: crate::config::Config,
+    /// The settings for this kind, from the configuration snapshot the
+    /// source was built from.
+    configs: HashMap<String, crate::config::ProviderConfig>,
     /// When a launch passes a session proxy, every provider handed out by
     /// `get` points at it instead of the real upstream.
     model_proxy: Option<crate::proxy::ProxyHandle>,
@@ -58,7 +57,7 @@ impl ProviderSource {
         model_proxy: Option<crate::proxy::ProxyHandle>,
     ) -> Self {
         Self {
-            config: config.clone(),
+            configs: config.providers.clone(),
             model_proxy,
             upstream: std::sync::Mutex::new(HashMap::new()),
             proxied: std::sync::Mutex::new(HashMap::new()),
@@ -109,8 +108,7 @@ impl ProviderSource {
             return Ok(built.clone());
         }
         let provider_config = self
-            .config
-            .providers
+            .configs
             .get(provider_id)
             .ok_or(crate::sources::SourceError::NotConfigured)?;
         let built = PROVIDER_REGISTRY.construct(
@@ -134,8 +132,7 @@ impl ProviderSource {
 
 impl crate::dependency::Configured<dyn Provider> for ProviderSource {
     fn instances(&self) -> Vec<(String, std::sync::Arc<dyn Provider + 'static>)> {
-        self.config
-            .providers
+        self.configs
             .keys()
             .filter_map(|id| match self.get(id) {
                 Ok(provider) => Some((id.clone(), provider)),
