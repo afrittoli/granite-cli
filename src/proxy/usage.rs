@@ -46,7 +46,7 @@ impl UsageStats {
 /// An optional [`tokio::sync::watch`] notifier can be attached via
 /// [`UsageTracker::set_notifier`]. When set, every call to [`record`] sends
 /// a non-blocking notification so a background writer task can react to new
-/// usage immediately rather than polling on a fixed interval.
+/// usage immediately
 pub struct UsageTracker {
     stats: Mutex<HashMap<String, UsageStats>>,
     /// Fires `()` on every [`record`] call when set. The `watch` channel
@@ -80,14 +80,13 @@ impl UsageTracker {
     /// Fold `delta` into the running totals for `label`, plus one request.
     /// Fires the attached notifier (if any) after updating, without blocking.
     pub fn record(&self, label: &str, delta: UsageStats) {
-        {
-            let mut stats = self.stats.lock().unwrap();
-            let entry = stats.entry(label.to_string()).or_default();
-            entry.add(&UsageStats {
-                requests: 1,
-                ..delta
-            });
-        }
+        let mut stats = self.stats.lock().unwrap();
+        let entry = stats.entry(label.to_string()).or_default();
+        entry.add(&UsageStats {
+            requests: 1,
+            ..delta
+        });
+
         // Non-blocking notify: send() on a watch channel overwrites the stored
         // value regardless of whether the receiver has read the previous one.
         // Errors only if all receivers have been dropped, which is fine.
