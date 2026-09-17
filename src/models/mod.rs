@@ -42,6 +42,19 @@ impl ModelSource {
         Self::with_proxy(config, None)
     }
 
+    /// Models resolved against a provider source somebody else built, so
+    /// one snapshot has one provider per configured id however it is reached.
+    pub fn with_providers(
+        config: &crate::config::Config,
+        providers: Arc<crate::providers::ProviderSource>,
+    ) -> Self {
+        Self {
+            config: config.clone(),
+            providers,
+            cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
     /// Models whose providers point at `model_proxy` when a launch started
     /// one, so a capability resolved against this source binds to the proxy.
     pub fn with_proxy(

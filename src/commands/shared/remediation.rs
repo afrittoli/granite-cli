@@ -52,7 +52,7 @@ pub(crate) enum Outcome {
 /// A list reports that a problem exists and never prompts about it. Acting on
 /// it is left to a command the user chooses to run next.
 pub(crate) fn dangling_notes(ctx: &crate::AppContext, kind: RefKind) -> HashMap<String, String> {
-    find_dangling(kind, &ctx.config)
+    find_dangling(kind, ctx.config())
         .into_iter()
         .map(|dangling| {
             (
@@ -79,7 +79,7 @@ pub(crate) fn prompt_with_current(
         return prompt.to_string();
     };
 
-    match validate_ref(kind, current, &ctx.config) {
+    match validate_ref(kind, current, ctx.config()) {
         Ok(()) => format!("{prompt} [current: '{current}']"),
         Err(_) => format!(
             "{prompt} [current: '{current}', {} no longer resolves]",
@@ -105,14 +105,14 @@ pub(crate) enum Removal {
 /// Nothing pointing at it means no prompt. A session with nobody to ask
 /// removes only what was asked for, after saying what that breaks.
 pub(crate) fn confirm_removal(ctx: &crate::AppContext, kind: RefKind, id: &str) -> Result<Removal> {
-    let stranded = dependents(kind, id, &ctx.config);
+    let stranded = dependents(kind, id, ctx.config());
     if stranded.is_empty() {
         return Ok(Removal::Proceed { with: stranded });
     }
 
     ctx.ui.warn(&format!("Removing {kind} '{id}' will break:"));
     for (dependent_kind, dependent_id) in &stranded {
-        let type_suffix = type_name(*dependent_kind, dependent_id, &ctx.config)
+        let type_suffix = type_name(*dependent_kind, dependent_id, ctx.config())
             .map(|t| format!(" ({t})"))
             .unwrap_or_default();
         ctx.ui.info(&format!(
@@ -192,7 +192,7 @@ pub(crate) async fn remediate(
     let mut tried: Vec<Choice> = Vec::new();
 
     loop {
-        let Err(error) = validate_ref(kind, id, &ctx.config) else {
+        let Err(error) = validate_ref(kind, id, ctx.config()) else {
             return Ok(Outcome::Clean);
         };
 
@@ -205,7 +205,7 @@ pub(crate) async fn remediate(
             tried.clear();
         }
 
-        let Some(fix) = Fix::for_error(&error, &ctx.config, (kind, id)) else {
+        let Some(fix) = Fix::for_error(&error, ctx.config(), (kind, id)) else {
             // The instance the caller asked about is itself missing, so
             // there is nothing to offer: reconfiguring or removing needs
             // something that exists.
@@ -402,7 +402,7 @@ fn disable(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
     // The in-memory change lands either way, which is what the walk about to
     // re-run reads. A failure to persist is reported the way the removal
     // commands report theirs.
-    if let Err(e) = ctx.config.update_launcher(&launcher_id, |launcher| {
+    if let Err(e) = ctx.config_mut().update_launcher(&launcher_id, |launcher| {
         launcher
             .enabled_capabilities
             .retain(|id| id != &capability_id)
@@ -464,11 +464,8 @@ mod tests {
     /// Chat requirement, so reconfiguring `chat` picks it without a prompt
     /// of its own.
     fn ctx_with_a_dangling_model_ref() -> crate::AppContext {
-        let mut ctx = crate::AppContext {
-            config: Config::default(),
-            ui: Arc::new(CaptureUi::default()),
-        };
-        ctx.config.providers.insert(
+        let mut ctx = crate::AppContext::new(Config::default(), Arc::new(CaptureUi::default()));
+        ctx.config_mut().providers.insert(
             "ollama".to_string(),
             ProviderConfig {
                 provider_id: "ollama".to_string(),
@@ -476,7 +473,7 @@ mod tests {
                 config: serde_json::json!({}),
             },
         );
-        ctx.config.models.insert(
+        ctx.config_mut().models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {
                 model_id: "granite-3.1-8b-instruct".to_string(),
@@ -486,7 +483,7 @@ mod tests {
                 config: serde_json::json!({}),
             },
         );
-        ctx.config.capabilities.insert(
+        ctx.config_mut().capabilities.insert(
             "chat".to_string(),
             CapabilityConfig {
                 capability_id: "chat".to_string(),
@@ -494,7 +491,7 @@ mod tests {
                 config: serde_json::json!({ "model_id": "gone" }),
             },
         );
-        ctx.config.launchers.insert(
+        ctx.config_mut().launchers.insert(
             "claude".to_string(),
             LauncherConfig {
                 launcher_id: "claude".to_string(),
@@ -510,9 +507,12 @@ mod tests {
     /// the capability, so removing it strands nothing further.
     fn ctx_model_with_one_dependent() -> crate::AppContext {
         let mut ctx = ctx_with_a_dangling_model_ref();
-        ctx.config.launchers.clear();
-        ctx.config.capabilities.get_mut("chat").unwrap().config =
-            serde_json::json!({ "model_id": "granite-3.1-8b-instruct" });
+        ctx.config_mut().launchers.clear();
+        ctx.config_mut()
+            .capabilities
+            .get_mut("chat")
+            .unwrap()
+            .config = serde_json::json!({ "model_id": "granite-3.1-8b-instruct" });
         ctx
     }
 
@@ -524,8 +524,8 @@ mod tests {
 
         ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
 
-        assert!(ctx.config.get_model("granite-3.1-8b-instruct").is_none());
-        assert!(ctx.config.get_capability("chat").is_none());
+        assert!(ctx.config().get_model("granite-3.1-8b-instruct").is_none());
+        assert!(ctx.config().get_capability("chat").is_none());
     }
 
     #[test]
@@ -536,8 +536,8 @@ mod tests {
 
         ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
 
-        assert!(ctx.config.get_model("granite-3.1-8b-instruct").is_some());
-        assert!(ctx.config.get_capability("chat").is_some());
+        assert!(ctx.config().get_model("granite-3.1-8b-instruct").is_some());
+        assert!(ctx.config().get_capability("chat").is_some());
     }
 
     #[test]
@@ -548,10 +548,10 @@ mod tests {
 
         ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
 
-        assert!(ctx.config.get_model("granite-3.1-8b-instruct").is_none());
+        assert!(ctx.config().get_model("granite-3.1-8b-instruct").is_none());
         // Left in place, and now dangling, which `capability list` reports.
-        assert!(ctx.config.get_capability("chat").is_some());
-        assert!(!find_dangling(RefKind::Capability, &ctx.config).is_empty());
+        assert!(ctx.config().get_capability("chat").is_some());
+        assert!(!find_dangling(RefKind::Capability, ctx.config()).is_empty());
     }
 
     #[test]
@@ -563,8 +563,8 @@ mod tests {
         ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
 
         assert!(prompts(&ctx).is_empty());
-        assert!(ctx.config.get_model("granite-3.1-8b-instruct").is_none());
-        assert!(ctx.config.get_capability("chat").is_some());
+        assert!(ctx.config().get_model("granite-3.1-8b-instruct").is_none());
+        assert!(ctx.config().get_capability("chat").is_some());
         // The user is told what was broken even though nothing was asked.
         let warns = capture(&ctx).warns.borrow().clone();
         assert!(warns.iter().any(|w| w.contains("will break")), "{warns:?}");
@@ -578,7 +578,7 @@ mod tests {
         CapabilityCommands::remove(&mut ctx, "chat").unwrap();
 
         assert!(prompts(&ctx).is_empty());
-        assert!(ctx.config.get_capability("chat").is_none());
+        assert!(ctx.config().get_capability("chat").is_none());
     }
 
     #[tokio::test]
@@ -645,7 +645,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(ctx.config.get_capability("chat").is_none());
+        assert!(ctx.config().get_capability("chat").is_none());
         // What the caller asked about is gone, so it does not validate.
         assert_eq!(outcome, Outcome::Unresolved);
     }
@@ -656,7 +656,7 @@ mod tests {
         let mut ctx = ctx_with_a_dangling_model_ref();
         // A second broken capability, so repairing the first leaves one more
         // for the loop to find.
-        ctx.config.capabilities.insert(
+        ctx.config_mut().capabilities.insert(
             "vision".to_string(),
             CapabilityConfig {
                 capability_id: "vision".to_string(),
@@ -717,7 +717,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            ctx.config.get_capability("chat").is_some(),
+            ctx.config().get_capability("chat").is_some(),
             "the capability stays configured for any other launcher"
         );
     }
@@ -726,7 +726,7 @@ mod tests {
     async fn a_launch_un_enables_a_capability_that_is_not_configured() {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_a_dangling_model_ref();
-        ctx.config.capabilities.remove("chat");
+        ctx.config_mut().capabilities.remove("chat");
         answer(&ctx, &[1]);
 
         let outcome = remediate(

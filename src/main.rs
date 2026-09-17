@@ -6,6 +6,7 @@ pub mod launchers;
 pub mod models;
 pub mod proxy;
 pub mod registry;
+pub mod sources;
 pub mod utils;
 pub mod version {
     include!(concat!(env!("OUT_DIR"), "/version.rs"));
@@ -339,8 +340,67 @@ enum LauncherSubcommands {
 }
 
 pub struct AppContext {
-    pub config: config::Config,
+    config: config::Config,
     pub ui: std::sync::Arc<dyn Ui>,
+    /// The sources built from `config`, built on the first ask and dropped
+    /// whenever configuration is written. Behind a `Mutex` because commands
+    /// ask for them through `&self` and hold what they get across await
+    /// points.
+    sources: std::sync::Mutex<Option<sources::Sources>>,
+    /// The session proxy for this run, when a launch started one. Every
+    /// provider the sources hand out points at it, which is why setting it
+    /// discards them.
+    model_proxy: Option<proxy::ProxyHandle>,
+}
+
+impl AppContext {
+    pub fn new(config: config::Config, ui: std::sync::Arc<dyn Ui>) -> Self {
+        Self {
+            config,
+            ui,
+            sources: std::sync::Mutex::new(None),
+            model_proxy: None,
+        }
+    }
+
+    /// The configuration as it now stands.
+    pub fn config(&self) -> &config::Config {
+        &self.config
+    }
+
+    /// The configuration, to change. Taking it discards the sources, so
+    /// nothing built from the old snapshot is handed out after a write.
+    pub fn config_mut(&mut self) -> &mut config::Config {
+        self.invalidate();
+        &mut self.config
+    }
+
+    /// Replace the configuration wholesale, which a launch does to pick up
+    /// whatever was saved before it ran.
+    pub fn set_config(&mut self, config: config::Config) {
+        self.invalidate();
+        self.config = config;
+    }
+
+    /// Point every provider the sources hand out at the session proxy a
+    /// launch just started.
+    pub fn set_model_proxy(&mut self, model_proxy: proxy::ProxyHandle) {
+        self.invalidate();
+        self.model_proxy = Some(model_proxy);
+    }
+
+    /// The sources for the configuration as it now stands, built on the
+    /// first ask. The handles outlive the snapshot they came from, so a
+    /// launch keeps the set it resolved against for as long as it runs.
+    pub fn sources(&self) -> sources::Sources {
+        let mut held = self.sources.lock().unwrap();
+        held.get_or_insert_with(|| sources::Sources::build(&self.config, self.model_proxy.clone()))
+            .clone()
+    }
+
+    fn invalidate(&mut self) {
+        *self.sources.lock().unwrap() = None;
+    }
 }
 
 /// Construct the `Ui` backend for `--output`, exiting on an unrecognized
@@ -393,7 +453,7 @@ fn construct_context(
         ui.error(&format!("Failed to load config: {e}"));
         std::process::exit(1);
     });
-    AppContext { config, ui }
+    AppContext::new(config, ui)
 }
 
 /*-- private --*/
@@ -713,13 +773,13 @@ async fn run_launcher_command(
 /// from the source's upstream view, since a provider handed out by `get`
 /// reports the proxy's own address, which is not what the route points at.
 fn register_proxy_routes(
-    config: &crate::config::Config,
+    ctx: &AppContext,
     enabled_capabilities: &[String],
     handle: &crate::proxy::ProxyHandle,
     ui: &dyn Ui,
 ) {
-    let source = crate::models::ModelSource::from_config(config);
-    for model_id in model_ids_named_by(config, enabled_capabilities) {
+    let source = ctx.sources().models();
+    for model_id in model_ids_named_by(ctx.config(), enabled_capabilities) {
         let Ok(provider) = source.upstream_for(&model_id) else {
             continue;
         };
@@ -784,15 +844,18 @@ async fn run_launch(
     use crate::proxy::ProxyServer;
 
     // Load config fresh so we always pick up the latest saved state.
-    ctx.config = crate::config::Config::new()?;
+    ctx.set_config(crate::config::Config::new()?);
 
     // Configuration integrity first, before anything about the environment.
     LauncherCommands::prelaunch(ctx, launcher_id).await?;
 
-    let ui: &dyn Ui = &*ctx.ui;
-    let config = ctx.config.clone();
+    // A handle rather than a borrow of `ctx`: starting the session proxy
+    // below takes `ctx` mutably, to point its sources at the proxy.
+    let ui = std::sync::Arc::clone(&ctx.ui);
+    let ui: &dyn Ui = ui.as_ref();
 
-    let lc = config
+    let lc = ctx
+        .config()
         .get_launcher(launcher_id)
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -815,14 +878,13 @@ async fn run_launch(
     // provider directly in its multi-provider config, so it never needs this.
     // Skipped entirely under `dry_run`: there's no subprocess to point a
     // proxy at, and showing the real upstream URL in the overlay is more
-    // useful than a not-yet-running one. When booted, it's threaded through
-    // `config.model_proxy` so that any capability which resolves its model
-    // through `ModelSource` (see `AgentModelCapability::new`) is
-    // transparently routed through it (and tracked, if a tracker is active)
-    // -- no per-capability wrapping needed here.
+    // useful than a not-yet-running one. When booted, it goes on the
+    // application context, so every provider its sources hand out from then
+    // on points at the proxy and a capability resolved against them is
+    // routed through it, and tracked when a tracker is active.
     let needs_sub_agent_routing = lc.launcher_type == "claude"
         && lc.enabled_capabilities.iter().any(|id| {
-            config
+            ctx.config()
                 .get_capability(id)
                 .and_then(|c| CAPABILITY_REGISTRY.get(&c.capability_type))
                 .is_some_and(|meta| {
@@ -837,9 +899,15 @@ async fn run_launch(
         None
     };
     if let Some(server) = &proxy_server {
-        register_proxy_routes(&config, &lc.enabled_capabilities, &server.handle, ui);
+        // The set built before this point pointed at the real upstreams, so
+        // it goes: from here every provider handed out points at the proxy.
+        // Route targets are read first, through the source's upstream view.
+        register_proxy_routes(ctx, &lc.enabled_capabilities, &server.handle, ui);
+        ctx.set_model_proxy(server.handle.clone());
     }
     let model_proxy = proxy_server.as_ref().map(|s| s.handle.clone());
+    let sources = ctx.sources();
+    let models = sources.models();
 
     let mut launcher = LAUNCHER_REGISTRY
         .construct(&lc.launcher_type, &lc.launcher_id, &lc.config)
@@ -860,7 +928,7 @@ async fn run_launch(
     // after the launched process exits, not before it starts.
     let mut bound_capabilities: Vec<Box<dyn crate::capabilities::Capability>> = Vec::new();
     for cap_id in &lc.enabled_capabilities {
-        let cap_cfg = config.get_capability(cap_id).ok_or_else(|| {
+        let cap_cfg = ctx.config().get_capability(cap_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "Launcher '{launcher_id}' references capability '{cap_id}' \
                  which is not configured. Run `granite-cli capability setup` first."
@@ -875,13 +943,11 @@ async fn run_launch(
             .map_err(|e| anyhow::anyhow!("Failed to construct capability '{cap_id}': {e}"))?;
         // This path builds through the registry rather than through
         // `CapabilitySource`, so it wires the capability to what it names
-        // itself. `models` is built from the launch's own configuration, so a
-        // proxied launch resolves proxied providers.
+        // itself. The model source is the context's, so a proxied launch
+        // resolves the proxied providers and two capabilities naming one
+        // model share it.
         capability
-            .resolve_refs(&crate::models::ModelSource::with_proxy(
-                &config,
-                model_proxy.clone(),
-            ))
+            .resolve_refs(&*models)
             .map_err(|e| anyhow::anyhow!("Capability '{cap_id}': {e}"))?;
         capability.on_setup().await?;
         launcher.bind_capability(capability.as_ref()).await?;

@@ -142,7 +142,7 @@ impl App {
         let mut table_state = TableState::default();
         table_state.select(Some(0));
         let recommend_rows_cache = {
-            let source = crate::providers::ProviderSource::from_config(&ctx.config);
+            let source = ctx.sources().providers();
             let instances = source.instances();
             let providers: Vec<&dyn crate::providers::Provider> =
                 instances.iter().map(|(_, p)| &**p).collect();
@@ -156,10 +156,10 @@ impl App {
             )
         };
         let configured_only = [
-            !ctx.config.models.is_empty(),       // Models
-            !ctx.config.providers.is_empty(),    // Providers
-            !ctx.config.launchers.is_empty(),    // Launchers
-            !ctx.config.capabilities.is_empty(), // Capabilities
+            !ctx.config().models.is_empty(),       // Models
+            !ctx.config().providers.is_empty(),    // Providers
+            !ctx.config().launchers.is_empty(),    // Launchers
+            !ctx.config().capabilities.is_empty(), // Capabilities
         ];
         Self {
             ctx,
@@ -407,8 +407,13 @@ impl App {
         let ids: Vec<String> = match self.section {
             Section::Models => {
                 let only = self.configured_only[0];
-                let configured_ids: std::collections::HashSet<&str> =
-                    self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+                let configured_ids: std::collections::HashSet<&str> = self
+                    .ctx
+                    .config()
+                    .models
+                    .keys()
+                    .map(|k| k.as_str())
+                    .collect();
                 ModelCommands::catalog_rows(None)
                     .into_iter()
                     .filter(|r| !only || configured_ids.contains(r[0].as_str()))
@@ -514,7 +519,7 @@ impl App {
                     Section::Models => {
                         let only = self.configured_only[0];
                         if only {
-                            self.ctx.config.models.len()
+                            self.ctx.config().models.len()
                         } else {
                             MODEL_REGISTRY.entries().len()
                         }
@@ -626,8 +631,13 @@ impl App {
                     .collect();
 
                 // Model instances are keyed by model ID directly
-                let configured_ids: std::collections::HashSet<&str> =
-                    self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+                let configured_ids: std::collections::HashSet<&str> = self
+                    .ctx
+                    .config()
+                    .models
+                    .keys()
+                    .map(|k| k.as_str())
+                    .collect();
 
                 let header = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE"]).style(
                     Style::default()
@@ -907,8 +917,13 @@ impl App {
             Section::Recommend => {
                 let all_rows = &self.recommend_rows_cache;
 
-                let configured_ids: std::collections::HashSet<&str> =
-                    self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+                let configured_ids: std::collections::HashSet<&str> = self
+                    .ctx
+                    .config()
+                    .models
+                    .keys()
+                    .map(|k| k.as_str())
+                    .collect();
 
                 // columns: [0]=id [1]=size [2]=variant [3]=type [4]=fit [5]=providers
                 let header = Row::new(vec![
@@ -1031,8 +1046,8 @@ impl App {
                         })
                         .collect();
                     lines.push(Line::from(""));
-                    if let Some(mc) = self.ctx.config.get_model(id) {
-                        let provider_val = match self.ctx.config.get_provider(&mc.provider_id) {
+                    if let Some(mc) = self.ctx.config().get_model(id) {
+                        let provider_val = match self.ctx.config().get_provider(&mc.provider_id) {
                             None => mc.provider_id.clone(),
                             Some(pc) => format!("{} ({})", mc.provider_id, pc.provider_type),
                         };
@@ -1422,7 +1437,7 @@ pub async fn run_interactive_tui(ctx: crate::AppContext) -> anyhow::Result<()> {
             pane.poll();
             if pane.finished {
                 if let Ok(fresh) = crate::config::Config::new() {
-                    app.ctx.config = fresh;
+                    app.ctx.set_config(fresh);
                 }
                 app.setup_pane = None;
             }
@@ -1451,7 +1466,7 @@ pub async fn run_interactive_tui(ctx: crate::AppContext) -> anyhow::Result<()> {
                 pane.handle_key(key);
                 if pane.finished {
                     if let Ok(fresh) = crate::config::Config::new() {
-                        app.ctx.config = fresh;
+                        app.ctx.set_config(fresh);
                     }
                     app.setup_pane = None;
                 }
@@ -1510,10 +1525,7 @@ fn spawn_setup(
         None => format!("{} — {id}", section.label().to_lowercase()),
     };
 
-    let mut task_ctx = crate::AppContext {
-        config: ctx.config.clone(),
-        ui: tui_ui,
-    };
+    let mut task_ctx = crate::AppContext::new(ctx.config().clone(), tui_ui);
 
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
@@ -1533,7 +1545,7 @@ fn spawn_setup(
             }
             // Write config back from the task context so changes persist.
             // (The task_ctx.config was cloned before the task started; the
-            // setup commands call ctx.config.insert_* which already persist
+            // setup commands call ctx.config().insert_* which already persist
             // each entry to disk, so the main ctx just needs a reload.)
         });
     });
@@ -1551,10 +1563,10 @@ mod tests {
     use std::sync::Arc;
 
     fn app() -> App {
-        App::new(crate::AppContext {
-            config: Config::default(),
-            ui: Arc::new(CaptureUi::default()),
-        })
+        App::new(crate::AppContext::new(
+            Config::default(),
+            Arc::new(CaptureUi::default()),
+        ))
     }
 
     // -- existing Browse tests ------------------------------------------------
@@ -1931,10 +1943,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mut a = App::new(crate::AppContext {
-            config: cfg,
-            ui: Arc::new(CaptureUi::default()),
-        });
+        let mut a = App::new(crate::AppContext::new(cfg, Arc::new(CaptureUi::default())));
         a.section = Section::Providers;
         let ids = a.filtered_ids("");
         a.row = ids.iter().position(|id| id == "ollama").unwrap_or(0);
