@@ -280,72 +280,12 @@ mod tests {
     use super::*;
     use crate::capabilities::{CapabilityInfo, ResolvedCapability};
     use crate::config::{Config, ModelConfig, ProviderConfig};
-    use crate::models::{Model, ModelVariant};
-    use crate::providers::{ApiEndpoint, HealthStatus, ModelFormat, Provider, ProviderError};
-    use crate::registry::Secret;
+    use crate::models::Model;
+    use crate::utils::test_support::{FakeModel, FakeProvider};
+
+    use crate::providers::ApiEndpoint;
+
     use std::collections::HashMap as StdHashMap;
-
-    #[derive(Clone, Default)]
-    struct FakeProvider {
-        instance_id: String,
-        base_url: String,
-        api_key: Option<Secret>,
-        verify_ssl: bool,
-        api_types: Vec<ApiType>,
-        endpoints: StdHashMap<ModelFunction, Vec<ApiEndpoint>>,
-        alias: Option<String>,
-    }
-
-    impl ConfigConstructable for FakeProvider {
-        type Config = crate::registry::NoConfig;
-        fn new(_: &str, _: &serde_json::Value, _: &crate::config::Config) -> Self {
-            unimplemented!("not used in tests")
-        }
-    }
-
-    impl crate::registry::Named for FakeProvider {
-        fn instance_id(&self) -> &str {
-            &self.instance_id
-        }
-    }
-
-    #[async_trait]
-    impl Provider for FakeProvider {
-        fn name(&self) -> &str {
-            "Fake Provider"
-        }
-        fn function_endpoints(&self) -> StdHashMap<ModelFunction, Vec<ApiEndpoint>> {
-            self.endpoints.clone()
-        }
-        fn supported_api_types(&self) -> Vec<ApiType> {
-            self.api_types.clone()
-        }
-        fn base_url(&self) -> &str {
-            &self.base_url
-        }
-        fn api_key(&self) -> Option<&Secret> {
-            self.api_key.as_ref()
-        }
-        fn verify_ssl(&self) -> bool {
-            self.verify_ssl
-        }
-        fn custom_headers(&self) -> Option<StdHashMap<String, Secret>> {
-            None
-        }
-        fn supported_formats(&self) -> Vec<ModelFormat> {
-            vec![]
-        }
-        fn model_alias(
-            &self,
-            _model_id: String,
-            _variant: Option<&ModelVariant>,
-        ) -> Option<String> {
-            self.alias.clone()
-        }
-        async fn health_check(&self) -> Result<HealthStatus, ProviderError> {
-            unimplemented!("not used in tests")
-        }
-    }
 
     fn ok_provider() -> FakeProvider {
         let mut endpoints = StdHashMap::new();
@@ -358,62 +298,6 @@ mod tests {
             api_types: vec![ApiType::OpenAI],
             endpoints,
             alias: None,
-        }
-    }
-
-    struct TestVisionModel {
-        supported_functions: Vec<ModelFunction>,
-    }
-
-    impl ConfigConstructable for TestVisionModel {
-        type Config = crate::registry::NoConfig;
-        fn new(_: &str, _: &serde_json::Value, _: &crate::config::Config) -> Self {
-            unimplemented!("not used in tests")
-        }
-    }
-
-    impl crate::registry::Named for TestVisionModel {
-        fn instance_id(&self) -> &str {
-            "granite-vision-test"
-        }
-    }
-
-    impl Model for TestVisionModel {
-        fn family(&self) -> &str {
-            "Test"
-        }
-        fn version(&self) -> &str {
-            "1.0"
-        }
-        fn size(&self) -> u64 {
-            1
-        }
-        fn context_length(&self) -> u64 {
-            4096
-        }
-        fn model_type(&self) -> &ModelType {
-            &ModelType::Vision
-        }
-        fn huggingface_repo(&self) -> &str {
-            "test/test-vision"
-        }
-        fn native_dtype(&self) -> &str {
-            "bfloat16"
-        }
-        fn architecture(&self) -> &crate::models::ModelArchitecture {
-            unimplemented!("not used in tests")
-        }
-        fn variants(&self) -> &[ModelVariant] {
-            &[]
-        }
-        fn description(&self) -> Option<&str> {
-            None
-        }
-        fn tags(&self) -> &[String] {
-            &[]
-        }
-        fn supported_functions(&self) -> &[ModelFunction] {
-            &self.supported_functions
         }
     }
 
@@ -451,9 +335,7 @@ mod tests {
         ResolvedVisionMCPCapability {
             inner: cap,
             configured_model: ConfiguredModel::for_test(
-                Arc::new(TestVisionModel {
-                    supported_functions: functions,
-                }),
+                Arc::new(FakeModel::vision(functions)),
                 Arc::new(provider),
                 None,
             ),
@@ -571,9 +453,7 @@ mod tests {
             &Config::default(),
         ));
         let lookup = CheckingLookup {
-            model: Arc::new(TestVisionModel {
-                supported_functions: vec![ModelFunction::Chat],
-            }),
+            model: Arc::new(FakeModel::vision(vec![ModelFunction::Chat])),
         };
 
         let err = cap
