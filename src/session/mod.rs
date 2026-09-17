@@ -57,6 +57,11 @@ pub struct SessionMeta {
     /// session is still running or if it was terminated abruptly.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// When the session file was last written (`YYYYMMDDTHHMMSS` in UTC).
+    /// Updated on every write (create, usage update, finish). Used to detect
+    /// stale sessions that were never cleanly closed.
+    #[serde(default)]
+    pub updated_at: String,
     /// The working directory at session start.
     pub working_dir: String,
     /// The full CLI invocation that started this session.
@@ -157,8 +162,9 @@ pub fn create_session_meta(
 
     SessionMeta {
         session_id: session_id.to_string(),
-        launched_at,
+        launched_at: launched_at.clone(),
         finished_at: None,
+        updated_at: launched_at,
         working_dir,
         full_command: std::env::args().collect(),
         launcher_id: launcher_config.launcher_id.clone(),
@@ -239,6 +245,10 @@ fn update_session_file(session_id: &str, f: impl FnOnce(&mut SessionMeta)) -> an
     let mut meta: SessionMeta = serde_yaml::from_str(&content)
         .with_context(|| format!("failed to parse session file: {}", path.display()))?;
     f(&mut meta);
+    meta.updated_at = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(format_utc_timestamp)
+        .unwrap_or_else(|_| "unknown".to_string());
     let updated = serde_yaml::to_string(&meta)
         .with_context(|| "failed to serialize updated session metadata")?;
     fs::write(&path, updated)
@@ -431,6 +441,7 @@ mod tests {
             session_id: "test---home@20250101T120000_abcd1234".to_string(),
             launched_at: "20250101T120000".to_string(),
             finished_at: None,
+            updated_at: "20250101T120000".to_string(),
             working_dir: "/home/test".to_string(),
             full_command: vec![
                 "granite-cli".to_string(),
@@ -458,6 +469,7 @@ mod tests {
             session_id: "s".to_string(),
             launched_at: "20250101T120000".to_string(),
             finished_at: None,
+            updated_at: "20250101T120000".to_string(),
             working_dir: "/".to_string(),
             full_command: vec![],
             launcher_id: "claude".to_string(),
@@ -477,6 +489,7 @@ mod tests {
             session_id: session_id.to_string(),
             launched_at: "20250101T120000".to_string(),
             finished_at: None,
+            updated_at: "20250101T120000".to_string(),
             working_dir: "/test".to_string(),
             full_command: vec!["granite-cli".to_string(), "launch".to_string()],
             launcher_id: launcher_id.to_string(),
@@ -561,5 +574,59 @@ mod tests {
         assert_eq!(finished.usage.get("main").unwrap().requests, 7);
         // launched_at must be preserved unchanged
         assert_eq!(finished.launched_at, "20250101T120000");
+    }
+
+    #[test]
+    fn session_meta_round_trips_yaml_with_updated_at() {
+        let meta = SessionMeta {
+            session_id: "s".to_string(),
+            launched_at: "20250101T120000".to_string(),
+            finished_at: None,
+            updated_at: "20250101T120500".to_string(),
+            working_dir: "/".to_string(),
+            full_command: vec![],
+            launcher_id: "claude".to_string(),
+            launcher_type: "claude".to_string(),
+            capabilities: vec![],
+            usage: HashMap::new(),
+        };
+        let yaml = serde_yaml::to_string(&meta).unwrap();
+        let back: SessionMeta = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back.updated_at, "20250101T120500");
+    }
+
+    #[test]
+    fn session_meta_updated_at_defaults_to_empty_string_when_missing_from_yaml() {
+        // Simulate an old session file that has no updated_at field.
+        let yaml = "session_id: s\nlaunched_at: 20250101T120000\nworking_dir: /\nfull_command: []\nlauncher_id: claude\nlauncher_type: claude\ncapabilities: []\nusage: {}\n";
+        let meta: SessionMeta = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            meta.updated_at, "",
+            "updated_at must default to empty string for old files"
+        );
+    }
+
+    #[test]
+    fn update_session_file_stamps_updated_at() {
+        let _home = TestConfigHome::new();
+        Config::ensure_directories_for_test();
+
+        let session_id = "test---home@20250101T150000_updcheck";
+        write_session_file(&make_meta(session_id, "claude")).unwrap();
+
+        let usage = HashMap::new();
+        update_session_usage(session_id, &usage).unwrap();
+
+        let updated = read_session_file(session_id).unwrap();
+        assert!(
+            !updated.updated_at.is_empty(),
+            "updated_at must be set after update_session_usage"
+        );
+        assert_eq!(
+            updated.updated_at.len(),
+            15,
+            "updated_at must be YYYYMMDDTHHMMSS"
+        );
+        assert!(updated.updated_at.contains('T'));
     }
 }

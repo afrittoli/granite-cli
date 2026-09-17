@@ -51,6 +51,73 @@ fn format_launched_at(s: &str) -> String {
     )
 }
 
+/// Returns `true` when a session has no `finished_at` but its `updated_at`
+/// timestamp is more than 2 hours old, indicating it was likely terminated
+/// without a clean shutdown.
+///
+/// Sessions with an empty `updated_at` (old files that predate the field)
+/// are never considered stale — they are treated as active until explicitly
+/// finished.
+fn session_is_stale(session: &crate::session::SessionMeta) -> bool {
+    if session.finished_at.is_some() || session.updated_at.is_empty() {
+        return false;
+    }
+    let s = &session.updated_at;
+    if s.len() != 15 {
+        return false;
+    }
+    let Ok(year): Result<u64, _> = s[0..4].parse() else {
+        return false;
+    };
+    let Ok(month): Result<u64, _> = s[4..6].parse() else {
+        return false;
+    };
+    let Ok(day): Result<u64, _> = s[6..8].parse() else {
+        return false;
+    };
+    let Ok(hh): Result<u64, _> = s[9..11].parse() else {
+        return false;
+    };
+    let Ok(mm): Result<u64, _> = s[11..13].parse() else {
+        return false;
+    };
+    let Ok(ss): Result<u64, _> = s[13..15].parse() else {
+        return false;
+    };
+    // Approximate days since Unix epoch using a simple Gregorian formula.
+    let days = approximate_days_since_epoch(year, month, day);
+    let secs = days * 86400 + hh * 3600 + mm * 60 + ss;
+    let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(_) => return false,
+    };
+    now.saturating_sub(secs) > 2 * 3600
+}
+
+/// Gregorian days since Unix epoch (1970-01-01) for the given date.
+/// Uses a simplified but correct algorithm for dates after 1970.
+fn approximate_days_since_epoch(year: u64, month: u64, day: u64) -> u64 {
+    // Days in each month for a non-leap year
+    const MONTH_DAYS: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let is_leap = |y: u64| (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let mut days: u64 = 0;
+    // Full years from 1970 up to (but not including) year
+    for y in 1970..year {
+        days += if is_leap(y) { 366 } else { 365 };
+    }
+    // Full months in the current year
+    for m in 1..month {
+        let m_idx = (m - 1) as usize;
+        days += MONTH_DAYS[m_idx];
+        if m == 2 && is_leap(year) {
+            days += 1;
+        }
+    }
+    // Days in the current month (1-indexed, so subtract 1)
+    days += day.saturating_sub(1);
+    days
+}
+
 /// Strip ANSI escape sequences from a string.
 fn strip_ansi(input: &str) -> String {
     let mut result = String::new();
@@ -557,7 +624,9 @@ impl App {
                 return self
                     .sessions
                     .iter()
-                    .filter(|s| !self.hide_inactive || s.finished_at.is_none())
+                    .filter(|s| {
+                        !self.hide_inactive || (s.finished_at.is_none() && !session_is_stale(s))
+                    })
                     .map(|s| s.session_id.clone())
                     .collect();
             }
@@ -669,7 +738,7 @@ impl App {
                         if self.hide_inactive {
                             self.sessions
                                 .iter()
-                                .filter(|s| s.finished_at.is_none())
+                                .filter(|s| s.finished_at.is_none() && !session_is_stale(s))
                                 .count()
                         } else {
                             self.sessions.len()
@@ -1080,7 +1149,9 @@ impl App {
                 let filtered_sessions: Vec<&crate::session::SessionMeta> = self
                     .sessions
                     .iter()
-                    .filter(|s| !self.hide_inactive || s.finished_at.is_none())
+                    .filter(|s| {
+                        !self.hide_inactive || (s.finished_at.is_none() && !session_is_stale(s))
+                    })
                     .collect();
 
                 let header = Row::new(vec![
@@ -1110,6 +1181,8 @@ impl App {
                         };
                         let status = if session.finished_at.is_some() {
                             Cell::from("○").style(Style::default().fg(Color::DarkGray))
+                        } else if session_is_stale(session) {
+                            Cell::from("●").style(Style::default().fg(Color::DarkGray))
                         } else {
                             Cell::from("●").style(Style::default().fg(Color::Green))
                         };
@@ -1217,14 +1290,22 @@ impl App {
                             Span::raw(session.launched_at.clone()),
                         ]),
                         Line::from(vec![
+                            Span::styled("Updated at:   ", bold),
+                            Span::raw(if session.updated_at.is_empty() {
+                                "(unknown)".to_string()
+                            } else {
+                                session.updated_at.clone()
+                            }),
+                        ]),
+                        Line::from(vec![
                             Span::styled("Finished at:  ", bold),
-                            Span::raw(
-                                session
-                                    .finished_at
-                                    .as_deref()
-                                    .unwrap_or("(still running)")
-                                    .to_string(),
-                            ),
+                            Span::raw(match &session.finished_at {
+                                Some(t) => t.clone(),
+                                None if session_is_stale(session) => {
+                                    "(stale — no clean shutdown)".to_string()
+                                }
+                                None => "(still running)".to_string(),
+                            }),
                         ]),
                         Line::from(vec![
                             Span::styled("Working dir:  ", bold),
@@ -2470,7 +2551,7 @@ mod tests {
         let expected = a
             .sessions
             .iter()
-            .filter(|s| !a.hide_inactive || s.finished_at.is_none())
+            .filter(|s| !a.hide_inactive || (s.finished_at.is_none() && !session_is_stale(s)))
             .count();
         assert_eq!(a.row_count(), expected);
     }
@@ -2535,6 +2616,8 @@ mod tests {
                 session_id: "active-session".to_string(),
                 launched_at: "20250101T120000".to_string(),
                 finished_at: None,
+                // Recent enough that session_is_stale returns false
+                updated_at: "20260917T203800".to_string(),
                 working_dir: "/test".to_string(),
                 full_command: vec![],
                 launcher_id: "claude".to_string(),
@@ -2546,6 +2629,7 @@ mod tests {
                 session_id: "finished-session".to_string(),
                 launched_at: "20250101T110000".to_string(),
                 finished_at: Some("20250101T130000".to_string()),
+                updated_at: "20250101T130000".to_string(),
                 working_dir: "/test".to_string(),
                 full_command: vec![],
                 launcher_id: "claude".to_string(),
@@ -2564,5 +2648,39 @@ mod tests {
         a.hide_inactive = false;
         let ids = a.filtered_ids("");
         assert_eq!(ids, vec!["active-session", "finished-session"]);
+    }
+
+    #[test]
+    fn sessions_stale_session_is_hidden_when_hide_inactive() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        // A session with updated_at far in the past (year 2020) and no finished_at
+        // should be treated as stale and hidden when hide_inactive=true.
+        a.sessions = vec![crate::session::SessionMeta {
+            session_id: "stale-session".to_string(),
+            launched_at: "20200101T120000".to_string(),
+            finished_at: None,
+            updated_at: "20200101T120000".to_string(),
+            working_dir: "/test".to_string(),
+            full_command: vec![],
+            launcher_id: "claude".to_string(),
+            launcher_type: "claude".to_string(),
+            capabilities: vec![],
+            usage: std::collections::HashMap::new(),
+        }];
+        a.hide_inactive = true;
+        let ids = a.filtered_ids("");
+        assert!(
+            ids.is_empty(),
+            "stale session must be hidden when hide_inactive=true"
+        );
+
+        a.hide_inactive = false;
+        let ids = a.filtered_ids("");
+        assert_eq!(
+            ids,
+            vec!["stale-session"],
+            "stale session must show when hide_inactive=false"
+        );
     }
 }
