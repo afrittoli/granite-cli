@@ -897,14 +897,12 @@ async fn run_launch(
     };
     if let Some(server) = &proxy_server {
         // The set built before this point pointed at the real upstreams, so
-        // it goes: from here every provider handed out points at the proxy.
-        // Route targets are read first, through the source's upstream view.
-        register_proxy_routes(ctx, &lc.enabled_capabilities, &server.handle, ui);
+        // it goes: from here every provider handed out points at the proxy,
+        // and so does every capability resolved against it below.
         ctx.set_model_proxy(server.handle.clone());
     }
     let model_proxy = proxy_server.as_ref().map(|s| s.handle.clone());
     let sources = ctx.sources();
-    let models = sources.models();
 
     let mut launcher = LAUNCHER_REGISTRY
         .construct(&lc.launcher_type, &lc.launcher_id, &lc.config)
@@ -918,37 +916,25 @@ async fn run_launch(
         model_proxy: model_proxy.clone(),
     };
 
-    // Bind each enabled capability to the launcher before launching. Kept
-    // alive (not dropped at the end of this loop) so a capability that owns
-    // a process-scoped resource -- e.g. `VisionMCPCapability`'s in-process
-    // MCP server -- survives long enough for `on_shutdown` to tear it down
-    // after the launched process exits, not before it starts.
-    let mut bound_capabilities: Vec<Box<dyn crate::capabilities::Capability>> = Vec::new();
-    for cap_id in &lc.enabled_capabilities {
-        let cap_cfg = ctx.config().get_capability(cap_id).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Launcher '{launcher_id}' references capability '{cap_id}' \
-                 which is not configured. Run `granite-cli capability setup` first."
-            )
-        })?;
-        let mut capability = CAPABILITY_REGISTRY
-            .construct(
-                &cap_cfg.capability_type,
-                &cap_cfg.capability_id,
-                &cap_cfg.config,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to construct capability '{cap_id}': {e}"))?;
-        // This path builds through the registry rather than through
-        // `CapabilitySource`, so it wires the capability to what it names
-        // itself. The model source is the context's, so a proxied launch
-        // resolves the proxied providers and two capabilities naming one
-        // model share it.
-        capability
-            .resolve_refs(&*models)
-            .map_err(|e| anyhow::anyhow!("Capability '{cap_id}': {e}"))?;
-        capability.on_setup().await?;
-        launcher.bind_capability(capability.as_ref()).await?;
-        bound_capabilities.push(capability);
+    // Every enabled capability resolves before the first one binds, so a
+    // capability that cannot be built leaves the launcher untouched. What
+    // resolved is kept alive past this point, so a capability that owns a
+    // process-scoped resource -- e.g. `VisionMCPCapability`'s in-process MCP
+    // server -- survives long enough for `on_shutdown` to tear it down after
+    // the launched process exits, not before it starts.
+    let bound_capabilities = crate::launchers::resolve_and_bind(
+        launcher.as_mut(),
+        &lc.enabled_capabilities,
+        &sources.capabilities(),
+    )
+    .await?;
+
+    // One route per model the resolved capabilities name, registered after
+    // they resolved and before anything is launched at them. The target is
+    // the real upstream, read through the source's upstream view, which the
+    // swap above does not hide.
+    if let Some(server) = &proxy_server {
+        register_proxy_routes(ctx, &lc.enabled_capabilities, &server.handle, ui);
     }
 
     for capability in &bound_capabilities {
