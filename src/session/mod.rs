@@ -9,6 +9,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 // Local
+use crate::capabilities::Dependency;
 use crate::config::{self, Config};
 use crate::proxy::UsageStats;
 
@@ -24,16 +25,18 @@ pub struct SessionCapabilityMeta {
     pub capability_id: String,
     #[serde(rename = "type")]
     pub capability_type: String,
-    /// Resolved from the capability config's `model_id` key into the
-    /// configured models map. `None` when the capability does not reference
-    /// a model (e.g. a tool-only capability).
-    pub model_id: Option<String>,
-    /// From the resolved `ModelConfig`. `None` when `model_id` is absent or
-    /// has no matching entry.
+    /// Model slots from the capability config, keyed by their dependency
+    /// `config_key`. E.g. `{ "model_id": "my-model" }`. Empty when the
+    /// capability has no model dependencies (e.g. a tool-only capability).
+    pub models: HashMap<String, String>,
+    /// Resolved model type from the first (or sole) model in `models`.
+    /// `None` when `models` is empty or has no matching entry.
     pub model_type: Option<String>,
-    /// From the resolved `ModelConfig`.
+    /// Resolved provider id from the first (or sole) model in `models`.
+    /// `None` when `models` is empty or has no matching entry.
     pub provider_id: Option<String>,
-    /// From the resolved `ProviderConfig`.
+    /// Resolved provider type from the first (or sole) model in `models`.
+    /// `None` when `models` is empty or has no matching entry.
     pub provider_type: Option<String>,
 }
 
@@ -101,23 +104,24 @@ pub fn generate_session_id() -> String {
 
 /// Build a [`SessionCapabilityMeta`] from a configured capability.
 ///
-/// Resolves the capability's `model_id` field from `cap_cfg.config["model_id"]`,
-/// then looks up the corresponding `ModelConfig` in `config.models` to obtain
-/// `model_type` and `provider_id`, and finally looks up the `ProviderConfig`
-/// to obtain `provider_type`. Any missing link is represented as `None`.
+/// Extracts the capability's model slots from `cap_cfg.config` using its
+/// `dependencies` to determine the expected `config_key` names, then looks up
+/// each resolved `ModelConfig` in `config.models` to obtain `model_type`
+/// and `provider_id`, and finally looks up the `ProviderConfig` to obtain
+/// `provider_type`. Any missing link is represented as `None`.
 pub fn build_capability_meta(
     cap_cfg: &config::CapabilityConfig,
+    dependencies: &[Dependency],
     config: &Config,
 ) -> SessionCapabilityMeta {
-    let model_id = cap_cfg
-        .config
-        .get("model_id")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+    let models = crate::utils::capability_model_ids(cap_cfg, dependencies);
 
-    let model_cfg = model_id.as_deref().and_then(|mid| config.models.get(mid));
-
-    let (model_type, provider_id) = model_cfg
+    // Resolve model_type and provider_id from the first model slot for
+    // backwards-compatibility metadata fields.
+    let (model_type, provider_id) = models
+        .values()
+        .next()
+        .and_then(|mid| config.models.get(mid.as_str()))
         .map(|mc| (Some(mc.model_type.clone()), Some(mc.provider_id.clone())))
         .unwrap_or((None, None));
 
@@ -129,7 +133,7 @@ pub fn build_capability_meta(
     SessionCapabilityMeta {
         capability_id: cap_cfg.capability_id.clone(),
         capability_type: cap_cfg.capability_type.clone(),
-        model_id,
+        models,
         model_type,
         provider_id,
         provider_type,
@@ -138,13 +142,14 @@ pub fn build_capability_meta(
 
 /// Create a new [`SessionMeta`] for a launch.
 ///
-/// `capabilities` should be the ordered list of `CapabilityConfig` values
-/// corresponding to `launcher_config.enabled_capabilities`.
+/// `capabilities_with_deps` should be the ordered list of `(CapabilityConfig,
+/// Vec<Dependency>)` tuples corresponding to `launcher_config.enabled_capabilities`,
+/// where the dependencies come from `CAPABILITY_REGISTRY`.
 pub fn create_session_meta(
     session_id: &str,
     config: &Config,
     launcher_config: &config::LauncherConfig,
-    capabilities: &[config::CapabilityConfig],
+    capabilities_with_deps: &[(config::CapabilityConfig, Vec<Dependency>)],
 ) -> SessionMeta {
     let launched_at = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -155,9 +160,9 @@ pub fn create_session_meta(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    let capabilities_meta = capabilities
+    let capabilities_meta = capabilities_with_deps
         .iter()
-        .map(|cap_cfg| build_capability_meta(cap_cfg, config))
+        .map(|(cap_cfg, deps)| build_capability_meta(cap_cfg, deps, config))
         .collect();
 
     SessionMeta {
@@ -395,26 +400,41 @@ mod tests {
             capability_type: "agent-model".to_string(),
             config: serde_json::json!({ "model_id": "my-model" }),
         };
+        let dependencies = vec![Dependency::Model {
+            config_key: "model_id".to_string(),
+            required: true,
+            requirement: crate::capabilities::ModelRequirement::default(),
+            resolved_id: None,
+        }];
 
-        let meta = build_capability_meta(&cap_cfg, &config);
+        let meta = build_capability_meta(&cap_cfg, &dependencies, &config);
         assert_eq!(meta.capability_id, "chat");
         assert_eq!(meta.capability_type, "agent-model");
-        assert_eq!(meta.model_id.as_deref(), Some("my-model"));
+        assert_eq!(
+            meta.models.get("model_id").map(|s| s.as_str()),
+            Some("my-model")
+        );
         assert_eq!(meta.model_type.as_deref(), Some("granite-3.1-8b-instruct"));
         assert_eq!(meta.provider_id.as_deref(), Some("my-ollama"));
         assert_eq!(meta.provider_type.as_deref(), Some("ollama"));
     }
 
     #[test]
-    fn build_capability_meta_missing_model_id_yields_nones() {
+    fn build_capability_meta_missing_model_id_yields_empty_models() {
         let config = Config::default();
         let cap_cfg = CapabilityConfig {
             capability_id: "chat".to_string(),
             capability_type: "agent-model".to_string(),
             config: serde_json::json!({}),
         };
-        let meta = build_capability_meta(&cap_cfg, &config);
-        assert!(meta.model_id.is_none());
+        let dependencies = vec![Dependency::Model {
+            config_key: "model_id".to_string(),
+            required: false,
+            requirement: crate::capabilities::ModelRequirement::default(),
+            resolved_id: None,
+        }];
+        let meta = build_capability_meta(&cap_cfg, &dependencies, &config);
+        assert!(meta.models.is_empty());
         assert!(meta.model_type.is_none());
         assert!(meta.provider_id.is_none());
         assert!(meta.provider_type.is_none());
@@ -428,8 +448,17 @@ mod tests {
             capability_type: "agent-model".to_string(),
             config: serde_json::json!({ "model_id": "nonexistent" }),
         };
-        let meta = build_capability_meta(&cap_cfg, &config);
-        assert_eq!(meta.model_id.as_deref(), Some("nonexistent"));
+        let dependencies = vec![Dependency::Model {
+            config_key: "model_id".to_string(),
+            required: false,
+            requirement: crate::capabilities::ModelRequirement::default(),
+            resolved_id: None,
+        }];
+        let meta = build_capability_meta(&cap_cfg, &dependencies, &config);
+        assert_eq!(
+            meta.models.get("model_id").map(|s| s.as_str()),
+            Some("nonexistent")
+        );
         assert!(meta.model_type.is_none());
         assert!(meta.provider_id.is_none());
         assert!(meta.provider_type.is_none());

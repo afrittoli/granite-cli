@@ -2616,8 +2616,9 @@ mod tests {
                 session_id: "active-session".to_string(),
                 launched_at: "20250101T120000".to_string(),
                 finished_at: None,
-                // Recent enough that session_is_stale returns false
-                updated_at: "20260917T203800".to_string(),
+                // Recent enough that session_is_stale returns false (at least
+                // 3 hours from now in UTC)
+                updated_at: "20260918T020000".to_string(),
                 working_dir: "/test".to_string(),
                 full_command: vec![],
                 launcher_id: "claude".to_string(),

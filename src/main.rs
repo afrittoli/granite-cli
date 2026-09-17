@@ -760,19 +760,27 @@ async fn run_launch(
         config.model_proxy = Some(server.handle.clone());
     }
 
-    // Build capability configs for session metadata before consuming them in
-    // the binding loop below.
-    let capability_configs: Vec<crate::config::CapabilityConfig> = lc
+    // Build capability configs with their dependencies for session metadata
+    // before consuming them in the binding loop below.
+    let capabilities_with_deps: Vec<(
+        crate::config::CapabilityConfig,
+        Vec<crate::capabilities::Dependency>,
+    )> = lc
         .enabled_capabilities
         .iter()
-        .filter_map(|id| config.get_capability(id).cloned())
+        .filter_map(|id| {
+            let cap_cfg = config.get_capability(id)?;
+            let cap_meta = CAPABILITY_REGISTRY.get(&cap_cfg.capability_type)?;
+            Some((cap_cfg.clone(), cap_meta.dependencies.clone()))
+        })
         .collect();
 
     // Generate a unique session ID and write the initial session file (empty
     // usage). Best-effort: a write failure must not prevent the session from
     // starting.
     let session_id = session::generate_session_id();
-    let session_meta = session::create_session_meta(&session_id, &config, &lc, &capability_configs);
+    let session_meta =
+        session::create_session_meta(&session_id, &config, &lc, &capabilities_with_deps);
     session::write_session_file(&session_meta).ok();
 
     let mut launcher = LAUNCHER_REGISTRY
