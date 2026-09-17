@@ -273,33 +273,11 @@ static SUFFIX_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// Format a `Duration` since the Unix epoch as `YYYYMMDDTHHMMSS` (UTC, no
 /// colons or timezone designator — safe as a filename component).
 fn format_utc_timestamp(epoch: std::time::Duration) -> String {
-    let secs = epoch.as_secs();
-    let (year, month, day) = days_to_ymd(secs / 86400);
-    let time = secs % 86400;
-    let hh = time / 3600;
-    let mm = (time % 3600) / 60;
-    let ss = time % 60;
-    format!("{year:04}{month:02}{day:02}T{hh:02}{mm:02}{ss:02}")
-}
-
-/// Gregorian calendar: convert days since the Unix epoch (1970-01-01) to
-/// `(year, month, day)`.  Uses Howard Hinnant's date algorithm.
-fn days_to_ymd(days: u64) -> (u64, u64, u64) {
-    let z = days as i64 + 719_468;
-    let era = if z >= 0 {
-        z / 146_097
-    } else {
-        (z - 146_096) / 146_097
-    };
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
-    (year as u64, month as u64, day as u64)
+    let secs = epoch.as_secs() as i64;
+    chrono::DateTime::from_timestamp(secs, 0)
+        .expect("timestamp out of range")
+        .format("%Y%m%dT%H%M%S")
+        .to_string()
 }
 
 /// Generate an 8-character lowercase hex suffix unique within this process.
@@ -352,25 +330,6 @@ mod tests {
         // 2025-01-01 00:00:00 UTC = 1735689600 seconds since epoch
         let ts = format_utc_timestamp(std::time::Duration::from_secs(1_735_689_600));
         assert_eq!(ts, "20250101T000000");
-    }
-
-    #[test]
-    fn days_to_ymd_epoch() {
-        assert_eq!(days_to_ymd(0), (1970, 1, 1));
-    }
-
-    #[test]
-    fn days_to_ymd_non_leap_year_boundary() {
-        // 1970-12-31 is day 364; 1971-01-01 is day 365
-        assert_eq!(days_to_ymd(364), (1970, 12, 31));
-        assert_eq!(days_to_ymd(365), (1971, 1, 1));
-    }
-
-    #[test]
-    fn days_to_ymd_leap_year_2000() {
-        // 2000-02-29 exists (leap year); day 11016 from epoch
-        let (y, m, d) = days_to_ymd(11_016);
-        assert_eq!((y, m, d), (2000, 2, 29));
     }
 
     #[test]
