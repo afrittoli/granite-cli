@@ -422,7 +422,7 @@ define_factory!(Launcher, LauncherMetadata, LauncherFactory);
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::registry::ConfigConstructable;
+    use crate::registry::{ConfigConstructable, ConstructError};
 
     /// Minimal Launcher implementation used only in tests.
     pub(crate) struct FakeLauncher {
@@ -441,7 +441,7 @@ pub(crate) mod tests {
     impl ConfigConstructable for FakeLauncher {
         type Config = crate::registry::NoConfig;
 
-        fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
+        fn new(instance_id: &str, cfg: &serde_json::Value) -> Result<Self, ConstructError> {
             let command_name = cfg
                 .get("command_name")
                 .and_then(|v| v.as_str())
@@ -451,11 +451,11 @@ pub(crate) mod tests {
                 .get("command_path")
                 .and_then(|v| v.as_str())
                 .map(PathBuf::from);
-            Self {
+            Ok(Self {
                 instance_id: instance_id.to_string(),
                 command_name,
                 command_path,
-            }
+            })
         }
     }
 
@@ -506,7 +506,8 @@ pub(crate) mod tests {
             &serde_json::json!({
                 "command_name": "this-binary-absolutely-does-not-exist-9x7z"
             }),
-        );
+        )
+        .unwrap();
         assert!(launcher.validate_command().is_err());
     }
 
@@ -518,7 +519,8 @@ pub(crate) mod tests {
                 "command_name": "fake",
                 "command_path": "/this/path/does/not/exist/fake"
             }),
-        );
+        )
+        .unwrap();
         assert!(launcher.validate_command().is_err());
     }
 
@@ -529,13 +531,14 @@ pub(crate) mod tests {
             &serde_json::json!({
                 "command_path": "ls"
             }),
-        );
+        )
+        .unwrap();
         assert!(launcher.validate_command().is_ok());
     }
 
     #[tokio::test]
     async fn env_overlay_default_is_empty() {
-        let launcher = FakeLauncher::new("my-fake", &serde_json::json!({}));
+        let launcher = FakeLauncher::new("my-fake", &serde_json::json!({})).unwrap();
         let ctx = LaunchContext {
             launcher_id: "test".to_string(),
             working_dir: PathBuf::from("/tmp"),
@@ -549,7 +552,7 @@ pub(crate) mod tests {
 
     #[test]
     fn map_tool_name_default_passes_through_other_and_returns_none_for_everything_else() {
-        let launcher = FakeLauncher::new("my-fake", &serde_json::json!({}));
+        let launcher = FakeLauncher::new("my-fake", &serde_json::json!({})).unwrap();
         assert_eq!(
             launcher.map_tool_name(&ToolName::Other("SomeRawTool".to_string())),
             Some("SomeRawTool".to_string())

@@ -17,7 +17,7 @@ use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetada
 use crate::launchers::shared::mcp_cli::{
     mcp_binding_request, register_mcp_server, remove_mcp_server,
 };
-use crate::registry::ConfigConstructable;
+use crate::registry::{ConfigConstructable, ConstructError};
 use crate::utils::resolve_shell_command;
 use crate::utils::subserver::SubServer;
 use crate::utils::ui::Ui;
@@ -60,14 +60,15 @@ pub struct BobLauncher {
 impl ConfigConstructable for BobLauncher {
     type Config = BobLauncherConfig;
 
-    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
-        let config: BobLauncherConfig = serde_json::from_value(cfg.clone()).unwrap_or_default();
-        Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Result<Self, ConstructError> {
+        let config: BobLauncherConfig =
+            serde_json::from_value(cfg.clone()).map_err(ConstructError::settings)?;
+        Ok(Self {
             instance_id: instance_id.to_string(),
             config,
             bound_mcp_bindings: vec![],
             pending_sub_agents: vec![],
-        }
+        })
     }
 }
 
@@ -210,7 +211,7 @@ mod tests {
 
     #[test]
     fn command_defaults_to_bob() {
-        let l = BobLauncher::new("my-bob", &serde_json::json!({}));
+        let l = BobLauncher::new("my-bob", &serde_json::json!({})).unwrap();
         assert_eq!(l.command(), "bob");
     }
 
@@ -221,7 +222,8 @@ mod tests {
             &serde_json::json!({
                 "command_path": "/opt/bin/bob"
             }),
-        );
+        )
+        .unwrap();
         assert_eq!(l.command(), "/opt/bin/bob");
     }
 
@@ -232,7 +234,8 @@ mod tests {
             &serde_json::json!({
                 "command_path": "/no/such/path/bob"
             }),
-        );
+        )
+        .unwrap();
         assert!(l.validate_command().is_err());
     }
 
@@ -243,7 +246,8 @@ mod tests {
             &serde_json::json!({
                 "command_path": "ls"
             }),
-        );
+        )
+        .unwrap();
         assert!(l.validate_command().is_ok());
     }
 
@@ -275,7 +279,8 @@ mod tests {
         let l = BobLauncher::new(
             "my-bob",
             &serde_json::json!({ "command_path": "/opt/bin/bob" }),
-        );
+        )
+        .unwrap();
         assert_eq!(l.config.command_path, Some("/opt/bin/bob".to_string()));
         assert_eq!(l.config.pi_command_path, None);
     }
@@ -358,7 +363,7 @@ mod tests {
     }
 
     fn bob() -> BobLauncher {
-        BobLauncher::new("my-bob", &serde_json::json!({}))
+        BobLauncher::new("my-bob", &serde_json::json!({})).unwrap()
     }
 
     #[tokio::test]

@@ -108,7 +108,7 @@ impl ProviderSource {
                 &provider_config.provider_id,
                 &provider_config.config,
             )
-            .map_err(|e| anyhow::anyhow!("could not construct provider '{provider_id}': {e}"))?;
+            .map_err(|e| e.about("provider", provider_id))?;
         let built: std::sync::Arc<dyn Provider> = std::sync::Arc::from(built);
         // Built outside the lock, so two callers can reach here for one id.
         // `or_insert` keeps whichever landed first and drops the other, so
@@ -197,6 +197,46 @@ mod tests {
             openai_provider_config("ollama", "http://localhost:11434"),
         );
         config
+    }
+
+    #[test]
+    fn get_names_the_provider_whose_settings_cannot_be_read() {
+        let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({ "timeout_secs": "ten" }),
+            },
+        );
+
+        let source = ProviderSource::from_config(&config);
+        let err = source.get("ollama").err().unwrap().to_string();
+        assert!(
+            err.contains("provider 'ollama'") && err.contains("invalid type"),
+            "expected the instance and what serde said, got: {err}"
+        );
+    }
+
+    #[test]
+    fn get_names_the_provider_whose_type_is_unknown() {
+        let mut config = Config::default();
+        config.providers.insert(
+            "mystery".to_string(),
+            ProviderConfig {
+                provider_id: "mystery".to_string(),
+                provider_type: "not-a-provider-type".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
+
+        let source = ProviderSource::from_config(&config);
+        let err = source.get("mystery").err().unwrap().to_string();
+        assert!(
+            err.contains("mystery") && err.contains("not-a-provider-type"),
+            "expected the instance and the type it names, got: {err}"
+        );
     }
 
     #[test]

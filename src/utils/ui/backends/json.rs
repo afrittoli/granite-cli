@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use crate::registry::{ConfigConstructable, NoConfig};
+use crate::registry::{ConfigConstructable, ConstructError, NoConfig};
 use crate::utils::ui::base::{self, HasUiMetadata, Ui, UiMetadata};
 
 /*-- public --*/
@@ -68,11 +68,11 @@ impl Write for SharedWriter {
 impl ConfigConstructable for JsonOutput {
     type Config = NoConfig;
 
-    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
-        Self {
+    fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Result<Self, ConstructError> {
+        Ok(Self {
             writer: Mutex::new(Box::new(std::io::stdout())),
             buf: None,
-        }
+        })
     }
 }
 

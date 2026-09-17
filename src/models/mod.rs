@@ -132,7 +132,7 @@ impl ModelSource {
                 &model_config.model_id,
                 &model_config.config,
             )
-            .map_err(|e| anyhow::anyhow!("could not construct model '{model_id}': {e}"))?;
+            .map_err(|e| e.about("model", model_id))?;
 
         let built: Arc<dyn Model> = Arc::from(built);
         // Built outside the lock, so two callers can reach here for one id.

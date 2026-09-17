@@ -119,7 +119,8 @@ mod tests {
             &serde_json::json!({
                 "model_id": "granite-3.1-8b-instruct",
             }),
-        );
+        )
+        .unwrap();
         ExploreSubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
@@ -164,7 +165,8 @@ mod tests {
             &serde_json::json!({
                 "model_id": "granite-3.1-8b-instruct",
             }),
-        );
+        )
+        .unwrap();
         let cap = ExploreSubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,

@@ -24,7 +24,7 @@ use crate::capabilities::base::{
 use crate::capabilities::requirement::ModelRequirement;
 use crate::models::{ConfiguredModel, ModelFunction, ModelType};
 use crate::providers::ApiType;
-use crate::registry::ConfigConstructable;
+use crate::registry::{ConfigConstructable, ConstructError};
 use crate::utils::subserver::SubServer;
 use async_trait::async_trait;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -94,15 +94,15 @@ impl ConfigConstructable for VisionMCPCapability {
     /// `ConfiguredModel`, exactly like `AgentModelCapability::new` -- so
     /// `model.provider()` works at bind time and, when a usage-tracking
     /// session is active, the model is transparently tracked.
-    fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
+    fn new(instance_id: &str, cfg: &serde_json::Value) -> Result<Self, ConstructError> {
         let config: VisionMCPCapabilityConfig =
-            serde_json::from_value(cfg.clone()).unwrap_or_default();
-        Self {
+            serde_json::from_value(cfg.clone()).map_err(ConstructError::settings)?;
+        Ok(Self {
             instance_id: instance_id.to_string(),
             config,
             configured_model: None,
             http_server: Mutex::new(None),
-        }
+        })
     }
 }
 
@@ -289,7 +289,8 @@ mod tests {
         let cap = VisionMCPCapability::new(
             "vision",
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-        );
+        )
+        .unwrap();
         VisionMCPCapability {
             instance_id: cap.instance_id,
             config: cap.config,

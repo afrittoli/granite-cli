@@ -51,7 +51,7 @@ pub(crate) fn non_interactive<T>() -> anyhow::Result<T> {
 /// Invoke with the constructor expression as argument:
 ///
 /// ```ignore
-/// output_contract_tests!(PlainOutput::new("plain", &serde_json::json!({})));
+/// output_contract_tests!(PlainOutput::new("plain", &serde_json::json!({})).unwrap());
 /// ```
 #[macro_export]
 macro_rules! output_contract_tests {
@@ -335,8 +335,11 @@ pub(crate) mod tests {
     impl ConfigConstructable for CaptureUi {
         type Config = crate::registry::NoConfig;
 
-        fn new(_instance_id: &str, _cfg: &serde_json::Value) -> Self {
-            Self::default()
+        fn new(
+            _instance_id: &str,
+            _cfg: &serde_json::Value,
+        ) -> Result<Self, crate::registry::ConstructError> {
+            Ok(Self::default())
         }
     }
 

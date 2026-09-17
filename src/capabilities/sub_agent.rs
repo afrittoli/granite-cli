@@ -46,20 +46,23 @@ macro_rules! declare_sub_agent_basic {
         impl $crate::registry::ConfigConstructable for $name_struct {
             type Config = $config_struct;
 
-            fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
-                let config: $config_struct =
-                    serde_json::from_value(cfg.clone()).unwrap_or_default();
+            fn new(
+                instance_id: &str,
+                cfg: &serde_json::Value,
+            ) -> Result<Self, $crate::registry::ConstructError> {
+                let config: $config_struct = serde_json::from_value(cfg.clone())
+                    .map_err($crate::registry::ConstructError::settings)?;
                 let description = $description_expr;
                 let prompt = $prompt_expr;
                 let tools = $tools_expr;
-                Self {
+                Ok(Self {
                     instance_id: instance_id.to_string(),
                     config,
                     configured_model: None,
                     description,
                     prompt,
                     tools,
-                }
+                })
             }
         }
 
@@ -196,20 +199,23 @@ macro_rules! declare_sub_agent_full {
         impl $crate::registry::ConfigConstructable for $name_struct {
             type Config = $config_struct;
 
-            fn new(instance_id: &str, cfg: &serde_json::Value) -> Self {
-                let config: $config_struct =
-                    serde_json::from_value(cfg.clone()).unwrap_or_default();
+            fn new(
+                instance_id: &str,
+                cfg: &serde_json::Value,
+            ) -> Result<Self, $crate::registry::ConstructError> {
+                let config: $config_struct = serde_json::from_value(cfg.clone())
+                    .map_err($crate::registry::ConstructError::settings)?;
                 let description = config.description.clone();
                 let prompt = config.prompt.clone();
                 let tools = config.tools.clone();
-                Self {
+                Ok(Self {
                     instance_id: instance_id.to_string(),
                     config,
                     configured_model: None,
                     description,
                     prompt,
                     tools,
-                }
+                })
             }
         }
 
@@ -390,7 +396,8 @@ mod tests {
                 "prompt": "You are a meticulous code reviewer.",
                 "model_id": "granite-3.1-8b-instruct",
             }),
-        );
+        )
+        .unwrap();
         SubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
@@ -438,7 +445,8 @@ mod tests {
                 "tools": ["FileRead", "Search", {"Other": "SomeRawClaudeTool"}],
                 "model_id": "granite-3.1-8b-instruct",
             }),
-        );
+        )
+        .unwrap();
         let cap = SubAgentCapability {
             instance_id: cap.instance_id,
             config: cap.config,
