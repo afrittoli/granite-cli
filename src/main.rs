@@ -6,6 +6,7 @@ pub mod launchers;
 pub mod models;
 pub mod proxy;
 pub mod registry;
+pub mod session;
 pub mod utils;
 pub mod version {
     include!(concat!(env!("OUT_DIR"), "/version.rs"));
@@ -96,12 +97,6 @@ struct LaunchWithOutput {
     /// Show overlay without launching
     #[arg(long)]
     dry_run: bool,
-
-    /// Track token usage (input, output, and cache where available) via a
-    /// local proxy sitting between the launched agent and its configured
-    /// model. Off by default.
-    #[arg(short = 'u', long = "usage-tracking")]
-    usage_tracking: bool,
 
     /// Additional arguments to pass to the launcher
     #[arg(trailing_var_arg = true)]
@@ -560,7 +555,6 @@ async fn main() {
                 &wrapper.launcher_id,
                 &wrapper.args,
                 wrapper.dry_run,
-                wrapper.usage_tracking,
             )
             .await
             .map_err(|e| ctx.ui.error(&e.to_string()))
@@ -713,12 +707,12 @@ async fn run_launch(
     launcher_id: &str,
     args: &[String],
     dry_run: bool,
-    usage_tracking: bool,
 ) -> anyhow::Result<()> {
-    use crate::capabilities::{BindingType, CAPABILITY_REGISTRY};
+    use crate::capabilities::CAPABILITY_REGISTRY;
     use crate::launchers::LAUNCHER_REGISTRY;
     use crate::launchers::LaunchContext;
     use crate::proxy::ProxyServer;
+    use crate::session;
 
     // Load config fresh so we always pick up the latest saved state.
     ctx.config = crate::config::Config::new()?;
@@ -739,35 +733,24 @@ async fn run_launch(
         })?
         .clone();
 
-    // The session proxy boots whenever usage tracking was requested OR the
-    // `claude` launcher has a sub-agent capability bound (any of
-    // `SubAgentCapability`/`ExploreSubAgentCapability`/`PlanSubAgentCapability`
-    // -- checked via `BindingType::SubAgent` rather than a specific
-    // capability-type string, so it covers all of them). That routing is
-    // structurally required only for Claude Code: it has exactly one
-    // `ANTHROPIC_BASE_URL` for the whole session, so every sub-agent's model
-    // must be multiplexed through the mini-router regardless of whether `-u`
-    // was passed. `opencode` (and any other launcher that later gains
-    // `BindingType::SubAgent` support) configures each sub-agent's own
-    // provider directly in its multi-provider config, so it never needs this.
-    // Skipped entirely under `dry_run`: there's no subprocess to point a
+    // The session proxy boots for every non-dry-run launch. Usage tracking is
+    // always on: the proxy's tracker accumulates stats throughout the session
+    // and writes them to a persistent session file so they survive even an
+    // abrupt ctrl-c.
+    //
+    // The `claude` launcher additionally requires the proxy for sub-agent
+    // routing when any `BindingType::SubAgent` capability is enabled: it has
+    // exactly one `ANTHROPIC_BASE_URL` for the whole session, so every
+    // sub-agent's model must be multiplexed through the mini-router.
+    // `opencode` (and any other launcher that later gains `BindingType::SubAgent`
+    // support) configures each sub-agent's own provider directly in its
+    // multi-provider config, so it never needs this path -- but the proxy still
+    // boots for usage tracking.
+    //
+    // Skipped entirely under `dry_run`: there is no subprocess to point a
     // proxy at, and showing the real upstream URL in the overlay is more
-    // useful than a not-yet-running one. When booted, it's threaded through
-    // `config.model_proxy` so that any capability which resolves its model
-    // through `ModelSource` (see `AgentModelCapability::new`) is
-    // transparently routed through it (and tracked, if a tracker is active)
-    // -- no per-capability wrapping needed here.
-    let needs_sub_agent_routing = lc.launcher_type == "claude"
-        && lc.enabled_capabilities.iter().any(|id| {
-            config
-                .get_capability(id)
-                .and_then(|c| CAPABILITY_REGISTRY.get(&c.capability_type))
-                .is_some_and(|meta| {
-                    meta.supported_binding_types
-                        .contains(&BindingType::SubAgent)
-                })
-        });
-    let boot_proxy = (usage_tracking || needs_sub_agent_routing) && !dry_run;
+    // useful than a not-yet-running one.
+    let boot_proxy = !dry_run;
     let proxy_server = if boot_proxy {
         Some(ProxyServer::start()?)
     } else {
@@ -776,6 +759,29 @@ async fn run_launch(
     if let Some(server) = &proxy_server {
         config.model_proxy = Some(server.handle.clone());
     }
+
+    // Build capability configs with their dependencies for session metadata
+    // before consuming them in the binding loop below.
+    let capabilities_with_deps: Vec<(
+        crate::config::CapabilityConfig,
+        Vec<crate::capabilities::Dependency>,
+    )> = lc
+        .enabled_capabilities
+        .iter()
+        .filter_map(|id| {
+            let cap_cfg = config.get_capability(id)?;
+            let cap_meta = CAPABILITY_REGISTRY.get(&cap_cfg.capability_type)?;
+            Some((cap_cfg.clone(), cap_meta.dependencies.clone()))
+        })
+        .collect();
+
+    // Generate a unique session ID and write the initial session file (empty
+    // usage). Best-effort: a write failure must not prevent the session from
+    // starting.
+    let session_id = session::generate_session_id();
+    let session_meta =
+        session::create_session_meta(&session_id, &config, &lc, &capabilities_with_deps);
+    session::write_session_file(&session_meta).ok();
 
     let mut launcher = LAUNCHER_REGISTRY
         .construct(&lc.launcher_type, &lc.launcher_id, &lc.config, &config)
@@ -818,6 +824,34 @@ async fn run_launch(
         capability.on_pre_launch(&launch_ctx).await?;
     }
 
+    // Set up reactive session-file flushing. A watch channel acts as a
+    // single-element overwrite queue: the proxy's UsageTracker fires the
+    // sender (non-blocking) on every record() call; the background writer
+    // task blocks on changed() and flushes to disk whenever a new value
+    // arrives. Rapid successive records coalesce into one write because watch
+    // stores only the latest notification — the writer is never on the
+    // response-to-client critical path.
+    let tracker = proxy_server.as_ref().map(|s| s.handle.tracker());
+    let writer_handle = if let Some(ref t) = tracker {
+        let (tx, mut rx) = tokio::sync::watch::channel(());
+        t.set_notifier(tx);
+        let writer_session_id = session_id.clone();
+        let writer_tracker = t.clone();
+        Some(tokio::spawn(async move {
+            loop {
+                // Block until a record() fires the notifier, then write once.
+                if rx.changed().await.is_err() {
+                    // Sender dropped — session is shutting down.
+                    break;
+                }
+                let snapshot = writer_tracker.snapshot();
+                session::update_session_usage(&writer_session_id, &snapshot).ok();
+            }
+        }))
+    } else {
+        None
+    };
+
     let launch_result = launcher.launch(args, &launch_ctx, ui).await;
 
     // Run post-launch/shutdown hooks regardless of how the launch went, so a
@@ -839,12 +873,22 @@ async fn run_launch(
         }
     }
 
+    // Shut down the background writer: dropping the tracker's notifier sender
+    // (by dropping `tracker` after the final flush) will cause rx.changed() to
+    // return Err and the writer task to exit its loop naturally. We abort here
+    // as a belt-and-suspenders measure to avoid a dangling task during proxy
+    // shutdown, then do a final flush with the definitive usage snapshot.
+    if let Some(handle) = writer_handle {
+        handle.abort();
+    }
+    if let Some(ref t) = tracker {
+        session::finish_session(&session_id, &t.snapshot()).ok();
+    }
+
     let status = launch_result?;
 
     if let Some(server) = proxy_server {
-        if usage_tracking {
-            print_usage_summary(ui, &server.handle.tracker());
-        }
+        print_usage_summary(ui, &server.handle.tracker());
         server.shutdown().await;
     }
 

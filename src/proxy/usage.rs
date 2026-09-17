@@ -1,12 +1,16 @@
+// Standard
 use std::collections::HashMap;
 use std::sync::Mutex;
+
+// Third Party
+use serde::{Deserialize, Serialize};
 
 /*-- public --*/
 
 /// Token usage recorded for one proxied binding (model or, in the future,
 /// MCP server). Cache fields are populated on a best-effort basis -- not
 /// every `ApiType` exposes cache accounting.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageStats {
     pub requests: u64,
     pub input_tokens: u64,
@@ -38,9 +42,28 @@ impl UsageStats {
 /// Shared, thread-safe accumulator of `UsageStats` keyed by binding label
 /// (e.g. the capability id). One `UsageTracker` is shared by every
 /// `ProxyServer` started for a given launch session.
-#[derive(Default)]
+///
+/// An optional [`tokio::sync::watch`] notifier can be attached via
+/// [`UsageTracker::set_notifier`]. When set, every call to [`record`] sends
+/// a non-blocking notification so a background writer task can react to new
+/// usage immediately
 pub struct UsageTracker {
     stats: Mutex<HashMap<String, UsageStats>>,
+    /// Fires `()` on every [`record`] call when set. The `watch` channel
+    /// stores only the latest value, so rapid successive records coalesce into
+    /// a single wake-up for the writer — exactly the overwrite-queue semantic
+    /// we want. Non-blocking: if the receiver is lagging the send silently
+    /// overwrites the queued notification.
+    notifier: Mutex<Option<tokio::sync::watch::Sender<()>>>,
+}
+
+impl Default for UsageTracker {
+    fn default() -> Self {
+        Self {
+            stats: Mutex::new(HashMap::new()),
+            notifier: Mutex::new(None),
+        }
+    }
 }
 
 impl UsageTracker {
@@ -48,7 +71,14 @@ impl UsageTracker {
         Self::default()
     }
 
+    /// Attach a [`tokio::sync::watch::Sender`] that will be notified on
+    /// every [`record`] call. Replaces any previously set notifier.
+    pub fn set_notifier(&self, sender: tokio::sync::watch::Sender<()>) {
+        *self.notifier.lock().unwrap() = Some(sender);
+    }
+
     /// Fold `delta` into the running totals for `label`, plus one request.
+    /// Fires the attached notifier (if any) after updating, without blocking.
     pub fn record(&self, label: &str, delta: UsageStats) {
         let mut stats = self.stats.lock().unwrap();
         let entry = stats.entry(label.to_string()).or_default();
@@ -56,6 +86,13 @@ impl UsageTracker {
             requests: 1,
             ..delta
         });
+
+        // Non-blocking notify: send() on a watch channel overwrites the stored
+        // value regardless of whether the receiver has read the previous one.
+        // Errors only if all receivers have been dropped, which is fine.
+        if let Some(tx) = self.notifier.lock().unwrap().as_ref() {
+            let _ = tx.send(());
+        }
     }
 
     /// A point-in-time copy of all recorded totals, keyed by label.
