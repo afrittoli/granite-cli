@@ -118,6 +118,7 @@ pub mod openclaw;
 pub mod opencode;
 pub mod pi;
 
+pub(crate) use base::resolve_and_bind;
 pub use base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata};
 pub use bob::{BobLauncher, BobLauncherConfig};
 pub use claude::{ClaudeLauncher, ClaudeLauncherConfig};
