@@ -1,6 +1,8 @@
 pub mod hardware;
 pub mod shell;
 pub mod subserver;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod traits;
 pub mod ui;
 
