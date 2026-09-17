@@ -53,6 +53,10 @@ pub struct SessionMeta {
     pub session_id: String,
     /// When the session was launched (`YYYYMMDDTHHMMSS` in UTC).
     pub launched_at: String,
+    /// When the session finished (`YYYYMMDDTHHMMSS` in UTC). `None` while the
+    /// session is still running or if it was terminated abruptly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
     /// The working directory at session start.
     pub working_dir: String,
     /// The full CLI invocation that started this session.
@@ -154,6 +158,7 @@ pub fn create_session_meta(
     SessionMeta {
         session_id: session_id.to_string(),
         launched_at,
+        finished_at: None,
         working_dir,
         full_command: std::env::args().collect(),
         launcher_id: launcher_config.launcher_id.clone(),
@@ -192,23 +197,22 @@ pub fn update_session_usage(
     session_id: &str,
     usage: &HashMap<String, UsageStats>,
 ) -> anyhow::Result<()> {
-    let sessions_dir = Config::sessions_dir()?;
-    let path = sessions_dir.join(format!("{session_id}.yaml"));
-    let content = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read session file: {}", path.display()))?;
-    let mut meta: SessionMeta = serde_yaml::from_str(&content)
-        .with_context(|| format!("failed to parse session file: {}", path.display()))?;
-    meta.usage = usage.clone();
-    let updated = serde_yaml::to_string(&meta)
-        .with_context(|| "failed to serialize updated session metadata")?;
-    fs::write(&path, updated)
-        .with_context(|| format!("failed to update session file: {}", path.display()))?;
-    alog_channel!(
-        MessageLevel::Debug4,
-        "session usage updated: {}",
-        path.display()
-    );
-    Ok(())
+    update_session_file(session_id, |meta| {
+        meta.usage = usage.clone();
+    })
+}
+
+/// Set `finished_at` and write the final `usage` snapshot in a single file
+/// update. Called once at clean session teardown.
+pub fn finish_session(session_id: &str, usage: &HashMap<String, UsageStats>) -> anyhow::Result<()> {
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(format_utc_timestamp)
+        .unwrap_or_else(|_| "unknown".to_string());
+    update_session_file(session_id, |meta| {
+        meta.usage = usage.clone();
+        meta.finished_at = Some(now);
+    })
 }
 
 /// Read a session file by its ID.
@@ -223,6 +227,29 @@ pub fn read_session_file(session_id: &str) -> anyhow::Result<SessionMeta> {
 }
 
 /*-- private --*/
+
+/// Read-modify-write a session file, applying `f` to the parsed [`SessionMeta`]
+/// before writing it back. Shared implementation for [`update_session_usage`]
+/// and [`finish_session`].
+fn update_session_file(session_id: &str, f: impl FnOnce(&mut SessionMeta)) -> anyhow::Result<()> {
+    let sessions_dir = Config::sessions_dir()?;
+    let path = sessions_dir.join(format!("{session_id}.yaml"));
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read session file: {}", path.display()))?;
+    let mut meta: SessionMeta = serde_yaml::from_str(&content)
+        .with_context(|| format!("failed to parse session file: {}", path.display()))?;
+    f(&mut meta);
+    let updated = serde_yaml::to_string(&meta)
+        .with_context(|| "failed to serialize updated session metadata")?;
+    fs::write(&path, updated)
+        .with_context(|| format!("failed to update session file: {}", path.display()))?;
+    alog_channel!(
+        MessageLevel::Debug4,
+        "session file updated: {}",
+        path.display()
+    );
+    Ok(())
+}
 
 /// Counter used by [`short_suffix`] to guarantee uniqueness across calls
 /// within the same process.
@@ -403,6 +430,7 @@ mod tests {
         let meta = SessionMeta {
             session_id: "test---home@20250101T120000_abcd1234".to_string(),
             launched_at: "20250101T120000".to_string(),
+            finished_at: None,
             working_dir: "/home/test".to_string(),
             full_command: vec![
                 "granite-cli".to_string(),
@@ -420,7 +448,42 @@ mod tests {
         assert_eq!(back.session_id, meta.session_id);
         assert_eq!(back.launcher_id, meta.launcher_id);
         assert_eq!(back.full_command, meta.full_command);
+        assert!(back.finished_at.is_none());
         assert!(back.usage.is_empty());
+    }
+
+    #[test]
+    fn session_meta_finished_at_is_omitted_when_none() {
+        let meta = SessionMeta {
+            session_id: "s".to_string(),
+            launched_at: "20250101T120000".to_string(),
+            finished_at: None,
+            working_dir: "/".to_string(),
+            full_command: vec![],
+            launcher_id: "claude".to_string(),
+            launcher_type: "claude".to_string(),
+            capabilities: vec![],
+            usage: HashMap::new(),
+        };
+        let yaml = serde_yaml::to_string(&meta).unwrap();
+        assert!(
+            !yaml.contains("finished_at"),
+            "finished_at must be absent from YAML when None: {yaml}"
+        );
+    }
+
+    fn make_meta(session_id: &str, launcher_id: &str) -> SessionMeta {
+        SessionMeta {
+            session_id: session_id.to_string(),
+            launched_at: "20250101T120000".to_string(),
+            finished_at: None,
+            working_dir: "/test".to_string(),
+            full_command: vec!["granite-cli".to_string(), "launch".to_string()],
+            launcher_id: launcher_id.to_string(),
+            launcher_type: launcher_id.to_string(),
+            capabilities: vec![],
+            usage: HashMap::new(),
+        }
     }
 
     #[test]
@@ -429,21 +492,11 @@ mod tests {
         Config::ensure_directories_for_test();
 
         let session_id = "test---home@20250101T120000_deadbeef";
-        let meta = SessionMeta {
-            session_id: session_id.to_string(),
-            launched_at: "20250101T120000".to_string(),
-            working_dir: "/test".to_string(),
-            full_command: vec!["granite-cli".to_string(), "launch".to_string()],
-            launcher_id: "claude".to_string(),
-            launcher_type: "claude".to_string(),
-            capabilities: vec![],
-            usage: HashMap::new(),
-        };
-
-        write_session_file(&meta).unwrap();
+        write_session_file(&make_meta(session_id, "claude")).unwrap();
         let read_back = read_session_file(session_id).unwrap();
         assert_eq!(read_back.session_id, session_id);
         assert_eq!(read_back.launcher_id, "claude");
+        assert!(read_back.finished_at.is_none());
     }
 
     #[test]
@@ -452,17 +505,7 @@ mod tests {
         Config::ensure_directories_for_test();
 
         let session_id = "test---home@20250101T130000_cafebabe";
-        let meta = SessionMeta {
-            session_id: session_id.to_string(),
-            launched_at: "20250101T130000".to_string(),
-            working_dir: "/test".to_string(),
-            full_command: vec!["granite-cli".to_string(), "launch".to_string()],
-            launcher_id: "opencode".to_string(),
-            launcher_type: "opencode".to_string(),
-            capabilities: vec![],
-            usage: HashMap::new(),
-        };
-        write_session_file(&meta).unwrap();
+        write_session_file(&make_meta(session_id, "opencode")).unwrap();
 
         let mut usage = HashMap::new();
         usage.insert(
@@ -479,8 +522,44 @@ mod tests {
 
         let updated = read_session_file(session_id).unwrap();
         assert_eq!(updated.launcher_id, "opencode");
+        // update_session_usage must not set finished_at
+        assert!(updated.finished_at.is_none());
         let agent_usage = updated.usage.get("agent").unwrap();
         assert_eq!(agent_usage.requests, 3);
         assert_eq!(agent_usage.input_tokens, 100);
+    }
+
+    #[test]
+    fn finish_session_sets_finished_at_and_final_usage() {
+        let _home = TestConfigHome::new();
+        Config::ensure_directories_for_test();
+
+        let session_id = "test---home@20250101T140000_f1n15hed";
+        write_session_file(&make_meta(session_id, "claude")).unwrap();
+
+        let mut usage = HashMap::new();
+        usage.insert(
+            "main".to_string(),
+            UsageStats {
+                requests: 7,
+                input_tokens: 200,
+                output_tokens: 80,
+                cache_creation_tokens: 5,
+                cache_read_tokens: 15,
+            },
+        );
+        finish_session(session_id, &usage).unwrap();
+
+        let finished = read_session_file(session_id).unwrap();
+        assert!(
+            finished.finished_at.is_some(),
+            "finished_at must be set after finish_session"
+        );
+        let ts = finished.finished_at.unwrap();
+        assert_eq!(ts.len(), 15, "timestamp must be YYYYMMDDTHHMMSS: {ts}");
+        assert!(ts.contains('T'), "timestamp must contain 'T': {ts}");
+        assert_eq!(finished.usage.get("main").unwrap().requests, 7);
+        // launched_at must be preserved unchanged
+        assert_eq!(finished.launched_at, "20250101T120000");
     }
 }

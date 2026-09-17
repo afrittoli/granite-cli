@@ -874,7 +874,7 @@ async fn run_launch(
         handle.abort();
     }
     if let Some(ref t) = tracker {
-        session::update_session_usage(&session_id, &t.snapshot()).ok();
+        session::finish_session(&session_id, &t.snapshot()).ok();
     }
 
     let status = launch_result?;
