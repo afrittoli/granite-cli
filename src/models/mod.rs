@@ -28,9 +28,9 @@ pub static MODEL_REGISTRY: LazyLock<base::ModelFactory> = LazyLock::new(|| {
 /// more than once. The instance is kept, so every later ask for that id
 /// returns the same object.
 pub struct ModelSource {
-    /// The configuration this source was built from. Only `config.models`
-    /// is read; `construct` takes the whole thing.
-    config: crate::config::Config,
+    /// The settings for this kind, from the configuration snapshot the
+    /// source was built from.
+    configs: HashMap<String, crate::config::ModelConfig>,
     providers: Arc<crate::providers::ProviderSource>,
     cache: std::sync::Mutex<HashMap<String, Arc<dyn Model>>>,
 }
@@ -54,7 +54,7 @@ impl ModelSource {
         providers: Arc<crate::providers::ProviderSource>,
     ) -> Self {
         Self {
-            config: config.clone(),
+            configs: config.models.clone(),
             providers,
             cache: std::sync::Mutex::new(HashMap::new()),
         }
@@ -69,8 +69,7 @@ impl ModelSource {
         model_id: &str,
     ) -> anyhow::Result<Arc<dyn crate::providers::Provider>> {
         let model_config = self
-            .config
-            .models
+            .configs
             .get(model_id)
             .ok_or_else(|| anyhow::anyhow!("model '{model_id}' is not configured"))?;
         self.providers.get(&model_config.provider_id).map_err(|_| {
@@ -89,8 +88,7 @@ impl ModelSource {
         model_id: &str,
     ) -> anyhow::Result<Arc<dyn crate::providers::Provider>> {
         let model_config = self
-            .config
-            .models
+            .configs
             .get(model_id)
             .ok_or_else(|| anyhow::anyhow!("model '{model_id}' is not configured"))?;
         self.providers
@@ -106,10 +104,7 @@ impl ModelSource {
     /// The `"format/precision"` string the model configured under `model_id`
     /// was pinned to, if any.
     pub fn configured_variant(&self, model_id: &str) -> Option<String> {
-        self.config
-            .models
-            .get(model_id)
-            .and_then(|mc| mc.variant.clone())
+        self.configs.get(model_id).and_then(|mc| mc.variant.clone())
     }
 
     /// The model configured under `model_id` (the instance id -- matches
@@ -133,8 +128,7 @@ impl ModelSource {
             return Ok(built.clone());
         }
         let model_config = self
-            .config
-            .models
+            .configs
             .get(model_id)
             .ok_or(crate::sources::SourceError::NotConfigured)?;
 
@@ -250,8 +244,7 @@ fn describe_unmet(
 
 impl crate::dependency::Configured<dyn Model> for ModelSource {
     fn instances(&self) -> Vec<(String, Arc<dyn Model + 'static>)> {
-        self.config
-            .models
+        self.configs
             .keys()
             .filter_map(|id| match self.get(id) {
                 Ok(model) => Some((id.clone(), model)),

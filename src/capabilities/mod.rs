@@ -28,9 +28,9 @@ pub static CAPABILITY_REGISTRY: LazyLock<base::CapabilityFactory> = LazyLock::ne
 /// (`capability_id`) rather than its catalog type (`capability_type`). The
 /// instance is kept, so every later ask for that id returns the same object.
 pub struct CapabilitySource {
-    /// The configuration this source was built from. Only
-    /// `config.capabilities` is read; `construct` takes the whole thing.
-    config: crate::config::Config,
+    /// The settings for this kind, from the configuration snapshot the
+    /// source was built from.
+    configs: HashMap<String, crate::config::CapabilityConfig>,
     /// The collection a capability's model name is resolved against.
     models: std::sync::Arc<crate::models::ModelSource>,
     cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn ResolvedCapability>>>,
@@ -54,7 +54,7 @@ impl CapabilitySource {
         models: std::sync::Arc<crate::models::ModelSource>,
     ) -> Self {
         Self {
-            config: config.clone(),
+            configs: config.capabilities.clone(),
             models,
             cache: std::sync::Mutex::new(HashMap::new()),
         }
@@ -84,8 +84,7 @@ impl CapabilitySource {
             return Ok(built.clone());
         }
         let capability_config = self
-            .config
-            .capabilities
+            .configs
             .get(capability_id)
             .ok_or(SourceError::NotConfigured)?;
 
@@ -125,8 +124,7 @@ impl CapabilitySource {
 
 impl crate::dependency::Configured<dyn ResolvedCapability> for CapabilitySource {
     fn instances(&self) -> Vec<(String, std::sync::Arc<dyn ResolvedCapability + 'static>)> {
-        self.config
-            .capabilities
+        self.configs
             .keys()
             .filter_map(|id| match self.get(id) {
                 Ok(capability) => Some((id.clone(), capability)),

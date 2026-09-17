@@ -30,16 +30,16 @@ pub static LAUNCHER_REGISTRY: LazyLock<base::LauncherFactory> = LazyLock::new(||
 /// and `claude-enterprise` both backed by `claude`). The instance is kept, so
 /// every later ask for that id returns the same object.
 pub struct LauncherSource {
-    /// The configuration this source was built from. Only
-    /// `config.launchers` is read; `construct` takes the whole thing.
-    config: crate::config::Config,
+    /// The settings for this kind, from the configuration snapshot the
+    /// source was built from.
+    configs: HashMap<String, crate::config::LauncherConfig>,
     cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Launcher>>>,
 }
 
 impl LauncherSource {
     pub fn from_config(config: &crate::config::Config) -> Self {
         Self {
-            config: config.clone(),
+            configs: config.launchers.clone(),
             cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -64,8 +64,7 @@ impl LauncherSource {
             return Ok(built.clone());
         }
         let lc = self
-            .config
-            .launchers
+            .configs
             .get(launcher_id)
             .ok_or(crate::sources::SourceError::NotConfigured)?;
         let built = LAUNCHER_REGISTRY.construct(&lc.launcher_type, &lc.launcher_id, &lc.config)?;
@@ -85,8 +84,7 @@ impl LauncherSource {
 
 impl crate::dependency::Configured<dyn Launcher> for LauncherSource {
     fn instances(&self) -> Vec<(String, std::sync::Arc<dyn Launcher + 'static>)> {
-        self.config
-            .launchers
+        self.configs
             .keys()
             .filter_map(|id| match self.get(id) {
                 Ok(launcher) => Some((id.clone(), launcher)),
