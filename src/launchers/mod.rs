@@ -50,6 +50,17 @@ impl LauncherSource {
     /// entry is configured under that id, or when its `launcher_type` is not
     /// in the registry.
     pub fn get(&self, launcher_id: &str) -> anyhow::Result<std::sync::Arc<dyn Launcher>> {
+        self.build(launcher_id)
+            .map_err(|e| e.about("launcher", launcher_id))
+    }
+
+    /// The same, as the typed failure the validator turns into a problem it
+    /// reports. The instance stays in the cache, so a command that goes on
+    /// to use it does not build it again.
+    pub(crate) fn build(
+        &self,
+        launcher_id: &str,
+    ) -> Result<std::sync::Arc<dyn Launcher>, crate::sources::SourceError> {
         if let Some(built) = self.cache.lock().unwrap().get(launcher_id) {
             return Ok(built.clone());
         }
@@ -57,10 +68,8 @@ impl LauncherSource {
             .config
             .launchers
             .get(launcher_id)
-            .ok_or_else(|| anyhow::anyhow!("launcher '{launcher_id}' is not configured"))?;
-        let built = LAUNCHER_REGISTRY
-            .construct(&lc.launcher_type, &lc.launcher_id, &lc.config)
-            .map_err(|e| e.about("launcher", launcher_id))?;
+            .ok_or(crate::sources::SourceError::NotConfigured)?;
+        let built = LAUNCHER_REGISTRY.construct(&lc.launcher_type, &lc.launcher_id, &lc.config)?;
         let built: std::sync::Arc<dyn Launcher> = std::sync::Arc::from(built);
         // Built outside the lock, so two callers can reach here for one id.
         // `or_insert` keeps whichever landed first and drops the other, so

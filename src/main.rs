@@ -819,10 +819,7 @@ fn model_ids_named_by(config: &crate::config::Config, capability_ids: &[String])
         let Some(cc) = config.get_capability(capability_id) else {
             continue;
         };
-        let Ok(refs) = cc.refs() else {
-            continue;
-        };
-        for (kind, id) in refs {
+        for (kind, id) in cc.refs() {
             if kind == RefKind::Model && !ids.iter().any(|seen| seen == id) {
                 ids.push(id.to_string());
             }

@@ -5,6 +5,9 @@ use std::sync::LazyLock;
 // Third Party
 use alog::{MessageLevel, alog_channel, use_channel};
 
+// Local
+use crate::sources::SourceError;
+
 use_channel!("CAPBL");
 
 pub static CAPABILITY_REGISTRY: LazyLock<base::CapabilityFactory> = LazyLock::new(|| {
@@ -67,7 +70,7 @@ impl CapabilitySource {
             .config
             .capabilities
             .get(capability_id)
-            .ok_or_else(|| anyhow::anyhow!("capability '{capability_id}' is not configured"))?;
+            .ok_or_else(|| SourceError::NotConfigured.about("capability", capability_id))?;
 
         let mut built = CAPABILITY_REGISTRY
             .construct(
@@ -75,7 +78,7 @@ impl CapabilitySource {
                 &capability_config.capability_id,
                 &capability_config.config,
             )
-            .map_err(|e| e.about("capability", capability_id))?;
+            .map_err(|e| SourceError::from(e).about("capability", capability_id))?;
 
         // Wiring the capability to what it names is where a missing or
         // unsuitable model is reported. Spec 0024 gated this with a
@@ -96,6 +99,71 @@ impl CapabilitySource {
             .entry(capability_id.to_string())
             .or_insert(built)
             .clone())
+    }
+
+    /// What is wrong with the capability configured under `capability_id`,
+    /// in the vocabulary the validator reports: settings that cannot be
+    /// read, or a model that does not meet what this capability type
+    /// requires of it.
+    ///
+    /// This is the check at a capability hop, so it judges the entry itself
+    /// and leaves the names it points at to the walk that called it: a model
+    /// that is not configured at all is that model's own hop, reported there
+    /// with this capability as the referrer. The capability built here to
+    /// read its settings is dropped, since a capability whose model is not
+    /// wired is not something to hand out.
+    pub(crate) fn check(
+        &self,
+        capability_id: &str,
+    ) -> Result<(), crate::config::validation::Problem> {
+        use crate::config::validation::Problem;
+        use crate::dependency::Requirement;
+
+        let capability_config = self
+            .config
+            .capabilities
+            .get(capability_id)
+            .ok_or(Problem::NotConfigured)?;
+
+        CAPABILITY_REGISTRY
+            .construct(
+                &capability_config.capability_type,
+                &capability_config.capability_id,
+                &capability_config.config,
+            )
+            .map_err(Problem::from)?;
+
+        let Some(metadata) = CAPABILITY_REGISTRY.get(&capability_config.capability_type) else {
+            return Ok(());
+        };
+        for dependency in &metadata.dependencies {
+            let Dependency::Model {
+                config_key,
+                requirement,
+                ..
+            } = dependency
+            else {
+                continue;
+            };
+            let Some(model_id) = capability_config
+                .config
+                .get(config_key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+            let Ok(model) = self.models.get(model_id) else {
+                continue;
+            };
+            if !requirement.admits_instance(&*model) {
+                return Err(Problem::UnmetRequirement {
+                    model_id: model_id.to_string(),
+                    unmet: crate::models::describe_unmet(requirement, &*model),
+                });
+            }
+        }
+        Ok(())
     }
 }
 

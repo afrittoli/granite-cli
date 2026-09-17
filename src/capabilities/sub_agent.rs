@@ -52,6 +52,8 @@ macro_rules! declare_sub_agent_basic {
             ) -> Result<Self, $crate::registry::ConstructError> {
                 let config: $config_struct = serde_json::from_value(cfg.clone())
                     .map_err($crate::registry::ConstructError::settings)?;
+                serde_valid::Validate::validate(&config)
+                    .map_err(|e| $crate::capabilities::base::invalid_settings(&e))?;
                 let description = $description_expr;
                 let prompt = $prompt_expr;
                 let tools = $tools_expr;
@@ -205,6 +207,8 @@ macro_rules! declare_sub_agent_full {
             ) -> Result<Self, $crate::registry::ConstructError> {
                 let config: $config_struct = serde_json::from_value(cfg.clone())
                     .map_err($crate::registry::ConstructError::settings)?;
+                serde_valid::Validate::validate(&config)
+                    .map_err(|e| $crate::capabilities::base::invalid_settings(&e))?;
                 let description = config.description.clone();
                 let prompt = config.prompt.clone();
                 let tools = config.tools.clone();

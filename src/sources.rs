@@ -16,6 +16,43 @@ use crate::providers::ProviderSource;
 
 /*-- public --*/
 
+/// Why a source cannot hand out the instance a name points at.
+///
+/// The cases are kept apart so the validator can turn each into the problem
+/// it reports, and so a caller can act on one without reading a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceError {
+    /// Nothing is configured under the id asked for.
+    NotConfigured,
+    /// Something is configured, and building it failed.
+    Construct(crate::registry::ConstructError),
+}
+
+impl SourceError {
+    /// This failure as a message naming the instance it is about, for a
+    /// source that knows which kind and id it was asked for. One wording for
+    /// all four kinds, so the same problem reads the same whichever source
+    /// reports it.
+    pub fn about(&self, kind: &str, instance_id: &str) -> anyhow::Error {
+        use crate::registry::ConstructError;
+        match self {
+            Self::NotConfigured => anyhow::anyhow!("{kind} '{instance_id}' is not configured"),
+            Self::Construct(ConstructError::UnknownType { type_name }) => {
+                anyhow::anyhow!("{kind} '{instance_id}' has an unknown {kind} type '{type_name}'")
+            }
+            Self::Construct(ConstructError::Settings { detail }) => {
+                anyhow::anyhow!("the settings for {kind} '{instance_id}' are not valid: {detail}")
+            }
+        }
+    }
+}
+
+impl From<crate::registry::ConstructError> for SourceError {
+    fn from(error: crate::registry::ConstructError) -> Self {
+        Self::Construct(error)
+    }
+}
+
 /// One source per kind, wired so each asks the one below it: capabilities ask
 /// models, models ask providers.
 ///

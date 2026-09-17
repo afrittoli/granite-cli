@@ -52,7 +52,7 @@ pub(crate) enum Outcome {
 /// A list reports that a problem exists and never prompts about it. Acting on
 /// it is left to a command the user chooses to run next.
 pub(crate) fn dangling_notes(ctx: &crate::AppContext, kind: RefKind) -> HashMap<String, String> {
-    find_dangling(kind, ctx.config())
+    find_dangling(kind, ctx.config(), &ctx.sources())
         .into_iter()
         .map(|dangling| {
             (
@@ -79,7 +79,7 @@ pub(crate) fn prompt_with_current(
         return prompt.to_string();
     };
 
-    match validate_ref(kind, current, ctx.config()) {
+    match validate_ref(kind, current, ctx.config(), &ctx.sources()) {
         Ok(()) => format!("{prompt} [current: '{current}']"),
         Err(_) => format!(
             "{prompt} [current: '{current}', {} no longer resolves]",
@@ -192,7 +192,7 @@ pub(crate) async fn remediate(
     let mut tried: Vec<Choice> = Vec::new();
 
     loop {
-        let Err(error) = validate_ref(kind, id, ctx.config()) else {
+        let Err(error) = validate_ref(kind, id, ctx.config(), &ctx.sources()) else {
             return Ok(Outcome::Clean);
         };
 
@@ -230,6 +230,10 @@ pub(crate) async fn remediate(
                 previous = Some(error);
                 reconfigure(ctx, &fix).await?;
             }
+            Choice::Reset => {
+                previous = Some(error);
+                reset(ctx, &fix)?;
+            }
             Choice::Remove => {
                 previous = Some(error);
                 remove(ctx, fix.kind, &fix.id)?;
@@ -257,6 +261,13 @@ struct Fix {
     /// False when the type name is itself the problem. Setup cannot run a
     /// type the registry does not have, so removal is the only fix.
     can_reconfigure: bool,
+    /// What resetting would change, when the problem is settings that cannot
+    /// be read and replacing some of them with this type's defaults leaves an
+    /// instance that builds. `None` when no such replacement exists, which is
+    /// the case for a type whose defaults carry the same unusable value (an
+    /// `agent-model` capability's default model id is empty, like the one
+    /// that could not be read).
+    reset: Option<ResetPlan>,
     /// The `(launcher, capability)` pair to disable, when remediation was
     /// reached through a launcher that enables the capability. Some means the
     /// removal on offer drops the id from that launcher's list rather than
@@ -275,13 +286,144 @@ impl Fix {
             _ => error.target.clone(),
         };
 
+        let type_name = type_name(kind, &id, config)?.to_string();
+        let reset = match &error.problem {
+            Problem::UnreadableSettings { .. } => {
+                plan_reset(kind, &type_name, settings(kind, &id, config)?)
+            }
+            _ => None,
+        };
         Some(Self {
-            type_name: type_name(kind, &id, config)?.to_string(),
             can_reconfigure: !matches!(error.problem, Problem::UnknownType { .. }),
+            reset,
+            type_name,
             disable: disable_target(error, kind, &id, root, config),
             kind,
             id,
         })
+    }
+}
+
+/// The settings an instance carries, which is what a reset works from.
+fn settings<'a>(kind: RefKind, id: &str, config: &'a Config) -> Option<&'a serde_json::Value> {
+    match kind {
+        RefKind::Launcher => config.get_launcher(id).map(|c| &c.config),
+        RefKind::Capability => config.get_capability(id).map(|c| &c.config),
+        RefKind::Model => config.get_model(id).map(|c| &c.config),
+        RefKind::Provider => config.get_provider(id).map(|c| &c.config),
+    }
+}
+
+/// The settings a reset would write, and the fields it would change to get
+/// there.
+#[derive(Debug, PartialEq, Eq)]
+struct ResetPlan {
+    /// The settings to write: the instance's own, with the fields below
+    /// replaced by this type's defaults.
+    settings: serde_json::Value,
+    /// Each field the reset replaces, with the default value it takes.
+    changes: Vec<(String, serde_json::Value)>,
+}
+
+impl ResetPlan {
+    /// What the prompt offers, naming the fields and the values they take, so
+    /// nobody accepts a repair without knowing what it moves.
+    fn describe(&self, kind: RefKind, id: &str) -> String {
+        let render = |value: &serde_json::Value| match value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        match self.changes.as_slice() {
+            [(field, value)] => format!(
+                "Reset {kind} '{id}' {field} setting to its default value of {}",
+                render(value)
+            ),
+            changes => format!(
+                "Reset {kind} '{id}' settings to their default values: {}",
+                changes
+                    .iter()
+                    .map(|(field, value)| format!("{field} {}", render(value)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+}
+
+/// The smallest replacement of an instance's settings by its type's defaults
+/// that builds, or `None` when no replacement does.
+///
+/// The settings blob is valid JSON; it is reading it as the type's config that
+/// failed, and usually over one field. So each field that differs from the
+/// default is tried on its own first, and only if none of them is enough are
+/// they replaced together. Construction reads settings and does no I/O, so
+/// trying a few is cheap.
+fn plan_reset(kind: RefKind, type_name: &str, current: &serde_json::Value) -> Option<ResetPlan> {
+    let defaults = default_settings(kind, type_name)?;
+    let (Some(current_fields), Some(default_fields)) = (current.as_object(), defaults.as_object())
+    else {
+        return constructs(kind, type_name, &defaults).then(|| ResetPlan {
+            settings: defaults.clone(),
+            changes: Vec::new(),
+        });
+    };
+
+    let differing: Vec<(&String, &serde_json::Value)> = default_fields
+        .iter()
+        .filter(|(field, value)| current_fields.get(*field) != Some(*value))
+        .collect();
+
+    for (field, value) in &differing {
+        let mut candidate = current.clone();
+        candidate[field.as_str()] = (*value).clone();
+        if constructs(kind, type_name, &candidate) {
+            return Some(ResetPlan {
+                settings: candidate,
+                changes: vec![((*field).clone(), (*value).clone())],
+            });
+        }
+    }
+
+    let mut candidate = current.clone();
+    let mut changes = Vec::new();
+    for (field, value) in differing {
+        candidate[field.as_str()] = value.clone();
+        changes.push((field.clone(), value.clone()));
+        if constructs(kind, type_name, &candidate) {
+            return Some(ResetPlan {
+                settings: candidate,
+                changes,
+            });
+        }
+    }
+    None
+}
+
+/// Whether these settings produce an instance of this type.
+fn constructs(kind: RefKind, type_name: &str, settings: &serde_json::Value) -> bool {
+    match kind {
+        RefKind::Launcher => crate::launchers::LAUNCHER_REGISTRY
+            .construct(type_name, type_name, settings)
+            .is_ok(),
+        RefKind::Capability => crate::capabilities::CAPABILITY_REGISTRY
+            .construct(type_name, type_name, settings)
+            .is_ok(),
+        RefKind::Model => crate::models::MODEL_REGISTRY
+            .construct(type_name, type_name, settings)
+            .is_ok(),
+        RefKind::Provider => crate::providers::PROVIDER_REGISTRY
+            .construct(type_name, type_name, settings)
+            .is_ok(),
+    }
+}
+
+/// A type's default settings, as its registry entry declares them.
+fn default_settings(kind: RefKind, type_name: &str) -> Option<serde_json::Value> {
+    match kind {
+        RefKind::Launcher => crate::launchers::LAUNCHER_REGISTRY.default_config(type_name),
+        RefKind::Capability => crate::capabilities::CAPABILITY_REGISTRY.default_config(type_name),
+        RefKind::Model => crate::models::MODEL_REGISTRY.default_config(type_name),
+        RefKind::Provider => crate::providers::PROVIDER_REGISTRY.default_config(type_name),
     }
 }
 
@@ -326,6 +468,7 @@ fn disable_target(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Choice {
     Reconfigure,
+    Reset,
     Remove,
     Disable,
     Decline,
@@ -346,6 +489,13 @@ fn choose(
     if fix.can_reconfigure && !tried.contains(&Choice::Reconfigure) {
         choices.push(Choice::Reconfigure);
         items.push(format!("Reconfigure {} '{}' now", fix.kind, fix.id.clone()));
+    }
+
+    if let Some(plan) = &fix.reset
+        && !tried.contains(&Choice::Reset)
+    {
+        choices.push(Choice::Reset);
+        items.push(plan.describe(fix.kind, &fix.id));
     }
 
     match &fix.disable {
@@ -390,6 +540,48 @@ async fn reconfigure(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
         RefKind::Model => ModelCommands::setup(ctx, type_name, id).await,
         RefKind::Provider => ProviderCommands::setup(ctx, type_name, id).await,
     }
+}
+
+/// Replaces the fields that cannot be read with their type's defaults, which
+/// is the one repair that works when setup cannot show the current settings
+/// back. Everything else the instance was configured with stays.
+fn reset(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
+    let Some(plan) = &fix.reset else {
+        return Ok(());
+    };
+    let defaults = plan.settings.clone();
+    let (kind, id) = (fix.kind, fix.id.clone());
+    // The in-memory change lands either way, which is what the walk about to
+    // re-run reads. A failure to persist is reported the way the removal
+    // commands report theirs.
+    let saved = match kind {
+        RefKind::Launcher => ctx
+            .config_mut()
+            .update_launcher(&id, |launcher| launcher.config = defaults),
+        RefKind::Capability => ctx
+            .config_mut()
+            .update_capability(&id, |capability| capability.config = defaults),
+        RefKind::Model => ctx
+            .config_mut()
+            .update_model(&id, |model| model.config = defaults),
+        RefKind::Provider => ctx
+            .config_mut()
+            .update_provider(&id, |provider| provider.config = defaults),
+    };
+    if let Err(e) = saved {
+        ctx.ui
+            .warn(&format!("failed to persist the change to '{id}': {e}"));
+    }
+    ctx.ui.info(&format!(
+        "{kind} '{id}': {} now holds the default from '{}'.",
+        plan.changes
+            .iter()
+            .map(|(field, _)| field.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        fix.type_name
+    ));
+    Ok(())
 }
 
 /// Drops the capability from the launcher's `enabled_capabilities`. The
@@ -457,6 +649,112 @@ mod tests {
             .iter()
             .map(|(prompt, items, _)| (prompt.clone(), items.clone()))
             .collect()
+    }
+
+    /// A provider whose settings hold a field of the wrong type, which is
+    /// the state the reset repair exists for.
+    fn ctx_with_unreadable_provider_settings() -> crate::AppContext {
+        let mut ctx = crate::AppContext::new(Config::default(), Arc::new(CaptureUi::default()));
+        ctx.config_mut().providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                // A deliberately chosen endpoint beside a field that cannot
+                // be read, which is what a scoped repair has to tell apart.
+                config: serde_json::json!({
+                    "base_url": "http://127.0.0.1:18080",
+                    "timeout_secs": "ten",
+                }),
+            },
+        );
+        ctx
+    }
+
+    #[tokio::test]
+    async fn a_reset_replaces_the_field_that_cannot_be_read_and_keeps_the_rest() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_unreadable_provider_settings();
+        // Reconfigure, reset, remove, decline: reset is the second.
+        answer(&ctx, &[1]);
+
+        let outcome = remediate(
+            &mut ctx,
+            RefKind::Provider,
+            "ollama",
+            OnDecline::Abort,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, Outcome::Clean);
+        let settings = &ctx.config().get_provider("ollama").unwrap().config;
+        assert_eq!(
+            settings.get("timeout_secs"),
+            crate::providers::PROVIDER_REGISTRY
+                .default_config("ollama")
+                .as_ref()
+                .and_then(|defaults| defaults.get("timeout_secs")),
+            "the field that could not be read now holds its type's default"
+        );
+        assert_eq!(
+            settings.get("base_url").and_then(|v| v.as_str()),
+            Some("http://127.0.0.1:18080"),
+            "a field that reads fine is left as it was configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reset_on_offer_names_the_field_and_the_value_it_takes() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_unreadable_provider_settings();
+
+        let _ = remediate(
+            &mut ctx,
+            RefKind::Provider,
+            "ollama",
+            OnDecline::Abort,
+            true,
+        )
+        .await
+        .unwrap();
+
+        let offered = &prompts(&ctx)[0].1;
+        assert!(
+            offered.iter().any(|item| item
+                == "Reset provider 'ollama' timeout_secs setting to its default value of 10"),
+            "got: {offered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reset_is_not_offered_when_the_defaults_would_not_help() {
+        // `agent-model`'s default settings hold an empty model id, which is
+        // the very thing that cannot be read here, so resetting repairs
+        // nothing and is not offered.
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = crate::AppContext::new(Config::default(), Arc::new(CaptureUi::default()));
+        ctx.config_mut().capabilities.insert(
+            "chat".to_string(),
+            CapabilityConfig {
+                capability_id: "chat".to_string(),
+                capability_type: "agent-model".to_string(),
+                config: serde_json::json!({ "model_id": "" }),
+            },
+        );
+
+        let _ = remediate(&mut ctx, RefKind::Capability, "chat", OnDecline::Skip, true)
+            .await
+            .unwrap();
+
+        let offered = prompts(&ctx);
+        assert!(!offered.is_empty(), "the problem was reported");
+        assert!(
+            !offered[0].1.iter().any(|item| item.contains("Reset")),
+            "got: {:?}",
+            offered[0].1
+        );
     }
 
     /// Launcher `claude` enables capability `chat`, which points at a model
@@ -551,7 +849,7 @@ mod tests {
         assert!(ctx.config().get_model("granite-3.1-8b-instruct").is_none());
         // Left in place, and now dangling, which `capability list` reports.
         assert!(ctx.config().get_capability("chat").is_some());
-        assert!(!find_dangling(RefKind::Capability, ctx.config()).is_empty());
+        assert!(!find_dangling(RefKind::Capability, ctx.config(), &ctx.sources()).is_empty());
     }
 
     #[test]

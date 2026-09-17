@@ -94,6 +94,17 @@ impl ProviderSource {
     /// launch reads a route's upstream target from here, since a provider
     /// handed out by `get` reports the proxy's own address.
     pub fn upstream(&self, provider_id: &str) -> anyhow::Result<std::sync::Arc<dyn Provider>> {
+        self.build(provider_id)
+            .map_err(|e| e.about("provider", provider_id))
+    }
+
+    /// The same, as the typed failure the validator turns into a problem it
+    /// reports. The instance stays in the cache, so a command that goes on
+    /// to use it does not build it again.
+    pub(crate) fn build(
+        &self,
+        provider_id: &str,
+    ) -> Result<std::sync::Arc<dyn Provider>, crate::sources::SourceError> {
         if let Some(built) = self.upstream.lock().unwrap().get(provider_id) {
             return Ok(built.clone());
         }
@@ -101,14 +112,12 @@ impl ProviderSource {
             .config
             .providers
             .get(provider_id)
-            .ok_or_else(|| anyhow::anyhow!("provider '{provider_id}' is not configured"))?;
-        let built = PROVIDER_REGISTRY
-            .construct(
-                &provider_config.provider_type,
-                &provider_config.provider_id,
-                &provider_config.config,
-            )
-            .map_err(|e| e.about("provider", provider_id))?;
+            .ok_or(crate::sources::SourceError::NotConfigured)?;
+        let built = PROVIDER_REGISTRY.construct(
+            &provider_config.provider_type,
+            &provider_config.provider_id,
+            &provider_config.config,
+        )?;
         let built: std::sync::Arc<dyn Provider> = std::sync::Arc::from(built);
         // Built outside the lock, so two callers can reach here for one id.
         // `or_insert` keeps whichever landed first and drops the other, so

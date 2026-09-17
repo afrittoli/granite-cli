@@ -97,6 +97,9 @@ impl ConfigConstructable for VisionMCPCapability {
     fn new(instance_id: &str, cfg: &serde_json::Value) -> Result<Self, ConstructError> {
         let config: VisionMCPCapabilityConfig =
             serde_json::from_value(cfg.clone()).map_err(ConstructError::settings)?;
+        config
+            .validate()
+            .map_err(|e| crate::capabilities::base::invalid_settings(&e))?;
         Ok(Self {
             instance_id: instance_id.to_string(),
             config,

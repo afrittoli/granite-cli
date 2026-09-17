@@ -385,7 +385,13 @@ impl CapabilityCommands {
             .keys()
             .filter(|id| !before.contains(*id))
             .filter(|id| {
-                crate::config::validation::validate_ref(RefKind::Model, id, ctx.config()).is_ok()
+                crate::config::validation::validate_ref(
+                    RefKind::Model,
+                    id,
+                    ctx.config(),
+                    &ctx.sources(),
+                )
+                .is_ok()
             })
             .cloned()
             .collect();
@@ -737,6 +743,34 @@ mod tests {
         assert!(row[notes].contains("is not configured"), "{row:?}");
         // A list reports that a problem exists. Acting on it is left to a
         // command the user chooses to run next.
+        assert!(capture(&ctx).select_prompts.borrow().is_empty());
+    }
+
+    #[test]
+    fn list_annotates_a_capability_whose_model_does_not_meet_its_requirement() {
+        // `granite-3.1-8b-instruct` is a text model, and `vision-mcp` asks
+        // for one that understands images.
+        let mut ctx = ctx_with_chat_capable_model();
+        ctx.config_mut().capabilities.insert(
+            "vision".to_string(),
+            CapabilityConfig {
+                capability_id: "vision".to_string(),
+                capability_type: "vision-mcp".to_string(),
+                config: serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
+            },
+        );
+
+        CapabilityCommands::list(&ctx).unwrap();
+
+        let tables = tables!(ctx);
+        let (_, headers, rows) = &tables[0];
+        let notes = headers.iter().position(|h| h == "NOTES").unwrap();
+        let row = rows.iter().find(|r| r[0] == "vision").unwrap();
+        assert!(
+            row[notes].contains("does not meet its requirement")
+                && row[notes].contains("Image Understanding"),
+            "{row:?}"
+        );
         assert!(capture(&ctx).select_prompts.borrow().is_empty());
     }
 
