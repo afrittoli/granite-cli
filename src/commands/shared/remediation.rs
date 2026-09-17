@@ -52,7 +52,7 @@ pub(crate) enum Outcome {
 /// A list reports that a problem exists and never prompts about it. Acting on
 /// it is left to a command the user chooses to run next.
 pub(crate) fn dangling_notes(ctx: &crate::AppContext, kind: RefKind) -> HashMap<String, String> {
-    find_dangling(kind, ctx.config())
+    find_dangling(kind, ctx.config(), &ctx.sources())
         .into_iter()
         .map(|dangling| {
             (
@@ -79,7 +79,7 @@ pub(crate) fn prompt_with_current(
         return prompt.to_string();
     };
 
-    match validate_ref(kind, current, ctx.config()) {
+    match validate_ref(kind, current, ctx.config(), &ctx.sources()) {
         Ok(()) => format!("{prompt} [current: '{current}']"),
         Err(_) => format!(
             "{prompt} [current: '{current}', {} no longer resolves]",
@@ -192,7 +192,7 @@ pub(crate) async fn remediate(
     let mut tried: Vec<Choice> = Vec::new();
 
     loop {
-        let Err(error) = validate_ref(kind, id, ctx.config()) else {
+        let Err(error) = validate_ref(kind, id, ctx.config(), &ctx.sources()) else {
             return Ok(Outcome::Clean);
         };
 
@@ -551,7 +551,7 @@ mod tests {
         assert!(ctx.config().get_model("granite-3.1-8b-instruct").is_none());
         // Left in place, and now dangling, which `capability list` reports.
         assert!(ctx.config().get_capability("chat").is_some());
-        assert!(!find_dangling(RefKind::Capability, ctx.config()).is_empty());
+        assert!(!find_dangling(RefKind::Capability, ctx.config(), &ctx.sources()).is_empty());
     }
 
     #[test]

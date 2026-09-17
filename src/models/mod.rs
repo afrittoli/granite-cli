@@ -119,6 +119,16 @@ impl ModelSource {
     /// share one object. Errors when no entry is configured under that id, or
     /// when its `model_type` is not in the registry.
     pub fn get(&self, model_id: &str) -> anyhow::Result<Arc<dyn Model>> {
+        self.build(model_id).map_err(|e| e.about("model", model_id))
+    }
+
+    /// The same, as the typed failure the validator turns into a problem it
+    /// reports. The instance stays in the cache, so a command that goes on
+    /// to use it does not build it again.
+    pub(crate) fn build(
+        &self,
+        model_id: &str,
+    ) -> Result<Arc<dyn Model>, crate::sources::SourceError> {
         if let Some(built) = self.cache.lock().unwrap().get(model_id) {
             return Ok(built.clone());
         }
@@ -126,15 +136,13 @@ impl ModelSource {
             .config
             .models
             .get(model_id)
-            .ok_or_else(|| anyhow::anyhow!("model '{model_id}' is not configured"))?;
+            .ok_or(crate::sources::SourceError::NotConfigured)?;
 
-        let built = MODEL_REGISTRY
-            .construct(
-                &model_config.model_type,
-                &model_config.model_id,
-                &model_config.config,
-            )
-            .map_err(|e| e.about("model", model_id))?;
+        let built = MODEL_REGISTRY.construct(
+            &model_config.model_type,
+            &model_config.model_id,
+            &model_config.config,
+        )?;
 
         let built: Arc<dyn Model> = Arc::from(built);
         // Built outside the lock, so two callers can reach here for one id.
@@ -159,11 +167,13 @@ impl base::ModelLookup for ModelSource {
         let model = self.get(model_id)?;
         if let Some(requirement) = requirement {
             use crate::dependency::Requirement;
-            anyhow::ensure!(
-                requirement.admits_instance(&*model),
-                "model '{model_id}' does not satisfy what this capability requires of it: {}",
-                describe_unmet(requirement, &*model)
-            );
+            if !requirement.admits_instance(&*model) {
+                return Err(UnmetRequirement {
+                    model_id: model_id.to_string(),
+                    unmet: describe_unmet(requirement, &*model),
+                }
+                .into());
+            }
         }
         Ok(ConfiguredModel::new(
             model,
@@ -172,6 +182,27 @@ impl base::ModelLookup for ModelSource {
         ))
     }
 }
+
+/// A model that resolves and does not meet what the capability asking for it
+/// requires. Typed, so the capability source can tell this failure from the
+/// others `resolve_refs` can return and report it with both names.
+#[derive(Debug)]
+pub(crate) struct UnmetRequirement {
+    pub(crate) model_id: String,
+    pub(crate) unmet: String,
+}
+
+impl std::fmt::Display for UnmetRequirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "model '{}' does not satisfy what this capability requires of it: {}",
+            self.model_id, self.unmet
+        )
+    }
+}
+
+impl std::error::Error for UnmetRequirement {}
 
 /// The parts of `requirement` this model does not meet, for an error that
 /// says which one failed rather than that one did.

@@ -10,10 +10,58 @@ use std::sync::Arc;
 
 use crate::capabilities::CapabilitySource;
 use crate::config::Config;
+use crate::launchers::LauncherSource;
 use crate::models::ModelSource;
 use crate::providers::ProviderSource;
 
 /*-- public --*/
+
+/// Why a source cannot hand out the instance a name points at.
+///
+/// The cases are kept apart so the validator can turn each into the problem
+/// it reports, and so a caller can act on one without reading a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceError {
+    /// Nothing is configured under the id asked for.
+    NotConfigured,
+    /// Something is configured, and building it failed.
+    Construct(crate::registry::ConstructError),
+    /// A capability built, and the model it names does not meet what its
+    /// type requires.
+    UnmetRequirement { model_id: String, unmet: String },
+    /// A capability built, and a name it holds did not resolve.
+    Unresolved(String),
+}
+
+impl SourceError {
+    /// This failure as a message naming the instance it is about, for a
+    /// source that knows which kind and id it was asked for. One wording for
+    /// all four kinds, so the same problem reads the same whichever source
+    /// reports it.
+    pub(crate) fn about(&self, kind: &str, instance_id: &str) -> anyhow::Error {
+        use crate::registry::ConstructError;
+        match self {
+            Self::NotConfigured => anyhow::anyhow!("{kind} '{instance_id}' is not configured"),
+            Self::Construct(ConstructError::UnknownType { type_name }) => {
+                anyhow::anyhow!("{kind} '{instance_id}' has an unknown {kind} type '{type_name}'")
+            }
+            Self::Construct(ConstructError::Settings { detail }) => {
+                anyhow::anyhow!("the settings for {kind} '{instance_id}' are not valid: {detail}")
+            }
+            Self::UnmetRequirement { model_id, unmet } => anyhow::anyhow!(
+                "{kind} '{instance_id}' names model '{model_id}', which does not meet its \
+                 requirement: {unmet}"
+            ),
+            Self::Unresolved(detail) => anyhow::anyhow!("{kind} '{instance_id}': {detail}"),
+        }
+    }
+}
+
+impl From<crate::registry::ConstructError> for SourceError {
+    fn from(error: crate::registry::ConstructError) -> Self {
+        Self::Construct(error)
+    }
+}
 
 /// One source per kind, wired so each asks the one below it: capabilities ask
 /// models, models ask providers.
@@ -26,6 +74,7 @@ pub(crate) struct Sources {
     providers: Arc<ProviderSource>,
     models: Arc<ModelSource>,
     capabilities: Arc<CapabilitySource>,
+    launchers: Arc<LauncherSource>,
 }
 
 impl Sources {
@@ -40,6 +89,7 @@ impl Sources {
             providers,
             models,
             capabilities,
+            launchers: Arc::new(LauncherSource::from_config(config)),
         }
     }
 
@@ -53,6 +103,10 @@ impl Sources {
 
     pub(crate) fn capabilities(&self) -> Arc<CapabilitySource> {
         Arc::clone(&self.capabilities)
+    }
+
+    pub(crate) fn launchers(&self) -> Arc<LauncherSource> {
+        Arc::clone(&self.launchers)
     }
 }
 
