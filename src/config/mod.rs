@@ -13,7 +13,7 @@ use_channel!("CONF");
 pub(crate) mod recommended_config;
 pub(crate) mod validation;
 
-const PATH_DELIM: &str = "---";
+pub(crate) const PATH_DELIM: &str = "---";
 
 pub(crate) trait ConfigId {
     fn config_id(&self) -> &str;
@@ -385,6 +385,10 @@ impl Config {
         Ok(Self::config_dir()?.join("recommended_configs"))
     }
 
+    pub(crate) fn sessions_dir() -> Result<PathBuf> {
+        Ok(Self::config_dir()?.join("sessions"))
+    }
+
     /// Directory a launcher may materialize generated state into -- config files
     /// it must put on disk for the tool it wraps. Kept under `GRANITE_CLI_HOME`
     /// so wrapping a tool never means editing that tool's own global config.
@@ -408,6 +412,7 @@ impl Config {
         fs::create_dir_all(Self::capabilities_dir()?)?;
         fs::create_dir_all(Self::launchers_dir()?)?;
         fs::create_dir_all(Self::recommended_configs_dir()?)?;
+        fs::create_dir_all(Self::sessions_dir()?)?;
         Ok(())
     }
 
@@ -745,6 +750,13 @@ impl Config {
         } else {
             Ok(())
         }
+    }
+
+    /// Calls `ensure_directories` from test code. Mirrors the real
+    /// `ensure_directories` but public under `#[cfg(test)]`.
+    #[cfg(test)]
+    pub(crate) fn ensure_directories_for_test() {
+        Self::ensure_directories().unwrap();
     }
 }
 

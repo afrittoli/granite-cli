@@ -2323,9 +2323,17 @@ impl SetupCommands {
 
             // `CapabilitySource` skips a capability whose required model slot
             // is empty, with a warning, so such a capability is not written.
+            let cap_cfg = crate::config::CapabilityConfig {
+                capability_id: cap_type.to_string(),
+                capability_type: cap_type.to_string(),
+                config: CAPABILITY_REGISTRY
+                    .default_config(cap_type)
+                    .unwrap_or_default(),
+            };
             let Some(cap_model_ids) = Self::capability_model_ids(
                 cap_type,
                 &dependencies,
+                &cap_cfg,
                 resolved_capability_models,
                 selected_models,
             ) else {
@@ -2467,10 +2475,17 @@ impl SetupCommands {
     fn capability_model_ids(
         cap_type: &str,
         dependencies: &[Dependency],
+        cap_cfg: &crate::config::CapabilityConfig,
         resolved_capability_models: &HashMap<String, HashMap<String, String>>,
         selected_models: &HashSet<String>,
     ) -> Option<HashMap<String, String>> {
-        let mut model_ids = HashMap::new();
+        // Base model slots from the capability's config (e.g. "model_id" →
+        // "my-model") using the shared utility.
+        let mut model_ids = crate::utils::capability_model_ids(cap_cfg, dependencies);
+
+        // Overlay with resolved_capability_models (the wizard/auto-selection
+        // output), then fall back to find_model_for_capability when a slot
+        // is still missing.
         for dep in dependencies {
             let Dependency::Model {
                 config_key,
@@ -4930,9 +4945,15 @@ mod tests {
             HashMap::from([("model_id".to_string(), "granite-4.2-8b".to_string())]),
         )]);
 
+        let cap_cfg = crate::config::CapabilityConfig {
+            capability_id: "two-slot-test".to_string(),
+            capability_type: "two-slot-test".to_string(),
+            config: serde_json::json!({}),
+        };
         let model_ids = SetupCommands::capability_model_ids(
             "two-slot-test",
             &dependencies,
+            &cap_cfg,
             &resolved,
             &HashSet::new(),
         );
@@ -4950,10 +4971,16 @@ mod tests {
             "two-slot-test".to_string(),
             HashMap::from([("model_id".to_string(), "granite-4.2-8b".to_string())]),
         )]);
+        let cap_cfg = crate::config::CapabilityConfig {
+            capability_id: "two-slot-test".to_string(),
+            capability_type: "two-slot-test".to_string(),
+            config: serde_json::json!({}),
+        };
 
         let model_ids = SetupCommands::capability_model_ids(
             "two-slot-test",
             &dependencies,
+            &cap_cfg,
             &resolved,
             &HashSet::new(),
         );
