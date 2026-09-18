@@ -95,6 +95,17 @@ impl UsageTracker {
         }
     }
 
+    /// Replace the totals for `label` with `stats` (not an accumulate — the
+    /// caller already has the authoritative absolute total, e.g. read from an
+    /// external store like bob.db). Fires the attached notifier (if any) after
+    /// updating, without blocking.
+    pub fn set(&self, label: &str, stats: UsageStats) {
+        self.stats.lock().unwrap().insert(label.to_string(), stats);
+        if let Some(tx) = self.notifier.lock().unwrap().as_ref() {
+            let _ = tx.send(());
+        }
+    }
+
     /// A point-in-time copy of all recorded totals, keyed by label.
     pub fn snapshot(&self) -> HashMap<String, UsageStats> {
         self.stats.lock().unwrap().clone()
@@ -322,5 +333,67 @@ mod tests {
     fn parse_usage_ollama_non_done_line_without_counts_is_none() {
         let body = json!({"done": false, "response": "partial"});
         assert!(parse_usage(&body).is_none());
+    }
+
+    #[test]
+    fn tracker_set_replaces_not_accumulates() {
+        let tracker = UsageTracker::new();
+        let stats_a = UsageStats {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Default::default()
+        };
+        let stats_b = UsageStats {
+            input_tokens: 100,
+            output_tokens: 50,
+            ..Default::default()
+        };
+        tracker.set("bob", stats_a);
+        tracker.set("bob", stats_b);
+        let snapshot = tracker.snapshot();
+        let bob = snapshot.get("bob").unwrap();
+        assert_eq!(bob.input_tokens, 100);
+        assert_eq!(bob.output_tokens, 50);
+        // Verify old value is gone (10 + 100 = 110 would mean accumulation)
+        assert_ne!(bob.input_tokens, 110);
+    }
+
+    #[test]
+    fn tracker_set_does_not_modify_requests_beyond_passed_value() {
+        let tracker = UsageTracker::new();
+        tracker.set(
+            "bob",
+            UsageStats {
+                requests: 42,
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Default::default()
+            },
+        );
+        let snapshot = tracker.snapshot();
+        let bob = snapshot.get("bob").unwrap();
+        assert_eq!(bob.requests, 42);
+        assert_eq!(bob.input_tokens, 10);
+        assert_eq!(bob.output_tokens, 5);
+        // record() adds +1 to requests, but set() should not
+        tracker.record("bob", UsageStats::default());
+        let snapshot2 = tracker.snapshot();
+        let bob2 = snapshot2.get("bob").unwrap();
+        assert_eq!(bob2.requests, 43);
+    }
+
+    #[tokio::test]
+    async fn tracker_set_fires_notifier() {
+        let tracker = UsageTracker::new();
+        let (tx, mut rx) = tokio::sync::watch::channel(());
+        tracker.set_notifier(tx);
+        let stats = UsageStats {
+            input_tokens: 7,
+            ..Default::default()
+        };
+        tracker.set("bob", stats);
+        // Verify the notifier fires — changed() returns Ok(()) once a new
+        // value has been sent since the receiver last consumed it.
+        rx.changed().await.unwrap();
     }
 }
