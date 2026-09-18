@@ -31,9 +31,7 @@ use_channel!("BOB");
 
 /*-- public --*/
 
-fn default_usage_poll_interval_secs() -> u64 {
-    5
-}
+const DEFAULT_USAGE_POLL_INTERVAL_SECS: u64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct BobLauncherConfig {
@@ -56,8 +54,9 @@ pub struct BobLauncherConfig {
     pub bob_db_path: Option<String>,
 
     /// Seconds between usage polls while bob is running. Default 5.
-    #[serde(default = "default_usage_poll_interval_secs")]
-    pub usage_poll_interval_secs: u64,
+    /// Leave unset to use the default (5s).
+    #[serde(default)]
+    pub usage_poll_interval_secs: Option<u64>,
 }
 
 pub struct BobLauncher {
@@ -104,6 +103,20 @@ impl BobLauncher {
             .join(".bob")
             .join("db")
             .join("bob.db")
+    }
+
+    /// Resolve the effective usage-poll interval: the config override if set,
+    /// otherwise the default (5s). Defensively floors at 1 second even if a
+    /// config value of 0 somehow slips through (e.g. a hand-edited config
+    /// file), since `tokio::time::interval` panics on a zero duration and this
+    /// whole feature must never crash a launch over a config quirk.
+    pub(crate) fn usage_poll_interval(&self) -> std::time::Duration {
+        let secs = self
+            .config
+            .usage_poll_interval_secs
+            .unwrap_or(DEFAULT_USAGE_POLL_INTERVAL_SECS)
+            .max(1);
+        std::time::Duration::from_secs(secs)
     }
 }
 
@@ -243,8 +256,7 @@ impl Launcher for BobLauncher {
         let result = if let (Some(tracker), Some(hook_reg)) = (&ctx.usage_tracker, &hook_reg) {
             // Build the DB path for usage polling.
             let bob_db_path = self.bob_db_path();
-            let poll_interval =
-                std::time::Duration::from_secs(self.config.usage_poll_interval_secs);
+            let poll_interval = self.usage_poll_interval();
 
             // Race the run_command future against usage-tracking work.
             let mut check_tick = tokio::time::interval(std::time::Duration::from_millis(500));
@@ -474,13 +486,13 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_usage_poll_interval_to_five() {
+    fn config_defaults_usage_poll_interval_to_none() {
         let l = BobLauncher::new(
             "my-bob",
             &serde_json::json!({}),
             &crate::config::Config::default(),
         );
-        assert_eq!(l.config.usage_poll_interval_secs, 5);
+        assert_eq!(l.config.usage_poll_interval_secs, None);
     }
 
     #[test]
@@ -492,7 +504,7 @@ mod tests {
             }),
             &crate::config::Config::default(),
         );
-        assert_eq!(l.config.usage_poll_interval_secs, 10);
+        assert_eq!(l.config.usage_poll_interval_secs, Some(10));
     }
 
     #[test]
@@ -506,7 +518,43 @@ mod tests {
             &crate::config::Config::default(),
         );
         assert_eq!(l.config.bob_db_path, Some("/other/db.db".to_string()));
-        assert_eq!(l.config.usage_poll_interval_secs, 3);
+        assert_eq!(l.config.usage_poll_interval_secs, Some(3));
+    }
+
+    // -- usage_poll_interval accessor ------------------------------------------
+
+    #[test]
+    fn usage_poll_interval_defaults_to_five_seconds_when_unset() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({}),
+            &crate::config::Config::default(),
+        );
+        assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn usage_poll_interval_uses_config_when_set() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({
+                "usage_poll_interval_secs": 15
+            }),
+            &crate::config::Config::default(),
+        );
+        assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn usage_poll_interval_floors_at_one_second_when_config_is_explicitly_zero() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({
+                "usage_poll_interval_secs": 0
+            }),
+            &crate::config::Config::default(),
+        );
+        assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(1));
     }
 
     // -- bind_capability routing -------------------------------------------
