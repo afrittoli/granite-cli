@@ -2553,14 +2553,17 @@ mod tests {
     fn sessions_hide_inactive_filters_finished_sessions() {
         let mut a = app();
         a.section = Section::Sessions;
+        // Compute a timestamp 3 hours in the future so session_is_stale
+        // never considers this session stale, regardless of when the test runs.
+        let future = (chrono::Utc::now() + chrono::Duration::hours(3))
+            .format("%Y%m%dT%H%M%S")
+            .to_string();
         a.sessions = vec![
             crate::session::SessionMeta {
                 session_id: "active-session".to_string(),
                 launched_at: "20250101T120000".to_string(),
                 finished_at: None,
-                // Recent enough that session_is_stale returns false (at least
-                // 3 hours from now in UTC)
-                updated_at: "20260918T020000".to_string(),
+                updated_at: future,
                 working_dir: "/test".to_string(),
                 full_command: vec![],
                 launcher_id: "claude".to_string(),
