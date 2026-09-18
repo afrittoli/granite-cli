@@ -1,8 +1,8 @@
 //! Bob lifecycle-hook management for usage tracking.
 //!
 //! Registers a `SessionStart` hook in `<workspace>/.bob/settings.json` that
-//! captures Bob's `SessionStart` event JSON (containing `session_id` /
-//! `root_task_id`) into a capture file and lockfile stored under the launcher's
+//! captures Bob's `SessionStart` hook payload (containing `hook_event_name`,
+//! `session_id`, `cwd`, `source`) into a capture file and lockfile stored under the launcher's
 //! per-instance state directory (`GRANITE_CLI_HOME/launcher-state/<launcher_id>/`),
 //! NOT inside `<workspace>/.bob/`.  Some projects commit their `.bob/` directory
 //! to source control; the capture and lock files are purely
@@ -407,14 +407,11 @@ pub fn unregister(launcher_id: &str, workspace: &Path, marker_command: &str) {
 /// Try to read the capture file and extract a session_id.
 ///
 /// Returns `Some(session_id)` if the file exists and contains a valid
-/// `{"event": "SessionStart", "session_id": "<id>"}` object. Any failure
-/// (missing file, bad JSON, wrong shape) returns `None`.
+/// `{"session_id": "<id>"}` object. "hook_event_name" is ignored since it may
+/// or may not stay valid due to conflicting field name in documentation.
 pub fn try_read_capture(capture_path: &Path) -> Option<String> {
     let content = std::fs::read_to_string(capture_path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&content).ok()?;
-    if value.get("event")?.as_str()? != "SessionStart" {
-        return None;
-    }
     value.get("session_id")?.as_str().map(String::from)
 }
 
@@ -800,29 +797,29 @@ mod tests {
         let path = tmp.path().join("capture.json");
         std::fs::write(
             &path,
-            r#"{"event": "SessionStart", "session_id": "task-123"}"#,
+            r#"{"hook_event_name": "SessionStart", "session_id": "task-123"}"#,
         )
         .unwrap();
         assert_eq!(try_read_capture(&path), Some("task-123".to_string()));
     }
 
     #[test]
-    fn try_read_capture_wrong_event_returns_none() {
+    fn try_read_capture_wrong_event_returns_session_id() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("capture.json");
         std::fs::write(
             &path,
-            r#"{"event": "PostToolUse", "session_id": "task-123"}"#,
+            r#"{"hook_event_name": "PostToolUse", "session_id": "task-123"}"#,
         )
         .unwrap();
-        assert!(try_read_capture(&path).is_none());
+        assert_eq!(try_read_capture(&path), Some("task-123".to_string()));
     }
 
     #[test]
     fn try_read_capture_missing_session_id_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("capture.json");
-        std::fs::write(&path, r#"{"event": "SessionStart"}"#).unwrap();
+        std::fs::write(&path, r#"{"hook_event_name": "SessionStart"}"#).unwrap();
         assert!(try_read_capture(&path).is_none());
     }
 
