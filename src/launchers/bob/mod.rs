@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 // Third Party
 use alog::{MessageLevel, alog_channel, use_channel};
+use anyhow::Context;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -170,6 +171,9 @@ impl Launcher for BobLauncher {
         }
 
         const SCOPE: &[&str] = &["-s", "workspace"];
+        if !all_mcp_bindings.is_empty() {
+            ensure_workspace_config_dir(ctx)?;
+        }
         for (name, binding) in &all_mcp_bindings {
             register_mcp_server(&binary, name, binding, SCOPE, ctx, ui)?;
         }
@@ -204,6 +208,31 @@ impl HasBobLauncherMetadata for BobLauncher {
             tags: vec!["bob".to_string(), "ibm".to_string()],
         }
     }
+}
+
+/*-- private --*/
+
+/// Bob stores workspace-scoped MCP config at `<workspace>/.bob/mcp.json` and
+/// expects the directory to already exist; it does not create it itself, so
+/// registration fails with ENOENT when missing (issue #144).
+const WORKSPACE_CONFIG_DIR: &str = ".bob";
+
+/// Creates the workspace-scoped config directory the downstream `bob` binary
+/// writes into, unless this is a dry run (which must not touch the
+/// filesystem). Called only when there is at least one MCP binding to
+/// register, since that is the only time `bob` needs the directory.
+fn ensure_workspace_config_dir(ctx: &LaunchContext) -> anyhow::Result<()> {
+    if ctx.dry_run {
+        return Ok(());
+    }
+    let dir = ctx.working_dir.join(WORKSPACE_CONFIG_DIR);
+    std::fs::create_dir_all(&dir).with_context(|| {
+        format!(
+            "failed to create bob workspace config directory `{}`; bob expects it to exist \
+             for workspace-scoped MCP registration and does not create it itself",
+            dir.display()
+        )
+    })
 }
 
 /*-- tests --*/
@@ -394,5 +423,50 @@ mod tests {
         assert_eq!(l.bound_mcp_bindings.len(), 1);
         assert_eq!(l.bound_mcp_bindings[0].0, "fake-mcp");
         assert!(l.pending_sub_agents.is_empty());
+    }
+
+    // -- workspace config dir ----------------------------------------------
+
+    fn launch_ctx(working_dir: PathBuf, dry_run: bool) -> LaunchContext {
+        LaunchContext {
+            launcher_id: "my-bob".to_string(),
+            working_dir,
+            base_env: std::collections::HashMap::new(),
+            dry_run,
+        }
+    }
+
+    #[test]
+    fn ensure_workspace_config_dir_creates_missing_bob_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = launch_ctx(tmp.path().to_path_buf(), false);
+
+        ensure_workspace_config_dir(&ctx).unwrap();
+
+        assert!(tmp.path().join(WORKSPACE_CONFIG_DIR).is_dir());
+    }
+
+    #[test]
+    fn ensure_workspace_config_dir_leaves_existing_bob_dir_untouched() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bob_dir = tmp.path().join(WORKSPACE_CONFIG_DIR);
+        std::fs::create_dir(&bob_dir).unwrap();
+        let existing = bob_dir.join("mcp.json");
+        std::fs::write(&existing, "{}").unwrap();
+        let ctx = launch_ctx(tmp.path().to_path_buf(), false);
+
+        ensure_workspace_config_dir(&ctx).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&existing).unwrap(), "{}");
+    }
+
+    #[test]
+    fn ensure_workspace_config_dir_dry_run_creates_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = launch_ctx(tmp.path().to_path_buf(), true);
+
+        ensure_workspace_config_dir(&ctx).unwrap();
+
+        assert!(!tmp.path().join(WORKSPACE_CONFIG_DIR).exists());
     }
 }
