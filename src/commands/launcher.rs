@@ -300,9 +300,9 @@ impl LauncherCommands {
             config,
         };
 
-        if let Err(e) = ctx.config.insert_launcher(&instance_id, launcher_config) {
-            ctx.ui.warn(&format!("Failed to save launcher config: {e}"));
-        }
+        ctx.config
+            .insert_launcher(&instance_id, launcher_config)
+            .map_err(|e| anyhow::anyhow!("Failed to save launcher config: {e}"))?;
 
         ctx.ui.info(&format!(
             "\nLauncher '{instance_id}' configured successfully!"
@@ -540,6 +540,12 @@ mod tests {
             config: Config::default(),
             ui: Arc::new(CaptureUi::default()),
         }
+    }
+
+    fn capture(ctx: &crate::AppContext) -> &CaptureUi {
+        (&*ctx.ui as &dyn std::any::Any)
+            .downcast_ref::<CaptureUi>()
+            .expect("test contexts are built with a CaptureUi")
     }
 
     fn ctx_with_launcher(id: &str, launcher_type: &str) -> crate::AppContext {
@@ -789,6 +795,41 @@ mod tests {
         let mut ctx = test_ctx();
         let result = LauncherCommands::setup(&mut ctx, "no-such-type", Some("test")).await;
         assert!(result.is_err());
+    }
+
+    /// A launcher that could not be saved must fail the setup, not report
+    /// success over configuration that never reached disk.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setup_fails_when_config_cannot_be_saved() {
+        let home = crate::config::TestConfigHome::new();
+        let mut ctx = test_ctx();
+        // The launcher validates its binary before saving, so point
+        // command_path at a file that exists.
+        let binary =
+            std::path::Path::new(&std::env::var("GRANITE_CLI_HOME").unwrap()).join("fake-claude");
+        std::fs::write(&binary, "").unwrap();
+        capture(&ctx)
+            .text_answers
+            .borrow_mut()
+            .push_back(binary.to_string_lossy().into_owned());
+
+        home.make_unwritable();
+        let result = LauncherCommands::setup(&mut ctx, "claude", Some("test-claude")).await;
+        home.make_writable();
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to save launcher config")
+        );
+        let infos = infos!(ctx);
+        assert!(
+            !infos.iter().any(|m| m.contains("configured successfully")),
+            "{infos:?}"
+        );
     }
 
     // -- remove ----------------------------------------------------------------

@@ -725,9 +725,9 @@ impl ModelCommands {
             config: model_specific_cfg,
         };
 
-        if let Err(e) = ctx.config.insert_model(&instance_id, model_config) {
-            ctx.ui.warn(&format!("failed to save model config: {e}"));
-        }
+        ctx.config
+            .insert_model(&instance_id, model_config)
+            .map_err(|e| anyhow::anyhow!("failed to save model config: {e}"))?;
 
         ctx.ui
             .info(&format!("\nModel '{instance_id}' configured successfully!"));
@@ -1915,6 +1915,36 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("variant")),
             "should not have prompted for a variant"
+        );
+    }
+
+    /// A model that could not be saved must fail the setup, not report
+    /// success over configuration that never reached disk.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setup_fails_when_config_cannot_be_saved() {
+        let home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_config(config_with_provider(
+            "my-openai",
+            "openai-compatible",
+            serde_json::json!({ "base_url": "http://localhost:8080" }),
+        ));
+
+        home.make_unwritable();
+        let result = ModelCommands::setup(&mut ctx, "custom", Some("my-custom")).await;
+        home.make_writable();
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("failed to save model config")
+        );
+        let infos = infos!(ctx);
+        assert!(
+            !infos.iter().any(|m| m.contains("configured successfully")),
+            "{infos:?}"
         );
     }
 

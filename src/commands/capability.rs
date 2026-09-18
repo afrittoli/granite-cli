@@ -286,13 +286,9 @@ impl CapabilityCommands {
             config,
         };
 
-        if let Err(e) = ctx
-            .config
+        ctx.config
             .insert_capability(&instance_id, capability_config)
-        {
-            ctx.ui
-                .warn(&format!("failed to save capability config: {e}"));
-        }
+            .map_err(|e| anyhow::anyhow!("failed to save capability config: {e}"))?;
 
         ctx.ui.info(&format!(
             "\nCapability '{instance_id}' configured successfully!"
@@ -911,6 +907,32 @@ mod tests {
             infos
                 .iter()
                 .any(|m| m.contains("chat") && m.contains("configured successfully"))
+        );
+    }
+
+    /// A capability that could not be saved must fail the setup, not report
+    /// success over configuration that never reached disk.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setup_fails_when_config_cannot_be_saved() {
+        let home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_chat_capable_model();
+
+        home.make_unwritable();
+        let result = CapabilityCommands::setup(&mut ctx, "agent-model", Some("chat")).await;
+        home.make_writable();
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("failed to save capability config")
+        );
+        let infos = infos!(ctx);
+        assert!(
+            !infos.iter().any(|m| m.contains("configured successfully")),
+            "{infos:?}"
         );
     }
 
