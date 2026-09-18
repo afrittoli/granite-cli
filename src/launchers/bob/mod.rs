@@ -201,7 +201,7 @@ impl Launcher for BobLauncher {
         // tear down yet. `None` when there's no proxy running (dry_run) --
         // there's nothing to poll in that case, so skip the hook entirely.
         let hook_reg = match &ctx.usage_tracker {
-            Some(_) => Some(hook::register_or_fail(&ctx.working_dir)?),
+            Some(_) => Some(hook::register_or_fail(&ctx.launcher_id, &ctx.working_dir)?),
             None => None,
         };
 
@@ -260,7 +260,7 @@ impl Launcher for BobLauncher {
                         r = &mut run_fut => break r,
                         _ = check_tick.tick() => {
                             if let Some(id) = hook::try_read_capture(&hook_reg.capture_path) {
-                                hook::unregister(&ctx.working_dir, &hook_reg.marker_command);
+                                hook::unregister(&ctx.launcher_id, &ctx.working_dir, &hook_reg.marker_command);
                                 let _ = std::fs::remove_file(&hook_reg.capture_path);
                                 captured_task_id = Some(id);
                             }
@@ -308,7 +308,7 @@ impl Launcher for BobLauncher {
                         .unwrap_or_default();
                 tracker.set("bob", stats);
             }
-            hook::unregister(&ctx.working_dir, &hook_reg.marker_command);
+            hook::unregister(&ctx.launcher_id, &ctx.working_dir, &hook_reg.marker_command);
             let _ = std::fs::remove_file(&hook_reg.capture_path);
         }
 

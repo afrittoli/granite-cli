@@ -2,13 +2,18 @@
 //!
 //! Registers a `SessionStart` hook in `<workspace>/.bob/settings.json` that
 //! captures Bob's `SessionStart` event JSON (containing `session_id` /
-//! `root_task_id`) into a file, which the launcher polls to learn which task
-//! to start collecting usage from Bob's SQLite DB.
+//! `root_task_id`) into a capture file and lockfile stored under the launcher's
+//! per-instance state directory (`GRANITE_CLI_HOME/launcher-state/<launcher_id>/`),
+//! NOT inside `<workspace>/.bob/`.  Some projects commit their `.bob/` directory
+//! to source control; the capture and lock files are purely
+//! `granite-cli`'s internal bookkeeping — Bob never reads them — so they must
+//! not live inside the workspace where they risk being committed to the
+//! wrapped project's repo.
 //!
 //! The marker command string is deterministic for a given workspace across
 //! separate `granite-cli` processes, serving as a mutual-exclusion key: if
 //! another instance already registered the same marker, we detect a live
-//! collision (via a PID lockfile) and fail the whole launch.
+//! collision (via the PID lockfile) and fail the whole launch.
 
 // Standard
 use std::path::{Path, PathBuf};
@@ -16,6 +21,7 @@ use std::process::Command;
 
 // Third Party
 use alog::{MessageLevel, alog_channel, use_channel};
+use anyhow::Context;
 
 use_channel!("BOB");
 
@@ -40,16 +46,35 @@ fn bob_dir(workspace: &Path) -> PathBuf {
     workspace.join(".bob")
 }
 
-/// The deterministic file that the hook command writes the event JSON to.
-fn capture_path(workspace: &Path) -> PathBuf {
-    bob_dir(workspace).join(".granite-cli-usage-capture.json")
+/// Escape a workspace path into a filesystem-safe filename component, using
+/// the same scheme as `session::generate_session_id` (replacing `/` with
+/// `crate::config::PATH_DELIM`) so two different workspaces never collide
+/// once these files live in a single shared per-launcher-instance directory.
+fn escape_workspace(workspace: &Path) -> String {
+    workspace
+        .to_string_lossy()
+        .replace('/', crate::config::PATH_DELIM)
 }
 
-/// PID lockfile: if present, contains the PID of the process that registered
-/// the marker hook. Used to distinguish "another live process" from "a stale
-/// leftover from a crashed granite-cli".
-fn lock_path(workspace: &Path) -> PathBuf {
-    bob_dir(workspace).join(".granite-cli-usage-capture.lock")
+/// Resolve the capture-file path for `workspace` under this launcher
+/// instance's state directory.
+///
+/// Returns `anyhow::Err` if `launcher_state_dir` cannot be resolved
+/// (e.g. `GRANITE_CLI_HOME` is invalid).  The caller (`register_or_fail`)
+/// must ensure the resolved directory exists before writing.
+fn capture_path(launcher_id: &str, workspace: &Path) -> anyhow::Result<PathBuf> {
+    let dir = crate::config::Config::launcher_state_dir(launcher_id)?;
+    Ok(dir.join(format!("{}.capture.json", escape_workspace(workspace))))
+}
+
+/// Resolve the PID lockfile path for `workspace` under this launcher
+/// instance's state directory.
+///
+/// Returns `anyhow::Err` if `launcher_state_dir` cannot be resolved;
+/// `unregister` treats this as best-effort (logs at debug and returns).
+fn lock_path(launcher_id: &str, workspace: &Path) -> anyhow::Result<PathBuf> {
+    let dir = crate::config::Config::launcher_state_dir(launcher_id)?;
+    Ok(dir.join(format!("{}.lock", escape_workspace(workspace))))
 }
 
 /// Platform-correct shell quoting for embedding a path in a shell command
@@ -286,12 +311,26 @@ pub fn is_pid_alive(pid: u32) -> bool {
 
 /// Register the usage-tracking hook in `<workspace>/.bob/settings.json`.
 ///
+/// The capture and lock files are written under the launcher instance's state
+/// directory (`GRANITE_CLI_HOME/launcher-state/<launcher_id>/`), NOT inside
+/// the workspace.
+///
 /// Returns `Err` if another live `granite-cli` process already owns the hook
 /// for this workspace (collision). Returns `Ok` on success — the caller must
 /// proceed with the launch, then call `unregister` when done.
-pub fn register_or_fail(workspace: &Path) -> anyhow::Result<HookRegistration> {
-    let cp = capture_path(workspace);
-    let lp = lock_path(workspace);
+pub fn register_or_fail(launcher_id: &str, workspace: &Path) -> anyhow::Result<HookRegistration> {
+    let cp = capture_path(launcher_id, workspace)?;
+    let lp = lock_path(launcher_id, workspace)?;
+
+    // Ensure the launcher state directory exists before writing the lockfile.
+    let state_dir = crate::config::Config::launcher_state_dir(launcher_id)
+        .with_context(|| "failed to resolve launcher state directory for usage-tracking files")?;
+    std::fs::create_dir_all(&state_dir).with_context(|| {
+        format!(
+            "failed to create launcher state directory `{}`",
+            state_dir.display()
+        )
+    })?;
     let mc = build_marker_command(&cp)?;
 
     let mut settings = read_settings(workspace);
@@ -344,11 +383,25 @@ fn remove_marker_from_file(workspace: &Path, marker_command: &str) {
 
 /// Best-effort unregistration: read settings, remove the marker, write back;
 /// remove the lockfile.
-pub fn unregister(workspace: &Path, marker_command: &str) {
+///
+/// Never errors — if the launcher state dir or lock file can't be resolved,
+/// just log at debug and return.
+pub fn unregister(launcher_id: &str, workspace: &Path, marker_command: &str) {
     let mut settings = read_settings(workspace);
     remove_marker(&mut settings, marker_command);
     let _ = write_settings(workspace, &settings);
-    let _ = std::fs::remove_file(lock_path(workspace));
+    match lock_path(launcher_id, workspace) {
+        Ok(lp) => {
+            let _ = std::fs::remove_file(&lp);
+        }
+        Err(e) => {
+            alog_channel!(
+                MessageLevel::Debug,
+                "unregister: could not resolve lock path: {}",
+                e
+            );
+        }
+    }
 }
 
 /// Try to read the capture file and extract a session_id.
@@ -370,6 +423,7 @@ pub fn try_read_capture(capture_path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, TestConfigHome};
 
     /*-- shell_quote tests --*/
 
@@ -799,5 +853,133 @@ mod tests {
     fn is_pid_alive_unlikely_pid_is_not_alive() {
         // Use a very large PID that's extremely unlikely to be in use.
         assert!(!is_pid_alive(u32::MAX));
+    }
+
+    /*-- escape_workspace tests --*/
+
+    #[test]
+    fn escape_workspace_replaces_slashes_with_delim() {
+        let ws = Path::new("/home/user/projects/my-app");
+        let escaped = escape_workspace(ws);
+        assert_eq!(
+            escaped,
+            format!(
+                "{}---{}---{}---{}---{}",
+                "", "home", "user", "projects", "my-app"
+            )
+        );
+    }
+
+    #[test]
+    fn escape_workspace_root_path() {
+        let ws = Path::new("/");
+        let escaped = escape_workspace(ws);
+        // "/" becomes "---" (the single slash is replaced)
+        assert_eq!(escaped, "---");
+    }
+
+    /*-- capture_path / lock_path / register_or_fail / unregister tests --*/
+
+    /// Build a workspace path under the test temp directory so it actually
+    /// exists on disk and the test never needs root privileges.
+    fn test_workspace() -> PathBuf {
+        let home = std::env::var("GRANITE_CLI_HOME").expect("GRANITE_CLI_HOME must be set");
+        PathBuf::from(home).join("test-workspace")
+    }
+
+    #[test]
+    fn capture_path_and_lock_path_resolve_under_launcher_state_dir() {
+        let _home = TestConfigHome::new();
+        std::fs::create_dir_all(std::env::var("GRANITE_CLI_HOME").unwrap()).unwrap();
+        Config::ensure_directories_for_test();
+
+        let workspace = test_workspace();
+        let cp = capture_path("test-bob", &workspace).unwrap();
+        let lp = lock_path("test-bob", &workspace).unwrap();
+
+        // Both paths must live under launcher-state/test-bob/
+        assert!(cp.starts_with(crate::config::Config::launcher_state_dir("test-bob").unwrap()));
+        assert!(lp.starts_with(crate::config::Config::launcher_state_dir("test-bob").unwrap()));
+
+        // Filenames must contain the escaped workspace path
+        let escaped = escape_workspace(&workspace);
+        let cp_name = cp.file_name().unwrap().to_string_lossy();
+        let lp_name = lp.file_name().unwrap().to_string_lossy();
+        assert!(cp_name.starts_with(&escaped));
+        assert!(cp_name.ends_with(".capture.json"));
+        assert!(lp_name.starts_with(&escaped));
+        assert!(lp_name.ends_with(".lock"));
+    }
+
+    #[test]
+    fn register_or_fail_creates_state_dir_and_writes_files() {
+        let _home = TestConfigHome::new();
+        // The temp dir set by TestConfigHome may not exist on disk; create it
+        // so ensure_directories_for_test can write under it.
+        std::fs::create_dir_all(std::env::var("GRANITE_CLI_HOME").unwrap()).unwrap();
+        Config::ensure_directories_for_test();
+
+        let workspace = test_workspace();
+        // The workspace path also needs to exist for read_settings/write_settings.
+        let bob_dir = Path::new(&workspace).join(".bob");
+        std::fs::create_dir_all(&bob_dir).unwrap();
+
+        let reg = register_or_fail("test-bob-reg", &workspace).unwrap();
+
+        // State dir was created
+        let state_dir = crate::config::Config::launcher_state_dir("test-bob-reg").unwrap();
+        assert!(state_dir.is_dir());
+
+        // Capture file does NOT yet exist (the hook hasn't fired — Bob will
+        // write it later).  Only the lockfile should exist right now.
+        assert!(reg.lock_path.is_file());
+        // Lockfile contains our PID
+        let lock_content = std::fs::read_to_string(&reg.lock_path).unwrap();
+        assert_eq!(lock_content.trim(), std::process::id().to_string());
+
+        // settings.json under .bob/ has the marker
+        let settings = read_settings(&workspace);
+        assert!(hooks_session_start_contains(&settings, &reg.marker_command));
+    }
+
+    #[test]
+    fn unregister_removes_marker_and_lockfile() {
+        let _home = TestConfigHome::new();
+        std::fs::create_dir_all(std::env::var("GRANITE_CLI_HOME").unwrap()).unwrap();
+        Config::ensure_directories_for_test();
+
+        let workspace = test_workspace();
+        let bob_dir = Path::new(&workspace).join(".bob");
+        std::fs::create_dir_all(&bob_dir).unwrap();
+
+        let reg = register_or_fail("test-bob-unreg", &workspace).unwrap();
+
+        // Marker is in settings
+        let settings = read_settings(&workspace);
+        assert!(hooks_session_start_contains(&settings, &reg.marker_command));
+
+        // Unregister
+        unregister("test-bob-unreg", &workspace, &reg.marker_command);
+
+        // Marker is removed
+        let settings = read_settings(&workspace);
+        assert!(!hooks_session_start_contains(
+            &settings,
+            &reg.marker_command
+        ));
+
+        // Lockfile is gone
+        assert!(!reg.lock_path.exists());
+    }
+
+    #[test]
+    fn unregister_silently_handles_missing_state_dir() {
+        // If launcher_state_dir can't be resolved (e.g. bad GRANITE_CLI_HOME),
+        // unregister should still succeed silently (never errors).
+        unregister(
+            "nonexistent-launcher",
+            &PathBuf::from("/some/ws"),
+            "some-marker",
+        );
     }
 }
