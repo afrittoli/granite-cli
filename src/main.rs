@@ -113,6 +113,23 @@ struct LauncherWithOutput {
     subcommand: LauncherSubcommands,
 }
 
+#[derive(clap::Args, Debug)]
+struct InternalArgs {
+    #[command(subcommand)]
+    subcommand: InternalSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+enum InternalSubcommands {
+    /// Read stdin and write it verbatim to `output_path`. Used as a
+    /// cross-platform lifecycle-hook capture target so callers don't need to
+    /// rely on shell-specific stdin-redirection syntax.
+    BobHookCapture {
+        /// File path to write stdin's contents to.
+        output_path: std::path::PathBuf,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Model management commands
@@ -151,6 +168,10 @@ enum Commands {
 
     /// Show version information
     Version,
+
+    /// Internal commands used by granite-cli itself. Not for direct use.
+    #[command(hide = true)]
+    Internal(InternalArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -564,6 +585,19 @@ async fn main() {
             println!("{}", version::version_string());
             Ok(())
         }
+        Some(Commands::Internal(args)) => match args.subcommand {
+            InternalSubcommands::BobHookCapture { output_path } => {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                std::io::stdin()
+                    .read_to_end(&mut buf)
+                    .map_err(|e| eprintln!("Error reading stdin: {e}"))
+                    .and_then(|_| {
+                        std::fs::write(&output_path, &buf)
+                            .map_err(|e| eprintln!("Error writing {}: {e}", output_path.display()))
+                    })
+            }
+        },
         None => {
             // `ctx` (and its `ui`) is consumed by value into the TUI `App`
             // before any error can occur, so it can't be used to report one.
