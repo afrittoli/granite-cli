@@ -1,3 +1,4 @@
+use std::fs;
 use std::sync::{Arc, Mutex};
 
 use alog::Filters as AlogFilters;
@@ -21,6 +22,43 @@ use crate::utils::ui::tui::{restore_terminal, setup_terminal};
 use crate::utils::ui::tui_ui::{Answer, OutputLine, TuiUi};
 
 /*-- private --*/
+
+/// Format a token count as a human-readable string with K/M suffixes.
+fn format_tokens(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}K", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
+}
+
+/// Format a session `launched_at` timestamp ("YYYYMMDDTHHMMSS") as
+/// "YYYY-MM-DD HH:MM".  Falls back to the raw string if it cannot be parsed.
+fn format_launched_at(s: &str) -> String {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%S")
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| s.to_string())
+}
+
+/// Returns `true` when a session has no `finished_at` but its `updated_at`
+/// timestamp is more than 2 hours old, indicating it was likely terminated
+/// without a clean shutdown.
+///
+/// Sessions with an empty `updated_at` (old files that predate the field)
+/// are never considered stale — they are treated as active until explicitly
+/// finished.
+fn session_is_stale(session: &crate::session::SessionMeta) -> bool {
+    if session.finished_at.is_some() || session.updated_at.is_empty() {
+        return false;
+    }
+    let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&session.updated_at, "%Y%m%dT%H%M%S") else {
+        return false;
+    };
+    let now = chrono::Utc::now().naive_utc();
+    now.signed_duration_since(dt) > chrono::Duration::hours(2)
+}
 
 /// Strip ANSI escape sequences from a string.
 fn strip_ansi(input: &str) -> String {
@@ -59,6 +97,7 @@ pub enum Section {
     Launchers,
     Capabilities,
     Recommend,
+    Sessions,
     Hardware,
 }
 
@@ -69,7 +108,8 @@ impl Section {
             Section::Providers => Section::Launchers,
             Section::Launchers => Section::Capabilities,
             Section::Capabilities => Section::Recommend,
-            Section::Recommend => Section::Hardware,
+            Section::Recommend => Section::Sessions,
+            Section::Sessions => Section::Hardware,
             Section::Hardware => Section::Models,
         }
     }
@@ -81,6 +121,7 @@ impl Section {
             Section::Launchers => "Launchers",
             Section::Capabilities => "Capabilities",
             Section::Recommend => "Recommend",
+            Section::Sessions => "Sessions",
             Section::Hardware => "Hardware",
         }
     }
@@ -135,6 +176,11 @@ pub struct App {
     /// it has any configured instances at startup, false otherwise.
     /// Indices: 0=Models, 1=Providers, 2=Launchers, 3=Capabilities.
     pub configured_only: [bool; 4],
+    /// Cached list of session metadata loaded from disk, newest-first.
+    /// Reloaded on each idle tick when the Sessions section is active.
+    pub sessions: Vec<crate::session::SessionMeta>,
+    /// When true (default), sessions with `finished_at` set are hidden.
+    pub hide_inactive: bool,
 }
 
 impl App {
@@ -161,6 +207,8 @@ impl App {
             !ctx.config.launchers.is_empty(),    // Launchers
             !ctx.config.capabilities.is_empty(), // Capabilities
         ];
+        let sessions = Self::load_sessions();
+        let hide_inactive = true;
         Self {
             ctx,
             section: Section::Models,
@@ -171,6 +219,8 @@ impl App {
             recommend_rows_cache,
             setup_pane: None,
             configured_only,
+            sessions,
+            hide_inactive,
         }
     }
 
@@ -223,7 +273,9 @@ impl App {
             AppMode::Browse => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return AppAction::Quit,
                 KeyCode::Char('/') => {
-                    self.mode = AppMode::Search(String::new());
+                    if self.section != Section::Sessions {
+                        self.mode = AppMode::Search(String::new());
+                    }
                 }
                 KeyCode::Tab => {
                     self.section = self.section.next();
@@ -245,8 +297,14 @@ impl App {
                     }
                 }
                 KeyCode::Char('s') => {
-                    // Show catalog (only when configured_only is true)
-                    if let Some(idx) = Self::configured_only_idx(&self.section)
+                    if self.section == Section::Sessions {
+                        if self.hide_inactive {
+                            self.hide_inactive = false;
+                            let max = self.row_count().saturating_sub(1);
+                            self.row = self.row.min(max);
+                            self.sync_table_state();
+                        }
+                    } else if let Some(idx) = Self::configured_only_idx(&self.section)
                         && self.configured_only[idx]
                     {
                         self.configured_only[idx] = false;
@@ -256,8 +314,14 @@ impl App {
                     }
                 }
                 KeyCode::Char('h') => {
-                    // Hide catalog (only when configured_only is false)
-                    if let Some(idx) = Self::configured_only_idx(&self.section)
+                    if self.section == Section::Sessions {
+                        if !self.hide_inactive {
+                            self.hide_inactive = true;
+                            let max = self.row_count().saturating_sub(1);
+                            self.row = self.row.min(max);
+                            self.sync_table_state();
+                        }
+                    } else if let Some(idx) = Self::configured_only_idx(&self.section)
                         && !self.configured_only[idx]
                     {
                         self.configured_only[idx] = true;
@@ -369,6 +433,30 @@ impl App {
 
     /*-- private --*/
 
+    /// Load all session metadata from disk, sorted newest-first by `launched_at`.
+    /// Individual file read failures are silently skipped.
+    fn load_sessions() -> Vec<crate::session::SessionMeta> {
+        let dir = match crate::config::Config::sessions_dir() {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        };
+        let mut sessions: Vec<crate::session::SessionMeta> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "yaml") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if let Ok(meta) = crate::session::read_session_file(stem) {
+                            sessions.push(meta);
+                        }
+                    }
+                }
+            }
+        }
+        sessions.sort_by(|a, b| b.launched_at.cmp(&a.launched_at));
+        sessions
+    }
+
     fn sync_table_state(&mut self) {
         self.table_state.select(Some(self.row));
     }
@@ -474,6 +562,16 @@ impl App {
                 .iter()
                 .map(|r| r[0].clone())
                 .collect(),
+            Section::Sessions => {
+                return self
+                    .sessions
+                    .iter()
+                    .filter(|s| {
+                        !self.hide_inactive || (s.finished_at.is_none() && !session_is_stale(s))
+                    })
+                    .map(|s| s.session_id.clone())
+                    .collect();
+            }
             Section::Hardware => vec![],
         };
         if q.is_empty() {
@@ -502,6 +600,7 @@ impl App {
             Section::Launchers,
             Section::Capabilities,
             Section::Recommend,
+            Section::Sessions,
             Section::Hardware,
         ];
         let items: Vec<ListItem> = sections
@@ -577,6 +676,16 @@ impl App {
                         }
                     }
                     Section::Recommend => self.recommend_rows_cache.len(),
+                    Section::Sessions => {
+                        if self.hide_inactive {
+                            self.sessions
+                                .iter()
+                                .filter(|s| s.finished_at.is_none() && !session_is_stale(s))
+                                .count()
+                        } else {
+                            self.sessions.len()
+                        }
+                    }
                     Section::Hardware => 0,
                 };
                 let style = if *s == self.section {
@@ -978,6 +1087,86 @@ impl App {
 
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
             }
+            Section::Sessions => {
+                let filtered_sessions: Vec<&crate::session::SessionMeta> = self
+                    .sessions
+                    .iter()
+                    .filter(|s| {
+                        !self.hide_inactive || (s.finished_at.is_none() && !session_is_stale(s))
+                    })
+                    .collect();
+
+                let header = Row::new(vec![
+                    "",
+                    "CREATED",
+                    "LAUNCHER",
+                    "CWD",
+                    "TOTAL INPUT",
+                    "TOTAL OUTPUT",
+                ])
+                .style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                );
+
+                let rows: Vec<Row> = filtered_sessions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, session)| {
+                        let style = if i == self.row {
+                            Style::default().bg(Color::DarkGray)
+                        } else if i % 2 == 0 {
+                            Style::default()
+                        } else {
+                            Style::default().bg(Color::Rgb(20, 20, 20))
+                        };
+                        let status = if session.finished_at.is_some() {
+                            Cell::from("○").style(Style::default().fg(Color::DarkGray))
+                        } else if session_is_stale(session) {
+                            Cell::from("●").style(Style::default().fg(Color::DarkGray))
+                        } else {
+                            Cell::from("●").style(Style::default().fg(Color::Green))
+                        };
+                        let total_input: u64 = session.usage.values().map(|u| u.input_tokens).sum();
+                        let total_output: u64 =
+                            session.usage.values().map(|u| u.output_tokens).sum();
+                        Row::new(vec![
+                            status,
+                            Cell::from(format_launched_at(&session.launched_at)),
+                            Cell::from(session.launcher_id.clone()),
+                            Cell::from(session.working_dir.clone()),
+                            Cell::from(format_tokens(total_input)),
+                            Cell::from(format_tokens(total_output)),
+                        ])
+                        .style(style)
+                    })
+                    .collect();
+
+                let table = Table::new(
+                    rows,
+                    [
+                        Constraint::Length(2),
+                        Constraint::Length(17),
+                        Constraint::Percentage(18),
+                        Constraint::Percentage(32),
+                        Constraint::Percentage(13),
+                        Constraint::Percentage(13),
+                    ],
+                )
+                .header(header)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(if self.hide_inactive {
+                            " Sessions [s: show inactive] "
+                        } else {
+                            " Sessions [h: hide inactive] "
+                        }),
+                );
+
+                frame.render_stateful_widget(table, table_area, &mut self.table_state);
+            }
             Section::Hardware => {
                 // Hardware is a single static detail pane — no rows to browse
                 let label_style = Style::default().fg(Color::Cyan);
@@ -1017,6 +1206,233 @@ impl App {
 
     fn render_detail(&self, frame: &mut Frame, area: Rect, id: &str) {
         let bold = Style::default().fg(Color::Cyan);
+
+        // Handle Sessions section separately — renders its own detail panel and returns.
+        if self.section == Section::Sessions {
+            let session = self.sessions.iter().find(|s| s.session_id == id);
+            match session {
+                None => {
+                    let para = Paragraph::new(Line::from(format!("Session '{id}' not found.")))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(format!(" {id} — Session Detail ")),
+                        );
+                    frame.render_widget(para, area);
+                }
+                Some(session) => {
+                    // Build the metadata + capabilities lines for the top paragraph.
+                    let mut meta_lines = vec![
+                        Line::from(vec![
+                            Span::styled("Session ID:   ", bold),
+                            Span::raw(session.session_id.clone()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Launched at:  ", bold),
+                            Span::raw(session.launched_at.clone()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Updated at:   ", bold),
+                            Span::raw(if session.updated_at.is_empty() {
+                                "(unknown)".to_string()
+                            } else {
+                                session.updated_at.clone()
+                            }),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Finished at:  ", bold),
+                            Span::raw(match &session.finished_at {
+                                Some(t) => t.clone(),
+                                None if session_is_stale(session) => {
+                                    "(stale — no clean shutdown)".to_string()
+                                }
+                                None => "(still running)".to_string(),
+                            }),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Working dir:  ", bold),
+                            Span::raw(session.working_dir.clone()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Launcher:     ", bold),
+                            Span::raw(session.launcher_id.clone()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Launcher type:", bold),
+                            Span::raw(format!(" {}", session.launcher_type)),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Command:      ", bold),
+                            Span::raw(session.full_command.join(" ")),
+                        ]),
+                        Line::from(""),
+                    ];
+
+                    if !session.capabilities.is_empty() {
+                        meta_lines.push(Line::from(Span::styled("Capabilities:", bold)));
+                        for cap in &session.capabilities {
+                            meta_lines.push(Line::from(format!(
+                                "  {} ({})",
+                                cap.capability_id, cap.capability_type
+                            )));
+                            if let Some(ref mt) = cap.model_type {
+                                meta_lines.push(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled("model: ", bold),
+                                    Span::raw(mt.clone()),
+                                ]));
+                            }
+                            if let Some(ref pid) = cap.provider_id {
+                                meta_lines.push(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled("provider: ", bold),
+                                    Span::raw(pid.clone()),
+                                ]));
+                            }
+                        }
+                        meta_lines.push(Line::from(""));
+                    }
+
+                    meta_lines.push(Line::from(Span::styled("Usage:", bold)));
+
+                    // Split the area: metadata paragraph on top (fixed height),
+                    // usage Table widget below (fixed height), remaining space for
+                    // the footer hint.
+                    let usage_row_count = session.usage.len();
+                    // meta height: content lines + top/bottom border
+                    let meta_height = (meta_lines.len() + 2) as u16;
+                    // table height: header + data rows + blank separator + totals + 2 borders
+                    let table_height = if usage_row_count == 0 {
+                        3u16
+                    } else {
+                        (usage_row_count + 4) as u16
+                    };
+
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Length(meta_height),
+                            Constraint::Length(table_height),
+                            Constraint::Min(0),
+                        ])
+                        .split(area);
+
+                    // Metadata paragraph (scrollable).
+                    let meta_para = Paragraph::new(meta_lines)
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(format!(" {id} — Session Detail ")),
+                        )
+                        .wrap(ratatui::widgets::Wrap { trim: false })
+                        .scroll((self.detail_scroll as u16, 0));
+                    frame.render_widget(meta_para, chunks[0]);
+
+                    // Usage as a proper Table widget so columns are uniformly sized.
+                    if usage_row_count == 0 {
+                        let no_usage = Paragraph::new(Span::styled(
+                            "(no usage recorded yet)",
+                            Style::default().fg(Color::DarkGray),
+                        ))
+                        .block(Block::default().borders(Borders::ALL));
+                        frame.render_widget(no_usage, chunks[1]);
+                    } else {
+                        let mut sorted_usage: Vec<(&String, &crate::proxy::UsageStats)> =
+                            session.usage.iter().collect();
+                        sorted_usage.sort_by(|a, b| a.0.cmp(b.0));
+
+                        let mut total_req = 0u64;
+                        let mut total_in = 0u64;
+                        let mut total_out = 0u64;
+                        let mut total_cc = 0u64;
+                        let mut total_cr = 0u64;
+
+                        let mut usage_rows: Vec<Row> = sorted_usage
+                            .iter()
+                            .map(|(label, stats)| {
+                                total_req += stats.requests;
+                                total_in += stats.input_tokens;
+                                total_out += stats.output_tokens;
+                                total_cc += stats.cache_creation_tokens;
+                                total_cr += stats.cache_read_tokens;
+                                Row::new(vec![
+                                    Cell::from((*label).clone()),
+                                    Cell::from(stats.requests.to_string()),
+                                    Cell::from(format_tokens(stats.input_tokens)),
+                                    Cell::from(format_tokens(stats.output_tokens)),
+                                    Cell::from(format_tokens(stats.cache_creation_tokens)),
+                                    Cell::from(format_tokens(stats.cache_read_tokens)),
+                                ])
+                            })
+                            .collect();
+
+                        // Blank separator then bold totals row.
+                        usage_rows.push(Row::new(vec![
+                            Cell::from(""),
+                            Cell::from(""),
+                            Cell::from(""),
+                            Cell::from(""),
+                            Cell::from(""),
+                            Cell::from(""),
+                        ]));
+                        usage_rows.push(
+                            Row::new(vec![
+                                Cell::from("TOTAL"),
+                                Cell::from(total_req.to_string()),
+                                Cell::from(format_tokens(total_in)),
+                                Cell::from(format_tokens(total_out)),
+                                Cell::from(format_tokens(total_cc)),
+                                Cell::from(format_tokens(total_cr)),
+                            ])
+                            .style(
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        );
+
+                        let usage_header = Row::new(vec![
+                            "BINDING",
+                            "REQUESTS",
+                            "INPUT",
+                            "OUTPUT",
+                            "CACHE CREATE",
+                            "CACHE READ",
+                        ])
+                        .style(
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        );
+
+                        let usage_table = Table::new(
+                            usage_rows,
+                            [
+                                Constraint::Percentage(28),
+                                Constraint::Percentage(12),
+                                Constraint::Percentage(15),
+                                Constraint::Percentage(15),
+                                Constraint::Percentage(17),
+                                Constraint::Percentage(13),
+                            ],
+                        )
+                        .header(usage_header)
+                        .block(Block::default().borders(Borders::ALL));
+
+                        frame.render_widget(usage_table, chunks[1]);
+                    }
+
+                    // Footer hint in remaining space.
+                    let hint = Paragraph::new(Span::styled(
+                        "[Backspace/Esc/q] Back",
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    frame.render_widget(hint, chunks[2]);
+                }
+            }
+            return;
+        }
+
         let mut lines: Vec<Line> = match self.section {
             Section::Models | Section::Recommend => match ModelCommands::info_fields(id) {
                 None => vec![Line::from(format!("Model '{id}' not found."))],
@@ -1274,6 +1690,7 @@ impl App {
                     ])
                 })
                 .collect(),
+            Section::Sessions => unreachable!("Sessions handled above"),
         };
 
         lines.push(Line::from(""));
@@ -1302,6 +1719,13 @@ impl App {
             }
         } else {
             match &self.mode {
+                AppMode::Browse if self.section == Section::Sessions => {
+                    if self.hide_inactive {
+                        "[↑↓/jk] Navigate  [Tab] Section  [Enter] Detail  [s] Show inactive  [q] Quit"
+                    } else {
+                        "[↑↓/jk] Navigate  [Tab] Section  [Enter] Detail  [h] Hide inactive  [q] Quit"
+                    }
+                }
                 AppMode::Browse if self.section == Section::Hardware => {
                     "[↑↓/jk] Scroll  [Tab] Section  [q] Quit"
                 }
@@ -1435,11 +1859,20 @@ pub async fn run_interactive_tui(ctx: crate::AppContext) -> anyhow::Result<()> {
         // When idle, block indefinitely (no timeout needed, saves CPU).
         let has_event = if app.setup_pane.is_some() {
             event::poll(std::time::Duration::from_millis(16))?
+        } else if app.section == Section::Sessions {
+            event::poll(std::time::Duration::from_millis(1000))?
         } else {
             event::poll(std::time::Duration::from_secs(3600))?
         };
 
         if !has_event {
+            if app.section == Section::Sessions {
+                app.sessions = App::load_sessions();
+                // Also clamp row in case a session was removed
+                let max = app.row_count().saturating_sub(1);
+                app.row = app.row.min(max);
+                app.sync_table_state();
+            }
             continue;
         }
 
@@ -1527,6 +1960,7 @@ fn spawn_setup(
                 Section::Launchers => LauncherCommands::setup(&mut task_ctx, &id, iid).await,
                 Section::Capabilities => CapabilityCommands::setup(&mut task_ctx, &id, iid).await,
                 Section::Hardware => Ok(()),
+                Section::Sessions => Ok(()),
             };
             if let Err(e) = result {
                 task_ctx.ui.error(&format!("Setup failed: {e}"));
@@ -1589,10 +2023,10 @@ mod tests {
     }
 
     #[test]
-    fn app_tab_cycles_through_all_six_sections() {
-        // Six sections: Models → Providers → Launchers → Capabilities → Recommend → Hardware → Models
+    fn app_tab_cycles_through_all_seven_sections() {
+        // Seven sections: Models → Providers → Launchers → Capabilities → Recommend → Sessions → Hardware → Models
         let mut a = app();
-        for _ in 0..6 {
+        for _ in 0..7 {
             a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         }
         assert_eq!(a.section, Section::Models);
@@ -2047,5 +2481,149 @@ mod tests {
         a.section = Section::Providers;
         // Empty config — no instances for any provider type
         assert!(a.existing_instances("ollama").is_none());
+    }
+
+    // -- Sessions section ---------------------------------------------------------
+
+    #[test]
+    fn sessions_section_row_count_matches_sessions() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        // row_count should match the number of sessions loaded (respecting hide_inactive)
+        let expected = a
+            .sessions
+            .iter()
+            .filter(|s| !a.hide_inactive || (s.finished_at.is_none() && !session_is_stale(s)))
+            .count();
+        assert_eq!(a.row_count(), expected);
+    }
+
+    #[test]
+    fn sessions_hide_inactive_toggle_s_key() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        assert!(a.hide_inactive, "default is hide_inactive = true");
+        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(!a.hide_inactive, "s key shows inactive");
+        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(a.hide_inactive, "h key hides inactive");
+    }
+
+    #[test]
+    fn sessions_slash_does_not_enter_search_mode() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(
+            a.mode,
+            AppMode::Browse,
+            "/ should not enter search mode for Sessions"
+        );
+    }
+
+    #[test]
+    fn tab_cycles_through_all_sections_including_sessions() {
+        let mut a = app();
+        let mut sections = Vec::new();
+        for _ in 0..7 {
+            a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            sections.push(a.section.clone());
+        }
+        assert!(
+            sections.contains(&Section::Sessions),
+            "Sessions must appear in Tab cycle"
+        );
+        assert_eq!(
+            a.section,
+            Section::Models,
+            "must return to Models after full cycle"
+        );
+    }
+
+    #[test]
+    fn sessions_filtered_ids_empty_when_no_sessions() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.sessions = vec![];
+        let ids = a.filtered_ids("");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn sessions_hide_inactive_filters_finished_sessions() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.sessions = vec![
+            crate::session::SessionMeta {
+                session_id: "active-session".to_string(),
+                launched_at: "20250101T120000".to_string(),
+                finished_at: None,
+                // Recent enough that session_is_stale returns false (at least
+                // 3 hours from now in UTC)
+                updated_at: "20260918T020000".to_string(),
+                working_dir: "/test".to_string(),
+                full_command: vec![],
+                launcher_id: "claude".to_string(),
+                launcher_type: "claude".to_string(),
+                capabilities: vec![],
+                usage: std::collections::HashMap::new(),
+            },
+            crate::session::SessionMeta {
+                session_id: "finished-session".to_string(),
+                launched_at: "20250101T110000".to_string(),
+                finished_at: Some("20250101T130000".to_string()),
+                updated_at: "20250101T130000".to_string(),
+                working_dir: "/test".to_string(),
+                full_command: vec![],
+                launcher_id: "claude".to_string(),
+                launcher_type: "claude".to_string(),
+                capabilities: vec![],
+                usage: std::collections::HashMap::new(),
+            },
+        ];
+
+        // hide_inactive=true should only show active session
+        a.hide_inactive = true;
+        let ids = a.filtered_ids("");
+        assert_eq!(ids, vec!["active-session"]);
+
+        // hide_inactive=false should show both
+        a.hide_inactive = false;
+        let ids = a.filtered_ids("");
+        assert_eq!(ids, vec!["active-session", "finished-session"]);
+    }
+
+    #[test]
+    fn sessions_stale_session_is_hidden_when_hide_inactive() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        // A session with updated_at far in the past (year 2020) and no finished_at
+        // should be treated as stale and hidden when hide_inactive=true.
+        a.sessions = vec![crate::session::SessionMeta {
+            session_id: "stale-session".to_string(),
+            launched_at: "20200101T120000".to_string(),
+            finished_at: None,
+            updated_at: "20200101T120000".to_string(),
+            working_dir: "/test".to_string(),
+            full_command: vec![],
+            launcher_id: "claude".to_string(),
+            launcher_type: "claude".to_string(),
+            capabilities: vec![],
+            usage: std::collections::HashMap::new(),
+        }];
+        a.hide_inactive = true;
+        let ids = a.filtered_ids("");
+        assert!(
+            ids.is_empty(),
+            "stale session must be hidden when hide_inactive=true"
+        );
+
+        a.hide_inactive = false;
+        let ids = a.filtered_ids("");
+        assert_eq!(
+            ids,
+            vec!["stale-session"],
+            "stale session must show when hide_inactive=false"
+        );
     }
 }
