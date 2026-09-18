@@ -400,6 +400,11 @@ pub struct LaunchContext {
     pub base_env: HashMap<String, String>,
     /// If true, only display what would be launched without executing.
     pub dry_run: bool,
+    /// Shared usage tracker for the session's proxy, if one is running. Lets a
+    /// launcher submit self-reported usage that never passes through the proxy
+    /// (e.g. Bob, which has no model-configuration capability and so never makes
+    /// a request the proxy could intercept).
+    pub usage_tracker: Option<std::sync::Arc<crate::proxy::UsageTracker>>,
 }
 
 /// A single environment variable binding contributed to the subprocess overlay.
@@ -548,6 +553,7 @@ pub(crate) mod tests {
             working_dir: PathBuf::from("/tmp"),
             base_env: HashMap::new(),
             dry_run: false,
+            usage_tracker: None,
         };
         let overlay = launcher.env_overlay(&ctx).await.unwrap();
         assert!(overlay.is_empty());
@@ -616,6 +622,7 @@ pub(crate) mod tests {
             working_dir: PathBuf::from("/tmp"),
             base_env: HashMap::new(),
             dry_run: true,
+            usage_tracker: None,
         };
         let status = run_command(
             PathBuf::from("/usr/bin/echo"),
@@ -638,6 +645,7 @@ pub(crate) mod tests {
             working_dir: PathBuf::from("/tmp"),
             base_env: HashMap::new(),
             dry_run: false,
+            usage_tracker: None,
         };
         #[cfg(unix)]
         let (binary, args) = (PathBuf::from("/bin/echo"), vec!["hello".to_string()]);

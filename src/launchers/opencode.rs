@@ -1063,6 +1063,7 @@ mod tests {
             working_dir: PathBuf::from("/tmp"),
             base_env: std::collections::HashMap::new(),
             dry_run,
+            usage_tracker: None,
         }
     }
 

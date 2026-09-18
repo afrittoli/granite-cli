@@ -760,6 +760,11 @@ async fn run_launch(
         config.model_proxy = Some(server.handle.clone());
     }
 
+    // Compute the tracker early so the LaunchContext can hold it (e.g. for Bob,
+    // which has no model-configuration capability and so never makes a request
+    // the proxy could intercept). Reused at the writer-task setup below.
+    let tracker = proxy_server.as_ref().map(|s| s.handle.tracker());
+
     // Build capability configs with their dependencies for session metadata
     // before consuming them in the binding loop below.
     let capabilities_with_deps: Vec<(
@@ -792,6 +797,7 @@ async fn run_launch(
         working_dir: std::env::current_dir()?,
         base_env: std::collections::HashMap::new(),
         dry_run,
+        usage_tracker: tracker.clone(),
     };
 
     // Bind each enabled capability to the launcher before launching. Kept
@@ -831,7 +837,7 @@ async fn run_launch(
     // arrives. Rapid successive records coalesce into one write because watch
     // stores only the latest notification — the writer is never on the
     // response-to-client critical path.
-    let tracker = proxy_server.as_ref().map(|s| s.handle.tracker());
+    // `tracker` was computed earlier so the LaunchContext can hold it; reuse here.
     let writer_handle = if let Some(ref t) = tracker {
         let (tx, mut rx) = tokio::sync::watch::channel(());
         t.set_notifier(tx);
