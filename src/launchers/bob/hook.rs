@@ -60,13 +60,22 @@ fn bob_dir(workspace: &Path) -> PathBuf {
 }
 
 /// Escape a workspace path into a filesystem-safe filename component, using
-/// the same scheme as `session::generate_session_id` (replacing `/` with
-/// `crate::config::PATH_DELIM`) so two different workspaces never collide
+/// the same delimiter as `session::generate_session_id`
+/// (`crate::config::PATH_DELIM`) so two different workspaces never collide
 /// once these files live in a single shared per-launcher-instance directory.
+///
+/// Replaces `/`, `\`, and `:` (unlike `generate_session_id`, which only
+/// replaces `/`): on Windows a workspace path uses `\` as its separator and
+/// has a drive-letter `:` (e.g. `C:\Users\...`). Leaving those in place would
+/// mean the "escaped" string still contains path separators, so
+/// `Path::join`-ing it onto the launcher-state directory would be treated as
+/// more path segments — or, if it looks absolute, would discard the base
+/// directory entirely — instead of producing a single flat filename
+/// component; a bare `:` is also illegal in a Windows filename on its own.
 fn escape_workspace(workspace: &Path) -> String {
     workspace
         .to_string_lossy()
-        .replace('/', crate::config::PATH_DELIM)
+        .replace(['/', '\\', ':'], crate::config::PATH_DELIM)
 }
 
 /// Resolve the capture-file path for `workspace` under this launcher
@@ -532,7 +541,14 @@ mod tests {
     use crate::config::{Config, TestConfigHome};
 
     /*-- shell_quote tests --*/
+    //
+    // `shell_quote`'s escaping convention is itself platform-conditional
+    // (single-quote on Unix, double-quote on Windows — see `shell_quote_unix`
+    // / `shell_quote_windows`), so these assertions must be gated the same
+    // way rather than hardcoding one platform's output and running
+    // everywhere.
 
+    #[cfg(unix)]
     #[test]
     fn shell_quote_simple_path_unquoted() {
         // A path without special characters gets wrapped in single quotes.
@@ -542,6 +558,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_quote_path_with_spaces() {
         // Paths with spaces get quoted (single-quote wrapping doesn't
@@ -551,6 +568,7 @@ mod tests {
         assert_eq!(result, "'/path/with spaces/granite-cli'");
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_quote_path_with_embedded_single_quote() {
         // Embedded single quotes are escaped via the '"'"' trick.
@@ -558,10 +576,36 @@ mod tests {
         assert_eq!(result, "'/path/with'\"'\"'quote/granite-cli'");
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_quote_path_with_multiple_embedded_quotes() {
         let result = shell_quote("/a'b'c");
         assert_eq!(result, "'/a'\"'\"'b'\"'\"'c'");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_quote_simple_path_unquoted() {
+        // A path without special characters gets wrapped in double quotes.
+        assert_eq!(
+            shell_quote(r"C:\bin\granite-cli"),
+            "\"C:\\bin\\granite-cli\""
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_quote_path_with_spaces() {
+        let result = shell_quote(r"C:\path\with spaces\granite-cli");
+        assert_eq!(result, "\"C:\\path\\with spaces\\granite-cli\"");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_quote_path_with_embedded_double_quote() {
+        // Embedded double quotes are escaped by doubling, per cmd.exe.
+        let result = shell_quote(r#"C:\path\with"quote\granite-cli"#);
+        assert_eq!(result, "\"C:\\path\\with\"\"quote\\granite-cli\"");
     }
 
     /*-- build_marker_command tests --*/
@@ -572,13 +616,15 @@ mod tests {
         let capture = Path::new("/tmp/ws/.bob/.granite-cli-usage-capture.json");
         let lock = Path::new("/tmp/ws/.bob/.granite-cli-usage.lock");
         let result = build_marker_command_with_exe(exe, capture, lock);
-        assert!(result.starts_with("'"));
+        let quote = if cfg!(windows) { "\"" } else { "'" };
+        assert!(result.starts_with(quote));
         assert!(result.contains("internal bob-hook-capture"));
         assert!(result.contains(".granite-cli-usage-capture.json"));
         assert!(result.contains("--ancestor-lock"));
         assert!(result.contains(".granite-cli-usage.lock"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn build_marker_command_with_exe_embedded_quote() {
         let exe = Path::new("/path/with'quote/granite-cli");
@@ -589,6 +635,18 @@ mod tests {
         assert!(result.contains("internal bob-hook-capture"));
         // Verify the '"'"' pattern is present.
         assert!(result.contains("\"'\"'"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn build_marker_command_with_exe_embedded_quote() {
+        let exe = Path::new(r#"C:\path\with"quote\granite-cli"#);
+        let capture = Path::new(r"C:\ws\.bob\.granite-cli-usage-capture.json");
+        let lock = Path::new(r"C:\ws\.bob\.granite-cli-usage.lock");
+        let result = build_marker_command_with_exe(exe, capture, lock);
+        assert!(result.contains("internal bob-hook-capture"));
+        // Embedded double quote should be escaped by doubling.
+        assert!(result.contains("with\"\"quote"));
     }
 
     /*-- read_settings / write_settings tests --*/
@@ -996,9 +1054,16 @@ mod tests {
             .spawn()
             .expect("failed to spawn sleep");
 
+        // Windows: give the child a much longer lifetime than Unix's. The
+        // lookup itself shells out to PowerShell + Get-CimInstance, which can
+        // have well over a second of cold-start latency on a loaded CI
+        // runner; a short-lived child risks already having exited by the
+        // time the query actually runs (the test doesn't wait for this
+        // timeout -- it queries immediately after spawn, so a generous
+        // duration here costs nothing but headroom).
         #[cfg(windows)]
         let child = std::process::Command::new("cmd")
-            .args(&["/c", "timeout /t 2 >nul"])
+            .args(&["/c", "timeout /t 20 >nul"])
             .spawn()
             .expect("failed to spawn timeout");
 
