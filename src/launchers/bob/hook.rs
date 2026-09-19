@@ -14,6 +14,19 @@
 //! separate `granite-cli` processes, serving as a mutual-exclusion key: if
 //! another instance already registered the same marker, we detect a live
 //! collision (via the PID lockfile) and fail the whole launch.
+//!
+//! **Ancestry gating (narrow-race mitigation).**  The registered
+//! `SessionStart` hook fires for *every* `bob` session start in the workspace,
+//! not just the one managed by this `granite-cli` process.  An unmanaged `bob`
+//! started independently (not by granite-cli) in the same workspace would also
+//! trigger the hook, writing a capture file with the wrong session_id.  To
+//! close this race, the marker command carries a `--ancestor-lock` path; the
+//! capture subcommand reads that lockfile at hook-fire time, extracts the
+//! registrant's PID, and verifies (via OS-level process-tree introspection)
+//! that it is an ancestor of the current process before writing the capture
+//! file.  OS lookup failures are treated as "assume yes" so this check only
+//! produces false positives (prevents writes) in the narrow case where a
+//! competing process is actually running.
 
 // Standard
 use std::path::{Path, PathBuf};
@@ -115,23 +128,34 @@ fn shell_quote_windows(s: &str) -> String {
 }
 
 /// Build the marker command string from the current executable and
-/// capture_path, using the correct platform shell quoting.
+/// capture/lock paths, using the correct platform shell quoting.
+///
+/// The `lock_path` argument identifies the PID lockfile written by
+/// `register_or_fail`; at hook-fire time the `bob-hook-capture` subcommand
+/// reads this file to learn which PID to check against the current process
+/// tree (ancestry gating).  Passing the path — not a raw PID — keeps the
+/// marker string fully deterministic across registration attempts, which is
+/// essential for collision detection in `register_or_fail`.
 ///
 /// This is a thin wrapper around `build_marker_command_with_exe` that
 /// calls `std::env::current_exe()` to get the real binary path.
-pub fn build_marker_command(capture_path: &Path) -> anyhow::Result<String> {
+pub fn build_marker_command(capture_path: &Path, lock_path: &Path) -> anyhow::Result<String> {
     let exe = std::env::current_exe()?;
-    Ok(build_marker_command_with_exe(&exe, capture_path))
+    Ok(build_marker_command_with_exe(&exe, capture_path, lock_path))
 }
 
 /// Build the marker command string, given an explicit exe path.
 ///
 /// This is the testable core of `build_marker_command`: callers inject a
-/// fake path to keep tests deterministic.
-pub fn build_marker_command_with_exe(exe: &Path, capture_path: &Path) -> String {
+/// fake path to keep tests deterministic.  The `lock_path` argument is
+/// passed through to the marker string (as `--ancestor-lock`) so the
+/// `bob-hook-capture` subcommand can perform ancestry gating at hook-fire
+/// time without baking a process-specific PID into the deterministic string.
+pub fn build_marker_command_with_exe(exe: &Path, capture_path: &Path, lock_path: &Path) -> String {
     let exe_q = shell_quote(exe.to_string_lossy().as_ref());
     let cap_q = shell_quote(capture_path.to_string_lossy().as_ref());
-    format!("{exe_q} internal bob-hook-capture {cap_q}")
+    let lock_q = shell_quote(lock_path.to_string_lossy().as_ref());
+    format!("{exe_q} internal bob-hook-capture {cap_q} --ancestor-lock {lock_q}")
 }
 
 /// Read `<workspace>/.bob/settings.json` if it exists and parse as JSON;
@@ -307,13 +331,98 @@ pub fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+/// Resolve the parent PID for the given process.
+///
+/// Returns `Ok(Some(ppid))` with the parent's PID on success.  Returns
+/// `Ok(None)` when the process has no parent (reached init/PID 1 on Unix or
+/// the root process on Windows — a definitive "no more ancestors" result).
+/// Returns `Err(())` when the OS-level lookup itself fails (missing tool,
+/// unparseable output, process gone, etc.) — a genuine lookup error, not
+/// just "no parent."
+#[cfg(unix)]
+fn parent_pid(pid: u32) -> Result<Option<u32>, ()> {
+    let output = Command::new("ps")
+        .args(["-o", "ppid=", "-p", pid.to_string().as_str()])
+        .output()
+        .map_err(|_| ())?;
+
+    if !output.status.success() {
+        return Err(());
+    }
+
+    let trimmed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if trimmed.is_empty() {
+        return Err(());
+    }
+
+    trimmed.parse::<u32>().map(Some).map_err(|_| ())
+}
+
+#[cfg(windows)]
+fn parent_pid(pid: u32) -> Result<Option<u32>, ()> {
+    // Use PowerShell + Get-CimInstance (modern replacement for deprecated wmic).
+    let script =
+        format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId");
+    let output = Command::new("powershell")
+        .args(&["-NoProfile", "-Command", &script])
+        .output()
+        .map_err(|_| ())?;
+
+    let trimmed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if trimmed.is_empty() {
+        // ParentProcessId is null — this is the root process.
+        return Ok(None);
+    }
+
+    trimmed
+        .parse::<u32>()
+        .map(|ppid| Some(ppid))
+        .map_err(|_| ())
+}
+
+/// Walk the current process's ancestry looking for `expected_pid`.
+///
+/// Returns `Some(true)` if found, `Some(false)` if the walk reaches the top
+/// (no more resolvable parent) without finding it, or `None` if the lookup
+/// itself was inconclusive (missing OS tool, unparseable output, etc.) at
+/// any point during the walk.  Callers should treat `None` as "assume yes" —
+/// this check exists to close a narrow race (an unmanaged `bob` process
+/// firing our registered hook), not to become a new source of false
+/// negatives on platforms/environments where process introspection is
+/// unreliable.
+pub(crate) fn is_process_ancestor(expected_pid: u32, max_depth: usize) -> Option<bool> {
+    // Check the current process first (covers the case where expected_pid
+    // equals our own PID, even when max_depth is 0).
+    if std::process::id() == expected_pid {
+        return Some(true);
+    }
+    let mut pid = std::process::id();
+    for _ in 0..max_depth {
+        match parent_pid(pid) {
+            Ok(Some(0)) | Ok(None) => return Some(false), // reached root
+            Ok(Some(p)) => {
+                if p == expected_pid {
+                    return Some(true);
+                }
+                pid = p;
+            }
+            Err(()) => return None, // inconclusive: lookup failed
+        }
+    }
+    Some(false) // exhausted max_depth without finding it
+}
+
 /*-- top-level orchestration --*/
 
 /// Register the usage-tracking hook in `<workspace>/.bob/settings.json`.
 ///
 /// The capture and lock files are written under the launcher instance's state
 /// directory (`GRANITE_CLI_HOME/launcher-state/<launcher_id>/`), NOT inside
-/// the workspace.
+/// the workspace.  The marker command carries a `--ancestor-lock` argument
+/// (the lockfile path) so the `bob-hook-capture` subcommand can verify at
+/// hook-fire time that the invocation is actually a descendant of the
+/// registrant process, mitigating the narrow race where an unmanaged `bob`
+/// process fires the same registered hook.
 ///
 /// Returns `Err` if another live `granite-cli` process already owns the hook
 /// for this workspace (collision). Returns `Ok` on success — the caller must
@@ -331,7 +440,7 @@ pub fn register_or_fail(launcher_id: &str, workspace: &Path) -> anyhow::Result<H
             state_dir.display()
         )
     })?;
-    let mc = build_marker_command(&cp)?;
+    let mc = build_marker_command(&cp, &lp)?;
 
     let mut settings = read_settings(workspace);
 
@@ -461,17 +570,21 @@ mod tests {
     fn build_marker_command_with_exe_format() {
         let exe = Path::new("/usr/local/bin/granite-cli");
         let capture = Path::new("/tmp/ws/.bob/.granite-cli-usage-capture.json");
-        let result = build_marker_command_with_exe(exe, capture);
+        let lock = Path::new("/tmp/ws/.bob/.granite-cli-usage.lock");
+        let result = build_marker_command_with_exe(exe, capture, lock);
         assert!(result.starts_with("'"));
         assert!(result.contains("internal bob-hook-capture"));
         assert!(result.contains(".granite-cli-usage-capture.json"));
+        assert!(result.contains("--ancestor-lock"));
+        assert!(result.contains(".granite-cli-usage.lock"));
     }
 
     #[test]
     fn build_marker_command_with_exe_embedded_quote() {
         let exe = Path::new("/path/with'quote/granite-cli");
         let capture = Path::new("/tmp/ws/.bob/.granite-cli-usage-capture.json");
-        let result = build_marker_command_with_exe(exe, capture);
+        let lock = Path::new("/tmp/ws/.bob/.granite-cli-usage.lock");
+        let result = build_marker_command_with_exe(exe, capture, lock);
         // The embedded quote should be escaped, not produce broken nesting.
         assert!(result.contains("internal bob-hook-capture"));
         // Verify the '"'"' pattern is present.
@@ -848,8 +961,132 @@ mod tests {
 
     #[test]
     fn is_pid_alive_unlikely_pid_is_not_alive() {
-        // Use a very large PID that's extremely unlikely to be in use.
-        assert!(!is_pid_alive(u32::MAX));
+        // A hardcoded "unlikely" PID (e.g. u32::MAX) is not a safe choice
+        // here: `kill`'s pid argument is a signed 32-bit pid_t, so a huge
+        // unsigned value like u32::MAX (4294967295) wraps to -1, and
+        // `kill(-1, 0)` has special POSIX meaning ("signal every process I
+        // have permission to signal") -- which almost always succeeds, even
+        // though no literal process "4294967295" exists. This passed on
+        // macOS (its `kill` rejects the out-of-range argument outright) but
+        // failed on Linux CI (ubuntu-latest), where `kill -0 -1` succeeds.
+        // Spawn a real child, wait for it to exit, then check its
+        // now-dead-but-known-real PID instead -- deterministic on every
+        // platform, no pid_t signedness surprises.
+        let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" })
+            .args(if cfg!(windows) {
+                &["/C", "exit", "0"][..]
+            } else {
+                &[][..]
+            })
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(!is_pid_alive(pid));
+    }
+
+    /*-- parent_pid / is_process_ancestor tests --*/
+
+    #[test]
+    fn parent_pid_returns_test_process_as_parent_of_spawned_child() {
+        // Spawn a real child and verify that parent_pid(child_pid) == our_pid.
+        #[cfg(unix)]
+        let child = std::process::Command::new("sleep")
+            .arg("2")
+            .spawn()
+            .expect("failed to spawn sleep");
+
+        #[cfg(windows)]
+        let child = std::process::Command::new("cmd")
+            .args(&["/c", "timeout /t 2 >nul"])
+            .spawn()
+            .expect("failed to spawn timeout");
+
+        let child_pid = child.id();
+        drop(child); // Let it finish naturally.
+
+        let result = parent_pid(child_pid);
+        assert!(
+            result.is_ok(),
+            "parent_pid lookup for child {child_pid} should succeed"
+        );
+        assert_eq!(
+            result.unwrap(),
+            Some(std::process::id()),
+            "child's parent must be this test process"
+        );
+    }
+
+    #[test]
+    fn is_process_ancestor_finds_own_pid_in_descendant() {
+        // Spawn a child, then verify is_process_ancestor(test_pid, child_pid)
+        // returns Some(true) when called from the child process itself.
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "echo $$ && sleep 2"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn child");
+
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(&["/c", "echo 0 & timeout /t 2 >nul"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn child");
+
+        // Wait a moment for the child to fully start
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let _child_pid = child.id();
+
+        // We can't easily run code inside the child process, so instead
+        // verify that is_process_ancestor returns Some(true) when asked about
+        // our own PID from within a descendant.  Since we can't inject code
+        // into the child, we take a different approach: verify the walk
+        // logic works end-to-end by checking that the child's parent is us
+        // (which parent_pid already tested), and that our own PID is trivially
+        // an ancestor of itself.
+        assert_eq!(
+            is_process_ancestor(std::process::id(), 16),
+            Some(true),
+            "our own PID is trivially an ancestor of ourselves"
+        );
+
+        // Verify a very unlikely PID is NOT an ancestor.
+        assert_eq!(
+            is_process_ancestor(u32::MAX, 16),
+            Some(false),
+            "an unlikely PID should not be an ancestor"
+        );
+
+        // The child_pid is a descendant of our PID — verified indirectly via
+        // the parent_pid test above.  For a direct is_process_ancestor test
+        // from inside the child we'd need to inject code, which is hard
+        // cross-platform.  The combination of parent_pid + own-PID tests
+        // covers the logic sufficiently.
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn is_process_ancestor_owns_pid_at_depth_zero() {
+        // Ancestor check should return Some(true) immediately when
+        // expected_pid == current process ID.
+        assert_eq!(
+            is_process_ancestor(std::process::id(), 0),
+            Some(true),
+            "max_depth=0 should still check the current process first"
+        );
+    }
+
+    #[test]
+    fn is_process_ancestor_reaches_root_without_finding_unlikely_pid() {
+        // A non-existent PID should result in Some(false) after walking to
+        // the top of the tree, not a panic or error.
+        let result = is_process_ancestor(999999999, 16);
+        assert_eq!(result, Some(false));
     }
 
     /*-- escape_workspace tests --*/

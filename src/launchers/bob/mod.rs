@@ -24,7 +24,7 @@ use crate::utils::subserver::SubServer;
 use crate::utils::ui::Ui;
 
 mod delegate;
-mod hook;
+pub(crate) mod hook;
 mod usage;
 
 use_channel!("BOB");
