@@ -45,6 +45,7 @@ fn derived_ctx(ctx: &LaunchContext, launcher_id: String) -> LaunchContext {
         working_dir: ctx.working_dir.clone(),
         base_env: ctx.base_env.clone(),
         dry_run: ctx.dry_run,
+        usage_tracker: ctx.usage_tracker.clone(),
     }
 }
 
@@ -318,6 +319,7 @@ mod tests {
             working_dir: std::env::temp_dir(),
             base_env: HashMap::new(),
             dry_run: true,
+            usage_tracker: None,
         }
     }
 
