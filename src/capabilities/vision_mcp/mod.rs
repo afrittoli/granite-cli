@@ -438,6 +438,7 @@ mod tests {
             working_dir: std::env::temp_dir(),
             base_env: HashMap::new(),
             dry_run: false,
+            usage_tracker: None,
         }
     }
 

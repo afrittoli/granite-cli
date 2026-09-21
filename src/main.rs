@@ -113,6 +113,31 @@ struct LauncherWithOutput {
     subcommand: LauncherSubcommands,
 }
 
+#[derive(clap::Args, Debug)]
+struct InternalArgs {
+    #[command(subcommand)]
+    subcommand: InternalSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+enum InternalSubcommands {
+    /// Read stdin and write it verbatim to `output_path`. Used as a
+    /// cross-platform lifecycle-hook capture target so callers don't need to
+    /// rely on shell-specific stdin-redirection syntax.
+    BobHookCapture {
+        /// File path to write stdin's contents to.
+        output_path: std::path::PathBuf,
+        /// Path to the PID lockfile written by `hook::register_or_fail`.
+        /// If present, the subcommand reads this file to learn the registrant's
+        /// PID and verifies (via process-tree introspection) that the current
+        /// process is a descendant before writing the capture file.  This
+        /// prevents an unmanaged `bob` process from accidentally overwriting
+        /// our capture with the wrong session_id.
+        #[arg(long)]
+        ancestor_lock: Option<std::path::PathBuf>,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Model management commands
@@ -151,6 +176,10 @@ enum Commands {
 
     /// Show version information
     Version,
+
+    /// Internal commands used by granite-cli itself. Not for direct use.
+    #[command(hide = true)]
+    Internal(InternalArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -564,6 +593,30 @@ async fn main() {
             println!("{}", version::version_string());
             Ok(())
         }
+        Some(Commands::Internal(args)) => match args.subcommand {
+            InternalSubcommands::BobHookCapture {
+                output_path,
+                ancestor_lock,
+            } => {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                std::io::stdin()
+                    .read_to_end(&mut buf)
+                    .map_err(|e| eprintln!("Error reading stdin: {e}"))
+                    .and_then(|_| {
+                        // Ancestry gating: if this capture doesn't belong to
+                        // the process that registered the hook, skip writing
+                        // it. Exit 0 either way (never error: Bob's
+                        // SessionStart hooks are fire-and-forget).
+                        if !bob_hook_capture_should_write(ancestor_lock.as_deref()) {
+                            return Ok(());
+                        }
+
+                        std::fs::write(&output_path, &buf)
+                            .map_err(|e| eprintln!("Error writing {}: {e}", output_path.display()))
+                    })
+            }
+        },
         None => {
             // `ctx` (and its `ui`) is consumed by value into the TUI `App`
             // before any error can occur, so it can't be used to report one.
@@ -761,6 +814,11 @@ async fn run_launch(
         crate::proxy::register_proxy_routes(&config, &lc.enabled_capabilities, &server.handle, ui);
     }
 
+    // Compute the tracker early so the LaunchContext can hold it (e.g. for Bob,
+    // which has no model-configuration capability and so never makes a request
+    // the proxy could intercept). Reused at the writer-task setup below.
+    let tracker = proxy_server.as_ref().map(|s| s.handle.tracker());
+
     // Build capability configs with their dependencies for session metadata
     // before consuming them in the binding loop below.
     let capabilities_with_deps: Vec<(
@@ -793,6 +851,7 @@ async fn run_launch(
         working_dir: std::env::current_dir()?,
         base_env: std::collections::HashMap::new(),
         dry_run,
+        usage_tracker: tracker.clone(),
     };
 
     // Bind each enabled capability to the launcher before launching. Kept
@@ -839,7 +898,7 @@ async fn run_launch(
     // arrives. Rapid successive records coalesce into one write because watch
     // stores only the latest notification — the writer is never on the
     // response-to-client critical path.
-    let tracker = proxy_server.as_ref().map(|s| s.handle.tracker());
+    // `tracker` was computed earlier so the LaunchContext can hold it; reuse here.
     let writer_handle = if let Some(ref t) = tracker {
         let (tx, mut rx) = tokio::sync::watch::channel(());
         t.set_notifier(tx);
@@ -964,4 +1023,95 @@ fn print_usage_summary(ui: &dyn Ui, tracker: &proxy::UsageTracker) {
         ],
         &rows,
     );
+}
+
+/// Check whether the `BobHookCapture` ancestry gating allows writing the
+/// capture file. `ancestor_lock`, when present, points at the lockfile
+/// written by `hook::register_or_fail` containing the registering process's
+/// PID; if the current process isn't a descendant of that PID, the capture
+/// belongs to some other (unmanaged, or a different granite-cli instance's)
+/// `bob` session and must not be written. Every failure mode (no lock,
+/// unreadable/unparseable lock, inconclusive ancestry lookup) proceeds to
+/// write — this check exists only to close a narrow race, never to become a
+/// new source of false negatives.
+///
+/// Shared by the real dispatch handler below and its unit tests, so the
+/// tested logic is exactly what runs in production.
+fn bob_hook_capture_should_write(ancestor_lock: Option<&std::path::Path>) -> bool {
+    if let Some(lock_path) = ancestor_lock {
+        let lock_content = match std::fs::read_to_string(lock_path) {
+            Ok(c) => c,
+            Err(_) => return true, // best-effort: can't read → proceed
+        };
+        let registrant_pid: u32 = match lock_content.trim().parse() {
+            Ok(p) => p,
+            Err(_) => return true, // best-effort: can't parse → proceed
+        };
+
+        if registrant_pid == 0 {
+            return true; // no PID → proceed (no gating)
+        }
+
+        match crate::launchers::bob::hook::is_process_ancestor(registrant_pid, 16) {
+            Some(false) => false,      // definitely not a descendant → skip
+            Some(true) | None => true, // descendant or inconclusive → write
+        }
+    } else {
+        true // no lock → always write
+    }
+}
+
+#[cfg(test)]
+mod hook_capture_tests {
+    use super::*;
+
+    #[test]
+    fn gating_skips_when_lock_pid_not_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock_file = tmp.path().join("lock");
+        // Write a PID that's definitely not our ancestor.
+        std::fs::write(&lock_file, "999999999").unwrap();
+
+        assert!(!bob_hook_capture_should_write(Some(&lock_file)));
+    }
+
+    #[test]
+    fn gating_allows_when_no_lock_path() {
+        assert!(bob_hook_capture_should_write(None));
+    }
+
+    #[test]
+    fn gating_allows_when_lock_unreadable() {
+        // Path doesn't exist → best-effort read fails → proceed.
+        assert!(bob_hook_capture_should_write(Some(std::path::Path::new(
+            "/no/such/file.lock"
+        ))));
+    }
+
+    #[test]
+    fn gating_allows_when_lock_contains_non_numeric() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock_file = tmp.path().join("lock");
+        std::fs::write(&lock_file, "not-a-pid").unwrap();
+
+        assert!(bob_hook_capture_should_write(Some(&lock_file)));
+    }
+
+    #[test]
+    fn gating_allows_when_lock_pid_is_current_process() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock_file = tmp.path().join("lock");
+        std::fs::write(&lock_file, std::process::id().to_string()).unwrap();
+
+        assert!(bob_hook_capture_should_write(Some(&lock_file)));
+    }
+
+    #[test]
+    fn gating_allows_when_lock_pid_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock_file = tmp.path().join("lock");
+        std::fs::write(&lock_file, "0").unwrap();
+
+        assert!(bob_hook_capture_should_write(Some(&lock_file)));
+    }
 }

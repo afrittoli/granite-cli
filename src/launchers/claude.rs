@@ -695,6 +695,7 @@ mod tests {
             working_dir: std::env::current_dir().unwrap(),
             base_env: std::collections::HashMap::new(),
             dry_run,
+            usage_tracker: None,
         }
     }
 

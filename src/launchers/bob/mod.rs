@@ -24,10 +24,14 @@ use crate::utils::subserver::SubServer;
 use crate::utils::ui::Ui;
 
 mod delegate;
+pub(crate) mod hook;
+mod usage;
 
 use_channel!("BOB");
 
 /*-- public --*/
+
+const DEFAULT_USAGE_POLL_INTERVAL_SECS: u64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct BobLauncherConfig {
@@ -43,6 +47,16 @@ pub struct BobLauncherConfig {
     /// are unrelated.
     #[serde(default)]
     pub pi_command_path: Option<String>,
+
+    /// Override path to bob's SQLite database for usage polling.
+    /// Leave unset to use `~/.bob/db/bob.db`.
+    #[serde(default)]
+    pub bob_db_path: Option<String>,
+
+    /// Seconds between usage polls while bob is running. Default 5.
+    /// Leave unset to use the default (5s).
+    #[serde(default)]
+    pub usage_poll_interval_secs: Option<u64>,
 }
 
 pub struct BobLauncher {
@@ -73,6 +87,36 @@ impl ConfigConstructable for BobLauncher {
             bound_mcp_bindings: vec![],
             pending_sub_agents: vec![],
         }
+    }
+}
+
+impl BobLauncher {
+    /// Resolve the effective DB path: use the config override if set,
+    /// otherwise `~/.bob/db/bob.db`. Falls back to a relative path if
+    /// `dirs::home_dir()` is `None`.
+    pub(crate) fn bob_db_path(&self) -> PathBuf {
+        if let Some(ref p) = self.config.bob_db_path {
+            return PathBuf::from(p);
+        }
+        dirs::home_dir()
+            .unwrap_or_default()
+            .join(".bob")
+            .join("db")
+            .join("bob.db")
+    }
+
+    /// Resolve the effective usage-poll interval: the config override if set,
+    /// otherwise the default (5s). Defensively floors at 1 second even if a
+    /// config value of 0 somehow slips through (e.g. a hand-edited config
+    /// file), since `tokio::time::interval` panics on a zero duration and this
+    /// whole feature must never crash a launch over a config quirk.
+    pub(crate) fn usage_poll_interval(&self) -> std::time::Duration {
+        let secs = self
+            .config
+            .usage_poll_interval_secs
+            .unwrap_or(DEFAULT_USAGE_POLL_INTERVAL_SECS)
+            .max(1);
+        std::time::Duration::from_secs(secs)
     }
 }
 
@@ -144,6 +188,10 @@ impl Launcher for BobLauncher {
     /// Registers each bound MCP server with `bob mcp add-json` (scoped to
     /// this workspace) before exec'ing, and best-effort removes them again
     /// afterwards.
+    ///
+    /// When `ctx.usage_tracker` is `Some`, also registers a Bob `SessionStart`
+    /// lifecycle hook to capture the task ID, polls Bob's SQLite DB for usage
+    /// while the session runs, and flushes a final read at the end.
     async fn launch(
         &self,
         args: &[String],
@@ -152,6 +200,23 @@ impl Launcher for BobLauncher {
     ) -> anyhow::Result<std::process::ExitStatus> {
         let binary = self.validate_command()?;
         let overlay = self.env_overlay(ctx).await?;
+
+        // Ensure `<workspace>/.bob/` exists. Needed both for workspace-scoped
+        // MCP config registration (issue #144) and for the usage-tracking hook's
+        // `settings.json`. Early-returns when `dry_run` so this call is safe
+        // to run unconditionally.
+        ensure_workspace_config_dir(ctx)?;
+
+        // Register the SessionStart usage-tracking hook *before* any MCP or
+        // delegate-server resources are set up below, so that a collision
+        // failure (another live granite-cli-managed Bob session is already
+        // tracking usage in this workspace) aborts the launch with nothing to
+        // tear down yet. `None` when there's no proxy running (dry_run) --
+        // there's nothing to poll in that case, so skip the hook entirely.
+        let hook_reg = match &ctx.usage_tracker {
+            Some(_) => Some(hook::register_or_fail(&ctx.launcher_id, &ctx.working_dir)?),
+            None => None,
+        };
 
         let mut delegate_server: Option<SubServer> = None;
         let mut all_mcp_bindings: Vec<(String, McpBinding)> = self.bound_mcp_bindings.clone();
@@ -171,9 +236,6 @@ impl Launcher for BobLauncher {
         }
 
         const SCOPE: &[&str] = &["-s", "workspace"];
-        if !all_mcp_bindings.is_empty() {
-            ensure_workspace_config_dir(ctx)?;
-        }
         for (name, binding) in &all_mcp_bindings {
             register_mcp_server(&binary, name, binding, SCOPE, ctx, ui)?;
         }
@@ -184,7 +246,58 @@ impl Launcher for BobLauncher {
             &binary,
             &args
         );
-        let result = run_command(binary.clone(), &overlay, &args, ctx, ui).await;
+
+        // If a usage tracker + hook registration are available, wire up
+        // Bob's own usage tracking via periodic DB reads while `run_command`
+        // runs. `captured_task_id` is declared out here (not inside the
+        // branch below) so the guaranteed final flush after MCP/delegate
+        // cleanup can still see it.
+        let mut captured_task_id: Option<String> = None;
+        let result = if let (Some(tracker), Some(hook_reg)) = (&ctx.usage_tracker, &hook_reg) {
+            // Build the DB path for usage polling.
+            let bob_db_path = self.bob_db_path();
+            let poll_interval = self.usage_poll_interval();
+
+            // Race the run_command future against usage-tracking work.
+            let mut check_tick = tokio::time::interval(std::time::Duration::from_millis(500));
+            let mut poll_tick = tokio::time::interval(poll_interval);
+            poll_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            let run_fut = run_command(binary.clone(), &overlay, &args, ctx, ui);
+            tokio::pin!(run_fut);
+
+            loop {
+                if captured_task_id.is_none() {
+                    tokio::select! {
+                        r = &mut run_fut => break r,
+                        _ = check_tick.tick() => {
+                            if let Some(id) = hook::try_read_capture(&hook_reg.capture_path) {
+                                hook::unregister(&ctx.launcher_id, &ctx.working_dir, &hook_reg.marker_command);
+                                let _ = std::fs::remove_file(&hook_reg.capture_path);
+                                captured_task_id = Some(id);
+                            }
+                        }
+                    }
+                } else {
+                    tokio::select! {
+                        r = &mut run_fut => break r,
+                        _ = poll_tick.tick() => {
+                            let id = captured_task_id.clone().unwrap();
+                            let db_path = bob_db_path.clone();
+                            let stats = tokio::task::spawn_blocking(move || {
+                                usage::collect_bob_usage(&db_path, &id)
+                            })
+                            .await
+                            .unwrap_or_default();
+                            tracker.set("bob", stats);
+                        }
+                    }
+                }
+            }
+        } else {
+            // No usage tracker (dry_run): just run the command directly.
+            run_command(binary.clone(), &overlay, &args, ctx, ui).await
+        };
 
         for (name, _) in &all_mcp_bindings {
             remove_mcp_server(&binary, name, SCOPE, ctx, ui);
@@ -192,6 +305,23 @@ impl Launcher for BobLauncher {
 
         if let Some(server) = delegate_server {
             server.shutdown().await;
+        }
+
+        // Guaranteed final flush + hook cleanup, mirrored to happen last
+        // (LIFO relative to registration above) and regardless of how
+        // `run_command` finished.
+        if let (Some(tracker), Some(hook_reg)) = (&ctx.usage_tracker, &hook_reg) {
+            if let Some(id) = &captured_task_id {
+                let db_path = self.bob_db_path();
+                let id = id.clone();
+                let stats =
+                    tokio::task::spawn_blocking(move || usage::collect_bob_usage(&db_path, &id))
+                        .await
+                        .unwrap_or_default();
+                tracker.set("bob", stats);
+            }
+            hook::unregister(&ctx.launcher_id, &ctx.working_dir, &hook_reg.marker_command);
+            let _ = std::fs::remove_file(&hook_reg.capture_path);
         }
 
         result
@@ -219,8 +349,9 @@ const WORKSPACE_CONFIG_DIR: &str = ".bob";
 
 /// Creates the workspace-scoped config directory the downstream `bob` binary
 /// writes into, unless this is a dry run (which must not touch the
-/// filesystem). Called only when there is at least one MCP binding to
-/// register, since that is the only time `bob` needs the directory.
+/// filesystem). Called unconditionally near the top of `BobLauncher::launch()`;
+/// needed for both workspace-scoped MCP config registration (issue #144) and
+/// the usage-tracking hook's `settings.json` file.
 fn ensure_workspace_config_dir(ctx: &LaunchContext) -> anyhow::Result<()> {
     if ctx.dry_run {
         return Ok(());
@@ -305,6 +436,8 @@ mod tests {
         let props = props.unwrap();
         assert!(props.contains_key("command_path"));
         assert!(props.contains_key("pi_command_path"));
+        assert!(props.contains_key("bob_db_path"));
+        assert!(props.contains_key("usage_poll_interval_secs"));
     }
 
     #[test]
@@ -326,6 +459,102 @@ mod tests {
         let meta = BobLauncher::metadata();
         assert!(meta.supported_capabilities.contains(&BindingType::Mcp));
         assert!(meta.supported_capabilities.contains(&BindingType::SubAgent));
+    }
+
+    #[test]
+    fn bob_db_path_defaults_when_not_configured() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({}),
+            &crate::config::Config::default(),
+        );
+        let db_path = l.bob_db_path();
+        assert!(db_path.ends_with(".bob/db/bob.db"));
+    }
+
+    #[test]
+    fn bob_db_path_uses_config_override() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({
+                "bob_db_path": "/custom/path/bob.db"
+            }),
+            &crate::config::Config::default(),
+        );
+        let db_path = l.bob_db_path();
+        assert_eq!(db_path, std::path::PathBuf::from("/custom/path/bob.db"));
+    }
+
+    #[test]
+    fn config_defaults_usage_poll_interval_to_none() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({}),
+            &crate::config::Config::default(),
+        );
+        assert_eq!(l.config.usage_poll_interval_secs, None);
+    }
+
+    #[test]
+    fn config_uses_explicit_usage_poll_interval() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({
+                "usage_poll_interval_secs": 10
+            }),
+            &crate::config::Config::default(),
+        );
+        assert_eq!(l.config.usage_poll_interval_secs, Some(10));
+    }
+
+    #[test]
+    fn config_bob_db_path_and_poll_interval_can_be_set_together() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({
+                "bob_db_path": "/other/db.db",
+                "usage_poll_interval_secs": 3
+            }),
+            &crate::config::Config::default(),
+        );
+        assert_eq!(l.config.bob_db_path, Some("/other/db.db".to_string()));
+        assert_eq!(l.config.usage_poll_interval_secs, Some(3));
+    }
+
+    // -- usage_poll_interval accessor ------------------------------------------
+
+    #[test]
+    fn usage_poll_interval_defaults_to_five_seconds_when_unset() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({}),
+            &crate::config::Config::default(),
+        );
+        assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn usage_poll_interval_uses_config_when_set() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({
+                "usage_poll_interval_secs": 15
+            }),
+            &crate::config::Config::default(),
+        );
+        assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn usage_poll_interval_floors_at_one_second_when_config_is_explicitly_zero() {
+        let l = BobLauncher::new(
+            "my-bob",
+            &serde_json::json!({
+                "usage_poll_interval_secs": 0
+            }),
+            &crate::config::Config::default(),
+        );
+        assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(1));
     }
 
     // -- bind_capability routing -------------------------------------------
@@ -433,6 +662,7 @@ mod tests {
             working_dir,
             base_env: std::collections::HashMap::new(),
             dry_run,
+            usage_tracker: None,
         }
     }
 
