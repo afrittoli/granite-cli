@@ -11,6 +11,9 @@
 #   VERBOSE                   — Set to "1" for verbose output
 #   CI                        — Set to "1" for non-interactive mode (auto-update, no prompts)
 #   NONINTERACTIVE            — Alias for CI
+#   NO_SETUP                  — Set to truthy value to skip `granite-cli setup` (truthy: 1, t, y, true, yes)
+#   AUTO                      — Set to truthy value to pass `--auto` through to setup (default: false)
+#   PULL                      — Set to truthy value to pass `--pull` through to setup (default: false)
 
 set -euo pipefail
 
@@ -64,6 +67,43 @@ PREFERRED_INSTALL_DIR="${GRANITE_CLI_INSTALL_DIR:-}"
 VERBOSE="${VERBOSE:-}"
 CI="${CI:-}"
 NONINTERACTIVE="${NONINTERACTIVE:-}"
+
+# ── post-install env vars ────────────────────────────────────────────────────
+# Flags that control post-install behaviour (granite-cli setup)
+NO_SETUP="${NO_SETUP:-}"
+AUTO="${AUTO:-}"
+PULL="${PULL:-}"
+
+# NO_SETUP is truthy when set to 1, t, y, true, or yes (case insensitive)
+if [[ "$(echo "${NO_SETUP}" | tr '[:upper:]' '[:lower:]')" =~ ^(1|t|y|true|yes)$ ]]; then
+    RUN_SETUP=false
+else
+    RUN_SETUP=true
+fi
+
+# AUTO: truthy when set to 1, t, y, true, or yes (case insensitive)
+if [[ "$(echo "${AUTO}" | tr '[:upper:]' '[:lower:]')" =~ ^(1|t|y|true|yes)$ ]]; then
+    AUTO=true
+else
+    AUTO=false
+fi
+
+# PULL: truthy when set to 1, t, y, true, or yes (case insensitive)
+if [[ "$(echo "${PULL}" | tr '[:upper:]' '[:lower:]')" =~ ^(1|t|y|true|yes)$ ]]; then
+    PULL=true
+else
+    PULL=false
+fi
+
+for arg in "$@"; do
+    case "$arg" in
+        --no-setup) RUN_SETUP=false ;;
+        --auto)     AUTO=true ;;
+        --pull)     PULL=true ;;
+        --ci)       CI=1 ;;
+        *)          error "Unknown option: $arg"; exit 1 ;;
+    esac
+done
 
 # ── termux detection ─────────────────────────────────────────────────────────
 is_termux() {
@@ -567,6 +607,35 @@ cleanup_tmp() {
     rm -rf "$tmp_dir" 2>/dev/null || true
 }
 
+# ── post-install setup ───────────────────────────────────────────────────────
+run_granite_setup() {
+    local bin_path="${INSTALL_DIR}/${BIN_NAME}"
+
+    if [[ "$RUN_SETUP" != "true" ]]; then
+        return 0
+    fi
+
+    # Build argument list for granite-cli setup
+    local -a setup_args=()
+    # --auto: when --auto flag is given, or when CI mode is active
+    if [[ "$AUTO" == "true" ]] || is_ci; then
+        setup_args+=("--auto")
+    fi
+    # --pull: only when explicitly requested
+    if [[ "$PULL" == "true" ]]; then
+        setup_args+=("--pull")
+    fi
+
+    info "Running granite-cli setup..."
+    if [[ ${#setup_args[@]} -gt 0 ]]; then
+        "${bin_path}" setup "${setup_args[@]}" || \
+            warn "granite-cli setup returned an error (this is optional)"
+    else
+        "${bin_path}" setup || \
+            warn "granite-cli setup returned an error (this is optional)"
+    fi
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 main() {
     info "Installing ${BIN_NAME}…"
@@ -578,29 +647,36 @@ main() {
     # If no existing install, the function returns 1 — we continue to install.
     check_existing_install || true
 
+    local installed=false
+
     # --- Attempt 1: prebuilt binary (skip on Termux — glibc binaries incompatible with Bionic) ---
     if ! is_termux; then
         if install_from_release; then
-            echo "Installation complete!"
-            exit 0
+            installed=true
+        else
+            warn "Prebuilt binary not available for ${OS}/${ARCH}."
+            echo ""
         fi
-
-        warn "Prebuilt binary not available for ${OS}/${ARCH}."
-        echo ""
     fi
 
     # --- Attempt 2: cargo install ---
-    if install_from_cargo; then
-        echo "Installation complete!"
-        exit 0
+    if [[ "$installed" != "true" ]] && install_from_cargo; then
+        installed=true
     fi
 
-    warn "cargo install failed or not available."
-    echo ""
+    if [[ "$installed" != "true" ]]; then
+        warn "cargo install failed or not available."
+        echo ""
+    fi
 
     # --- Attempt 3: build from source ---
-    if install_from_source; then
+    if [[ "$installed" != "true" ]] && install_from_source; then
+        installed=true
+    fi
+
+    if [[ "$installed" == "true" ]]; then
         echo "Installation complete!"
+        run_granite_setup
         exit 0
     fi
 
