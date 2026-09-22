@@ -428,7 +428,7 @@ faithful.
 - `src/models/base.rs`, `src/launchers/base.rs`, `src/utils/ui/base.rs`,
   `src/registry/mod.rs` (the remaining doubles)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
@@ -464,7 +464,7 @@ what it produces from the field today.
 - `src/main.rs` (`construct_ui`, the launch path)
 - `src/launchers/claude.rs`, `src/launchers/base.rs` (`LaunchContext`)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
@@ -511,7 +511,7 @@ name still reported as an unknown type.
   `src/models/custom.rs`, `src/utils/ui/backends/*.rs` (the implementations)
 - the `reqwest::Client::builder` calls in the five provider constructors
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 

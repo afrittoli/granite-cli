@@ -456,11 +456,7 @@ mod tests {
 
     #[test]
     fn bob_db_path_defaults_when_not_configured() {
-        let l = BobLauncher::new(
-            "my-bob",
-            &serde_json::json!({}),
-        )
-        .unwrap();
+        let l = BobLauncher::new("my-bob", &serde_json::json!({})).unwrap();
         let db_path = l.bob_db_path();
         assert!(db_path.ends_with(".bob/db/bob.db"));
     }
@@ -480,11 +476,7 @@ mod tests {
 
     #[test]
     fn config_defaults_usage_poll_interval_to_none() {
-        let l = BobLauncher::new(
-            "my-bob",
-            &serde_json::json!({}),
-        )
-        .unwrap();
+        let l = BobLauncher::new("my-bob", &serde_json::json!({})).unwrap();
         assert_eq!(l.config.usage_poll_interval_secs, None);
     }
 
@@ -518,11 +510,7 @@ mod tests {
 
     #[test]
     fn usage_poll_interval_defaults_to_five_seconds_when_unset() {
-        let l = BobLauncher::new(
-            "my-bob",
-            &serde_json::json!({}),
-        )
-        .unwrap();
+        let l = BobLauncher::new("my-bob", &serde_json::json!({})).unwrap();
         assert_eq!(l.usage_poll_interval(), std::time::Duration::from_secs(5));
     }
 
