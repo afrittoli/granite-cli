@@ -444,10 +444,13 @@ mod tests {
         // image requests away from a text model is the `ModelRequirement`
         // this capability's metadata declares, applied when the name is
         // resolved. This asserts the declaration reaches that check.
-        let cap = Box::new(VisionMCPCapability::new(
-            "vision",
-            &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
-        ).unwrap());
+        let cap = Box::new(
+            VisionMCPCapability::new(
+                "vision",
+                &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
+            )
+            .unwrap(),
+        );
         let lookup = CheckingLookup {
             model: Arc::new(FakeModel::vision(vec![ModelFunction::Chat])),
         };
