@@ -11,6 +11,9 @@
 #   VERBOSE                   — Set to "1" for verbose output
 #   CI                        — Set to "1" for non-interactive mode (auto-update, no prompts)
 #   NONINTERACTIVE            — Alias for CI
+#   NO_SETUP                  — Set to truthy value to skip `granite-cli setup` (truthy: 1, t, y, true, yes)
+#   AUTO                      — Set to truthy value to pass `--auto` through to setup (default: false)
+#   PULL                      — Set to truthy value to pass `--pull` through to setup (default: false)
 
 set -euo pipefail
 
@@ -65,17 +68,31 @@ VERBOSE="${VERBOSE:-}"
 CI="${CI:-}"
 NONINTERACTIVE="${NONINTERACTIVE:-}"
 
-# ── argument parsing ─────────────────────────────────────────────────────────
+# ── post-install env vars ────────────────────────────────────────────────────
 # Flags that control post-install behaviour (granite-cli setup)
 NO_SETUP="${NO_SETUP:-}"
-AUTO=false       # default false; becomes true if --auto or non-interactive
-PULL=false       # default false; only true if --pull is explicitly given
+AUTO="${AUTO:-}"
+PULL="${PULL:-}"
 
 # NO_SETUP is truthy when set to 1, t, y, true, or yes (case insensitive)
 if [[ "$(echo "${NO_SETUP}" | tr '[:upper:]' '[:lower:]')" =~ ^(1|t|y|true|yes)$ ]]; then
     RUN_SETUP=false
 else
     RUN_SETUP=true
+fi
+
+# AUTO: truthy when set to 1, t, y, true, or yes (case insensitive)
+if [[ "$(echo "${AUTO}" | tr '[:upper:]' '[:lower:]')" =~ ^(1|t|y|true|yes)$ ]]; then
+    AUTO=true
+else
+    AUTO=false
+fi
+
+# PULL: truthy when set to 1, t, y, true, or yes (case insensitive)
+if [[ "$(echo "${PULL}" | tr '[:upper:]' '[:lower:]')" =~ ^(1|t|y|true|yes)$ ]]; then
+    PULL=true
+else
+    PULL=false
 fi
 
 for arg in "$@"; do
