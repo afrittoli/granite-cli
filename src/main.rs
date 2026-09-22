@@ -162,9 +162,14 @@ enum Commands {
         #[arg(long)]
         auto: bool,
 
-        /// Skip the model weight pull prompt at the end of the wizard.
-        /// Model weights are never auto-pulled in --auto mode regardless.
-        #[arg(long)]
+        /// Pull model weights at the end of the wizard without prompting.
+        /// Mutually exclusive with --skip-pull.
+        #[arg(long, conflicts_with = "skip_pull")]
+        pull: bool,
+
+        /// Skip the model weight pull step entirely.
+        /// Mutually exclusive with --pull.
+        #[arg(long, conflicts_with = "pull")]
         skip_pull: bool,
     },
 
@@ -559,7 +564,18 @@ async fn main() {
                 .await
                 .map_err(|e| ctx.ui.error(&e.to_string()))
         }
-        Some(Commands::Setup { auto, skip_pull }) => {
+        Some(Commands::Setup {
+            auto,
+            pull,
+            skip_pull,
+        }) => {
+            let pull_opt = if pull {
+                Some(true)
+            } else if skip_pull {
+                Some(false)
+            } else {
+                None
+            };
             let mut ctx = construct_context(
                 "terminal",
                 &log_level,
@@ -567,7 +583,7 @@ async fn main() {
                 log_json,
                 log_thread_id,
             );
-            SetupCommands::run(&mut ctx, auto, skip_pull)
+            SetupCommands::run(&mut ctx, auto, pull_opt)
                 .await
                 .map_err(|e| ctx.ui.error(&e.to_string()))
         }
