@@ -65,6 +65,34 @@ VERBOSE="${VERBOSE:-}"
 CI="${CI:-}"
 NONINTERACTIVE="${NONINTERACTIVE:-}"
 
+# ── argument parsing ─────────────────────────────────────────────────────────
+# Flags that control post-install behaviour (granite-cli setup)
+NO_SETUP="${NO_SETUP:-}"
+AUTO=false       # default false; becomes true if --auto or non-interactive
+PULL=false       # default false; only true if --pull is explicitly given
+
+# NO_SETUP is truthy when set to 1, t, y, true, or yes (case insensitive)
+if [[ "$(echo "${NO_SETUP}" | tr '[:upper:]' '[:lower:]')" =~ ^(1|t|y|true|yes)$ ]]; then
+    RUN_SETUP=false
+else
+    RUN_SETUP=true
+fi
+
+for arg in "$@"; do
+    case "$arg" in
+        --no-setup) RUN_SETUP=false ;;
+        --auto)     AUTO=true ;;
+        --pull)     PULL=true ;;
+        *)          error "Unknown option: $arg"; exit 1 ;;
+    esac
+done
+
+# ── terminal detection ───────────────────────────────────────────────────────
+is_interactive_terminal() {
+    # Returns 0 (true) when stdin is connected to a terminal (TTY).
+    [ -t 0 ]
+}
+
 # ── termux detection ─────────────────────────────────────────────────────────
 is_termux() {
     # Termux sets $PREFIX to /data/data/com.termux/files/usr and may provide
@@ -567,6 +595,35 @@ cleanup_tmp() {
     rm -rf "$tmp_dir" 2>/dev/null || true
 }
 
+# ── post-install setup ───────────────────────────────────────────────────────
+run_granite_setup() {
+    local bin_path="${INSTALL_DIR}/${BIN_NAME}"
+
+    if [[ "$RUN_SETUP" != "true" ]]; then
+        return 0
+    fi
+
+    # Build argument list for granite-cli setup
+    local -a setup_args=()
+    # --auto: when --auto flag is given, or when running non-interactively
+    if [[ "$AUTO" == "true" ]] || ! is_interactive_terminal; then
+        setup_args+=("--auto")
+    fi
+    # --pull: only when explicitly requested
+    if [[ "$PULL" == "true" ]]; then
+        setup_args+=("--pull")
+    fi
+
+    info "Running granite-cli setup..."
+    if [[ ${#setup_args[@]} -gt 0 ]]; then
+        "${bin_path}" setup "${setup_args[@]}" || \
+            warn "granite-cli setup returned an error (this is optional)"
+    else
+        "${bin_path}" setup || \
+            warn "granite-cli setup returned an error (this is optional)"
+    fi
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 main() {
     info "Installing ${BIN_NAME}…"
@@ -578,29 +635,36 @@ main() {
     # If no existing install, the function returns 1 — we continue to install.
     check_existing_install || true
 
+    local installed=false
+
     # --- Attempt 1: prebuilt binary (skip on Termux — glibc binaries incompatible with Bionic) ---
     if ! is_termux; then
         if install_from_release; then
-            echo "Installation complete!"
-            exit 0
+            installed=true
+        else
+            warn "Prebuilt binary not available for ${OS}/${ARCH}."
+            echo ""
         fi
-
-        warn "Prebuilt binary not available for ${OS}/${ARCH}."
-        echo ""
     fi
 
     # --- Attempt 2: cargo install ---
-    if install_from_cargo; then
-        echo "Installation complete!"
-        exit 0
+    if [[ "$installed" != "true" ]] && install_from_cargo; then
+        installed=true
     fi
 
-    warn "cargo install failed or not available."
-    echo ""
+    if [[ "$installed" != "true" ]]; then
+        warn "cargo install failed or not available."
+        echo ""
+    fi
 
     # --- Attempt 3: build from source ---
-    if install_from_source; then
+    if [[ "$installed" != "true" ]] && install_from_source; then
+        installed=true
+    fi
+
+    if [[ "$installed" == "true" ]]; then
         echo "Installation complete!"
+        run_granite_setup
         exit 0
     fi
 
