@@ -28,13 +28,12 @@ pub static PROVIDER_REGISTRY: LazyLock<base::ProviderFactory> = LazyLock::new(||
 /// backing `llama-cpp`, `ollama`, `lm-studio`) coexist. The instance is kept,
 /// so every later ask for that id returns the same object.
 pub struct ProviderSource {
-    /// The configuration this source was built from. Narrows to
-    /// `HashMap<String, ProviderConfig>` once `construct` stops taking the
-    /// whole configuration.
+    /// The configuration this source was built from. Only
+    /// `config.providers` is read; `construct` takes the whole thing.
     config: crate::config::Config,
     /// When a session proxy is running, every provider handed out by `get`
-    /// points at it instead of the real upstream. Read from the
-    /// configuration for now; Sub-Task 5 has the launch pass it in directly.
+    /// points at it instead of the real upstream. Read from
+    /// `Config.model_proxy`, which a launch sets when it starts one.
     model_proxy: Option<crate::proxy::ProxyHandle>,
     /// Providers as configured, carrying their real connection details.
     upstream: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Provider>>>,

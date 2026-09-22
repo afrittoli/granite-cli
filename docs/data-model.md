@@ -2,7 +2,7 @@
 
 granite-cli reads two sets of data. The configuration holds the providers,
 models, capabilities and launchers a user has set up, as one YAML file per
-instance. The compiled-in data ships in the binary: the model catalogue
+instance. The compiled-in data ships in the binary: the model catalog
 generated from `resources/models.yaml`, and the metadata each registered
 implementation type declares. A configured instance names other configured
 instances by id, and names its own implementation type by registry key.

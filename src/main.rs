@@ -859,7 +859,8 @@ async fn run_launch(
     // a process-scoped resource -- e.g. `VisionMCPCapability`'s in-process
     // MCP server -- survives long enough for `on_shutdown` to tear it down
     // after the launched process exits, not before it starts.
-    let mut bound_capabilities: Vec<Box<dyn crate::capabilities::Capability>> = Vec::new();
+    let mut bound_capabilities: Vec<Box<dyn crate::capabilities::ResolvedCapability>> =
+        Vec::new();
     for cap_id in &lc.enabled_capabilities {
         let cap_cfg = config.get_capability(cap_id).ok_or_else(|| {
             anyhow::anyhow!(
@@ -867,7 +868,7 @@ async fn run_launch(
                  which is not configured. Run `granite-cli capability setup` first."
             )
         })?;
-        let mut capability = CAPABILITY_REGISTRY
+        let capability = CAPABILITY_REGISTRY
             .construct(
                 &cap_cfg.capability_type,
                 &cap_cfg.capability_id,
@@ -878,8 +879,10 @@ async fn run_launch(
         // This path builds through the registry rather than through
         // `CapabilitySource`, so it wires the capability to what it names
         // itself. `models` is built from the launch's own configuration, so a
-        // proxied launch resolves proxied providers.
-        capability
+        // proxied launch resolves proxied providers. Resolution returns the
+        // form that binds, so the bind below cannot run against an
+        // unresolved capability.
+        let capability = capability
             .resolve_refs(&crate::models::ModelSource::from_config(&config))
             .map_err(|e| anyhow::anyhow!("Capability '{cap_id}': {e}"))?;
         capability.on_setup().await?;

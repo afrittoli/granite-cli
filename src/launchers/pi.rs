@@ -8,7 +8,7 @@
 //! through from the user's directory -- and points the child process at it with
 //! `PI_CODING_AGENT_DIR`.
 
-use crate::capabilities::{AgentModelBinding, BindingType, Capability, ToolName};
+use crate::capabilities::{AgentModelBinding, BindingType, ResolvedCapability, ToolName};
 use crate::launchers::base::{
     EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command, run_command_captured,
 };
@@ -81,7 +81,7 @@ impl Launcher for PiLauncher {
         self.config.command_path.as_deref().unwrap_or("pi")
     }
 
-    async fn bind_capability(&mut self, capability: &dyn Capability) -> anyhow::Result<()> {
+    async fn bind_capability(&mut self, capability: &dyn ResolvedCapability) -> anyhow::Result<()> {
         let supported = Self::metadata().supported_capabilities;
         let capability_types = capability.binding_types();
         if !capability_types.is_subset(&supported) {

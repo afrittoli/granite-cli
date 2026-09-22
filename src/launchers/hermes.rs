@@ -12,9 +12,7 @@
 //! `$HERMES_HOME`/`~/.hermes` through into its own generated directory and
 //! only ever writes `config.yaml` itself.
 
-use crate::capabilities::{
-    AgentModelBinding, ApiType, Binding, BindingType, Capability, McpBinding,
-};
+use crate::capabilities::{AgentModelBinding, ApiType, Binding, BindingType, McpBinding, ResolvedCapability};
 use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command};
 use crate::launchers::shared::mcp_cli::mcp_binding_request;
 use crate::registry::ConfigConstructable;
@@ -85,7 +83,7 @@ impl Launcher for HermesLauncher {
         self.config.command_path.as_deref().unwrap_or("hermes")
     }
 
-    async fn bind_capability(&mut self, capability: &dyn Capability) -> anyhow::Result<()> {
+    async fn bind_capability(&mut self, capability: &dyn ResolvedCapability) -> anyhow::Result<()> {
         let supported = Self::metadata().supported_capabilities;
         let capability_types = capability.binding_types();
         if !capability_types.is_subset(&supported) {

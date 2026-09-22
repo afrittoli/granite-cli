@@ -34,13 +34,38 @@ macro_rules! declare_sub_agent_basic {
         pub struct $name_struct {
             instance_id: String,
             config: $config_struct,
-            configured_model: Option<$crate::models::ConfiguredModel>,
             /// Description shown to the parent agent for deciding when to delegate.
             pub description: String,
             /// Static prompt for this sub-agent.
             pub prompt: String,
             /// Static tool allow-list for this sub-agent.
             pub tools: Vec<$crate::capabilities::base::ToolName>,
+        }
+
+        $crate::paste::paste! {
+            #[doc = concat!("[`", stringify!($name_struct), "`] with the model its `model_id` names. Built only by `resolve_refs`, so holding one is what says the name resolved and the model meets what this capability's metadata requires of it.")]
+            pub struct [<Resolved $name_struct>] {
+                inner: $name_struct,
+                configured_model: $crate::models::ConfiguredModel,
+            }
+
+            impl $crate::registry::Named for [<Resolved $name_struct>] {
+                fn instance_id(&self) -> &str {
+                    $crate::registry::Named::instance_id(&self.inner)
+                }
+            }
+
+            impl $crate::capabilities::CapabilityInfo for [<Resolved $name_struct>] {
+                fn name(&self) -> &str {
+                    $crate::capabilities::CapabilityInfo::name(&self.inner)
+                }
+                fn description(&self) -> &str {
+                    $crate::capabilities::CapabilityInfo::description(&self.inner)
+                }
+                fn binding_types(&self) -> std::collections::HashSet<$crate::capabilities::base::BindingType> {
+                    $crate::capabilities::CapabilityInfo::binding_types(&self.inner)
+                }
+            }
         }
 
         impl $crate::registry::ConfigConstructable for $name_struct {
@@ -59,7 +84,6 @@ macro_rules! declare_sub_agent_basic {
                 Self {
                     instance_id: instance_id.to_string(),
                     config,
-                    configured_model: None,
                     description,
                     prompt,
                     tools,
@@ -73,8 +97,7 @@ macro_rules! declare_sub_agent_basic {
             }
         }
 
-        #[async_trait::async_trait]
-        impl $crate::capabilities::Capability for $name_struct {
+        impl $crate::capabilities::CapabilityInfo for $name_struct {
             fn name(&self) -> &str {
                 $name_cap
             }
@@ -86,16 +109,30 @@ macro_rules! declare_sub_agent_basic {
             fn binding_types(&self) -> std::collections::HashSet<$crate::capabilities::base::BindingType> {
                 std::collections::HashSet::from([$crate::capabilities::base::BindingType::SubAgent])
             }
+        }
 
-            fn resolve_refs(&mut self, models: &dyn $crate::models::ModelLookup) -> anyhow::Result<()> {
-                self.configured_model = Some($crate::capabilities::base::resolve_declared_model(
+        impl $crate::capabilities::Capability for $name_struct {
+            fn resolve_refs(
+                self: Box<Self>,
+                models: &dyn $crate::models::ModelLookup,
+            ) -> anyhow::Result<Box<dyn $crate::capabilities::ResolvedCapability>> {
+                let configured_model = $crate::capabilities::base::resolve_declared_model(
                     models,
                     &<Self as $crate::capabilities::base::HasCapabilityMetadata>::metadata(),
                     &self.config.model_id,
-                )?);
-                Ok(())
+                )?;
+                $crate::paste::paste! {
+                    Ok(Box::new([<Resolved $name_struct>] {
+                        inner: *self,
+                        configured_model,
+                    }))
+                }
             }
+        }
 
+        $crate::paste::paste! {
+        #[async_trait::async_trait]
+        impl $crate::capabilities::ResolvedCapability for [<Resolved $name_struct>] {
             async fn bind(&self, request: $crate::capabilities::base::BindingRequest) -> anyhow::Result<$crate::capabilities::base::Binding> {
                 let api_type = match request {
                     $crate::capabilities::base::BindingRequest::SubAgent($crate::capabilities::base::SubAgentBindingRequest { api_type }) => api_type,
@@ -105,20 +142,17 @@ macro_rules! declare_sub_agent_basic {
                         other.binding_type()
                     ),
                 };
-                let model_id = &self.config.model_id;
-                let configured_model = $crate::capabilities::base::resolved_model(
-                    &self.configured_model,
-                    &self.instance_id,
-                )?;
+                let model_id = &self.inner.config.model_id;
+                let configured_model = &self.configured_model;
                 let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
                     model_id,
                     api_type.clone(),
                     $crate::models::ModelFunction::Chat,
                 )?;
                 Ok($crate::capabilities::base::Binding::SubAgent($crate::capabilities::base::SubAgentBinding {
-                    description: self.description.clone(),
-                    prompt: self.prompt.clone(),
-                    tools: self.tools.clone(),
+                    description: self.inner.description.clone(),
+                    prompt: self.inner.prompt.clone(),
+                    tools: self.inner.tools.clone(),
                     model: $crate::capabilities::base::AgentModelBinding {
                         api_type,
                         provider_name: provider.instance_id().to_string(),
@@ -133,6 +167,7 @@ macro_rules! declare_sub_agent_basic {
                     known_type: $known_type,
                 }))
             }
+        }
         }
 
         impl $crate::capabilities::base::HasCapabilityMetadata for $name_struct {
@@ -188,13 +223,38 @@ macro_rules! declare_sub_agent_full {
         pub struct $name_struct {
             instance_id: String,
             config: $config_struct,
-            configured_model: Option<$crate::models::ConfiguredModel>,
             /// Description shown to the parent agent for deciding when to delegate.
             pub description: String,
             /// Configurable prompt for this sub-agent.
             pub prompt: String,
             /// Configurable tool allow-list for this sub-agent.
             pub tools: Vec<$crate::capabilities::base::ToolName>,
+        }
+
+        $crate::paste::paste! {
+            #[doc = concat!("[`", stringify!($name_struct), "`] with the model its `model_id` names. Built only by `resolve_refs`, so holding one is what says the name resolved and the model meets what this capability's metadata requires of it.")]
+            pub struct [<Resolved $name_struct>] {
+                inner: $name_struct,
+                configured_model: $crate::models::ConfiguredModel,
+            }
+
+            impl $crate::registry::Named for [<Resolved $name_struct>] {
+                fn instance_id(&self) -> &str {
+                    $crate::registry::Named::instance_id(&self.inner)
+                }
+            }
+
+            impl $crate::capabilities::CapabilityInfo for [<Resolved $name_struct>] {
+                fn name(&self) -> &str {
+                    $crate::capabilities::CapabilityInfo::name(&self.inner)
+                }
+                fn description(&self) -> &str {
+                    $crate::capabilities::CapabilityInfo::description(&self.inner)
+                }
+                fn binding_types(&self) -> std::collections::HashSet<$crate::capabilities::base::BindingType> {
+                    $crate::capabilities::CapabilityInfo::binding_types(&self.inner)
+                }
+            }
         }
 
         impl $crate::registry::ConfigConstructable for $name_struct {
@@ -213,7 +273,6 @@ macro_rules! declare_sub_agent_full {
                 Self {
                     instance_id: instance_id.to_string(),
                     config,
-                    configured_model: None,
                     description,
                     prompt,
                     tools,
@@ -227,8 +286,7 @@ macro_rules! declare_sub_agent_full {
             }
         }
 
-        #[async_trait::async_trait]
-        impl $crate::capabilities::Capability for $name_struct {
+        impl $crate::capabilities::CapabilityInfo for $name_struct {
             fn name(&self) -> &str {
                 $name_cap
             }
@@ -240,16 +298,30 @@ macro_rules! declare_sub_agent_full {
             fn binding_types(&self) -> std::collections::HashSet<$crate::capabilities::base::BindingType> {
                 std::collections::HashSet::from([$crate::capabilities::base::BindingType::SubAgent])
             }
+        }
 
-            fn resolve_refs(&mut self, models: &dyn $crate::models::ModelLookup) -> anyhow::Result<()> {
-                self.configured_model = Some($crate::capabilities::base::resolve_declared_model(
+        impl $crate::capabilities::Capability for $name_struct {
+            fn resolve_refs(
+                self: Box<Self>,
+                models: &dyn $crate::models::ModelLookup,
+            ) -> anyhow::Result<Box<dyn $crate::capabilities::ResolvedCapability>> {
+                let configured_model = $crate::capabilities::base::resolve_declared_model(
                     models,
                     &<Self as $crate::capabilities::base::HasCapabilityMetadata>::metadata(),
                     &self.config.model_id,
-                )?);
-                Ok(())
+                )?;
+                $crate::paste::paste! {
+                    Ok(Box::new([<Resolved $name_struct>] {
+                        inner: *self,
+                        configured_model,
+                    }))
+                }
             }
+        }
 
+        $crate::paste::paste! {
+        #[async_trait::async_trait]
+        impl $crate::capabilities::ResolvedCapability for [<Resolved $name_struct>] {
             async fn bind(&self, request: $crate::capabilities::base::BindingRequest) -> anyhow::Result<$crate::capabilities::base::Binding> {
                 let api_type = match request {
                     $crate::capabilities::base::BindingRequest::SubAgent($crate::capabilities::base::SubAgentBindingRequest { api_type }) => api_type,
@@ -259,20 +331,17 @@ macro_rules! declare_sub_agent_full {
                         other.binding_type()
                     ),
                 };
-                let model_id = &self.config.model_id;
-                let configured_model = $crate::capabilities::base::resolved_model(
-                    &self.configured_model,
-                    &self.instance_id,
-                )?;
+                let model_id = &self.inner.config.model_id;
+                let configured_model = &self.configured_model;
                 let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
                     model_id,
                     api_type.clone(),
                     $crate::models::ModelFunction::Chat,
                 )?;
                 Ok($crate::capabilities::base::Binding::SubAgent($crate::capabilities::base::SubAgentBinding {
-                    description: self.description.clone(),
-                    prompt: self.prompt.clone(),
-                    tools: self.tools.clone(),
+                    description: self.inner.description.clone(),
+                    prompt: self.inner.prompt.clone(),
+                    tools: self.inner.tools.clone(),
                     model: $crate::capabilities::base::AgentModelBinding {
                         api_type,
                         provider_name: provider.instance_id().to_string(),
@@ -287,6 +356,7 @@ macro_rules! declare_sub_agent_full {
                     known_type: $known_type,
                 }))
             }
+        }
         }
 
         impl $crate::capabilities::base::HasCapabilityMetadata for $name_struct {
@@ -337,8 +407,9 @@ declare_sub_agent_full!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::{CapabilityInfo, ResolvedCapability};
     use crate::capabilities::base::{
-        Binding, BindingRequest, BindingType, Capability, Dependency, HasCapabilityMetadata,
+        Binding, BindingRequest, BindingType, Dependency, HasCapabilityMetadata,
         SubAgentBindingRequest, ToolName,
     };
     use crate::config::{Config, ModelConfig, ProviderConfig};
@@ -490,7 +561,7 @@ mod tests {
     fn capability_with_test_model(
         functions: Vec<ModelFunction>,
         provider: FakeProvider,
-    ) -> SubAgentCapability {
+    ) -> ResolvedSubAgentCapability {
         let mut config = Config::default();
         config.providers.insert(
             "ollama".to_string(),
@@ -519,19 +590,15 @@ mod tests {
             }),
             &config,
         );
-        SubAgentCapability {
-            instance_id: cap.instance_id,
-            config: cap.config,
-            configured_model: Some(crate::models::ConfiguredModel::for_test(
+        ResolvedSubAgentCapability {
+            inner: cap,
+            configured_model: crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: functions,
                 }),
                 Arc::new(provider),
                 None,
-            )),
-            description: cap.description,
-            prompt: cap.prompt,
-            tools: cap.tools,
+            ),
         }
     }
 
@@ -570,19 +637,15 @@ mod tests {
             }),
             &config,
         );
-        let cap = SubAgentCapability {
-            instance_id: cap.instance_id,
-            config: cap.config,
-            configured_model: Some(crate::models::ConfiguredModel::for_test(
+        let cap = ResolvedSubAgentCapability {
+            inner: cap,
+            configured_model: crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: vec![ModelFunction::Chat],
                 }),
                 Arc::new(ok_provider()),
                 None,
-            )),
-            description: cap.description,
-            prompt: cap.prompt,
-            tools: cap.tools,
+            ),
         };
 
         let binding = cap.bind(request(ApiType::Anthropic)).await.unwrap();

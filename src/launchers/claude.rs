@@ -8,9 +8,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 // Local
-use crate::capabilities::{
-    Binding, BindingType, Capability, KnownSubAgent, McpBinding, SubAgentBinding, ToolName,
-};
+use crate::capabilities::{Binding, BindingType, KnownSubAgent, McpBinding, ResolvedCapability, SubAgentBinding, ToolName};
 use crate::launchers::base::HasLauncherMetadata as HasClaudeLauncherMetadata;
 use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command};
 use crate::launchers::shared::mcp_cli::{
@@ -90,7 +88,7 @@ impl Launcher for ClaudeLauncher {
         self.config.command_path.as_deref().unwrap_or("claude")
     }
 
-    async fn bind_capability(&mut self, capability: &dyn Capability) -> anyhow::Result<()> {
+    async fn bind_capability(&mut self, capability: &dyn ResolvedCapability) -> anyhow::Result<()> {
         let supported = Self::metadata().supported_capabilities;
         let capability_types = capability.binding_types();
         if !capability_types.is_subset(&supported) {
@@ -990,8 +988,7 @@ mod tests {
         }
     }
 
-    #[async_trait]
-    impl Capability for FakeSubAgentCapability {
+    impl crate::capabilities::CapabilityInfo for FakeSubAgentCapability {
         fn name(&self) -> &str {
             "Fake Sub-Agent"
         }
@@ -1001,6 +998,10 @@ mod tests {
         fn binding_types(&self) -> HashSet<BindingType> {
             HashSet::from([BindingType::SubAgent])
         }
+    }
+
+    #[async_trait]
+    impl crate::capabilities::ResolvedCapability for FakeSubAgentCapability {
         async fn bind(
             &self,
             _request: crate::capabilities::BindingRequest,

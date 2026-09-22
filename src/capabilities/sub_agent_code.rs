@@ -52,8 +52,9 @@ declare_sub_agent_basic!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::{CapabilityInfo, ResolvedCapability};
     use crate::capabilities::base::{
-        Binding, BindingRequest, BindingType, Capability, Dependency, HasCapabilityMetadata,
+        Binding, BindingRequest, BindingType, Dependency, HasCapabilityMetadata,
         SubAgentBindingRequest,
     };
     use crate::config::{Config, ModelConfig, ProviderConfig};
@@ -206,7 +207,7 @@ mod tests {
     fn code_capability_with_test_model(
         functions: Vec<ModelFunction>,
         provider: FakeProvider,
-    ) -> CodeSubAgentCapability {
+    ) -> ResolvedCodeSubAgentCapability {
         let mut config = Config::default();
         config.providers.insert(
             "ollama".to_string(),
@@ -233,19 +234,15 @@ mod tests {
             }),
             &config,
         );
-        CodeSubAgentCapability {
-            instance_id: cap.instance_id,
-            config: cap.config,
-            configured_model: Some(crate::models::ConfiguredModel::for_test(
+        ResolvedCodeSubAgentCapability {
+            inner: cap,
+            configured_model: crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: functions,
                 }),
                 Arc::new(provider),
                 None,
-            )),
-            description: cap.description,
-            prompt: cap.prompt,
-            tools: cap.tools,
+            ),
         }
     }
 
@@ -281,19 +278,15 @@ mod tests {
             }),
             &config,
         );
-        let cap = CodeSubAgentCapability {
-            instance_id: cap.instance_id,
-            config: cap.config,
-            configured_model: Some(crate::models::ConfiguredModel::for_test(
+        let cap = ResolvedCodeSubAgentCapability {
+            inner: cap,
+            configured_model: crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModel {
                     supported_functions: vec![ModelFunction::Chat],
                 }),
                 Arc::new(ok_provider()),
                 None,
-            )),
-            description: cap.description,
-            prompt: cap.prompt,
-            tools: cap.tools,
+            ),
         };
 
         let binding = cap.bind(request(ApiType::Anthropic)).await.unwrap();

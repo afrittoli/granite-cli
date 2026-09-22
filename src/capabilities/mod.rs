@@ -25,13 +25,12 @@ pub static CAPABILITY_REGISTRY: LazyLock<base::CapabilityFactory> = LazyLock::ne
 /// (`capability_id`) rather than its catalog type (`capability_type`). The
 /// instance is kept, so every later ask for that id returns the same object.
 pub struct CapabilitySource {
-    /// The configuration this source was built from. Narrows to
-    /// `HashMap<String, CapabilityConfig>` once `construct` stops taking the
-    /// whole configuration.
+    /// The configuration this source was built from. Only
+    /// `config.capabilities` is read; `construct` takes the whole thing.
     config: crate::config::Config,
     /// The collection a capability's model name is resolved against.
     models: std::sync::Arc<crate::models::ModelSource>,
-    cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Capability>>>,
+    cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn ResolvedCapability>>>,
 }
 
 impl CapabilitySource {
@@ -47,7 +46,10 @@ impl CapabilitySource {
     /// ask and returned from the cache on every one after it. Errors when no
     /// entry is configured under that id, when its `capability_type` is not
     /// in the registry, or when the names it holds do not resolve.
-    pub fn get(&self, capability_id: &str) -> anyhow::Result<std::sync::Arc<dyn Capability>> {
+    pub fn get(
+        &self,
+        capability_id: &str,
+    ) -> anyhow::Result<std::sync::Arc<dyn ResolvedCapability>> {
         if let Some(built) = self.cache.lock().unwrap().get(capability_id) {
             return Ok(built.clone());
         }
@@ -57,7 +59,7 @@ impl CapabilitySource {
             .get(capability_id)
             .ok_or_else(|| anyhow::anyhow!("capability '{capability_id}' is not configured"))?;
 
-        let mut built = CAPABILITY_REGISTRY
+        let built = CAPABILITY_REGISTRY
             .construct(
                 &capability_config.capability_type,
                 &capability_config.capability_id,
@@ -72,11 +74,11 @@ impl CapabilitySource {
         // unsuitable model is reported. Spec 0024 gated this with a
         // `validate_ref` walk before constructing, because construction could
         // not report a failure; `resolve_refs` can, with the same outcome.
-        built
+        let built = built
             .resolve_refs(&*self.models)
             .map_err(|e| anyhow::anyhow!("Skipping capability '{capability_id}': {e}"))?;
 
-        let built: std::sync::Arc<dyn Capability> = std::sync::Arc::from(built);
+        let built: std::sync::Arc<dyn ResolvedCapability> = std::sync::Arc::from(built);
         // Built outside the lock, so two callers can reach here for one id.
         // `or_insert` keeps whichever landed first and drops the other, so
         // the id has one instance however the calls interleave.
@@ -90,8 +92,8 @@ impl CapabilitySource {
     }
 }
 
-impl crate::dependency::Configured<dyn Capability> for CapabilitySource {
-    fn instances(&self) -> Vec<(String, std::sync::Arc<dyn Capability + 'static>)> {
+impl crate::dependency::Configured<dyn ResolvedCapability> for CapabilitySource {
+    fn instances(&self) -> Vec<(String, std::sync::Arc<dyn ResolvedCapability + 'static>)> {
         self.config
             .capabilities
             .keys()
@@ -120,8 +122,9 @@ mod base;
 pub use crate::providers::ApiType;
 pub use base::{
     AgentModelBinding, AgentModelBindingRequest, Binding, BindingRequest, BindingType, Capability,
-    CapabilityMetadata, Dependency, EnvBinding, KnownSubAgent, LaunchContext, McpBinding,
-    McpBindingRequest, McpTransportKind, SubAgentBinding, SubAgentBindingRequest, ToolName,
+    CapabilityInfo, CapabilityMetadata, Dependency, EnvBinding, KnownSubAgent, LaunchContext,
+    McpBinding, McpBindingRequest, McpTransportKind, ResolvedCapability, SubAgentBinding,
+    SubAgentBindingRequest, ToolName,
 };
 
 mod requirement;
@@ -235,7 +238,7 @@ mod tests {
                 "description": "a probe",
                 "prompt": "a probe",
             });
-            let mut capability = CAPABILITY_REGISTRY
+            let capability = CAPABILITY_REGISTRY
                 .construct(type_name, "an-instance", &cfg, &Config::default())
                 .unwrap_or_else(|e| panic!("{type_name} must construct from its own config: {e}"));
 

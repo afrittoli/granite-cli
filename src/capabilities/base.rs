@@ -288,27 +288,43 @@ impl McpBinding {
 
 /*-- Capability Trait ----------------------------------------------------------*/
 
-/// Core trait for capability implementations.
-/// All capabilities must implement this trait along with ConfigConstructable.
-#[async_trait]
-pub trait Capability: crate::registry::Named + Send + Sync {
+/// What a capability reports about itself whether or not the names it holds
+/// have been resolved. Shared by [`Capability`] and [`ResolvedCapability`] so
+/// a list of configured capabilities reads the same either side of
+/// resolution.
+pub trait CapabilityInfo: crate::registry::Named + Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
 
     /// Which binding surfaces this capability instance can fill.
     fn binding_types(&self) -> HashSet<BindingType>;
+}
 
-    /// Turn the names this capability holds into the objects they refer to.
-    /// Called once after construction, before any bind. A capability that
-    /// names nothing keeps the default.
+/// A capability as constructed: it holds the names its configuration gave it
+/// and none of the objects they refer to. Resolving those names is the only
+/// thing it can do.
+///
+/// All capabilities must implement this trait along with ConfigConstructable.
+pub trait Capability: CapabilityInfo {
+    /// Turn the names this capability holds into the objects they refer to,
+    /// consuming the unresolved capability and returning the form that binds.
+    /// A capability that names nothing returns itself.
     ///
     /// Returning `Err` is how a capability reports that its configuration
     /// points at something missing or unsuitable, which construction cannot
     /// do: `ConfigConstructable::new` returns the object, not a result.
-    fn resolve_refs(&mut self, _models: &dyn crate::models::ModelLookup) -> anyhow::Result<()> {
-        Ok(())
-    }
+    fn resolve_refs(
+        self: Box<Self>,
+        models: &dyn crate::models::ModelLookup,
+    ) -> anyhow::Result<Box<dyn ResolvedCapability>>;
+}
 
+/// A capability whose names have been resolved. Binding and the launch hooks
+/// are declared here rather than on [`Capability`], so a caller holding an
+/// unresolved capability cannot reach them: the only way to obtain one of
+/// these is [`Capability::resolve_refs`], which returns it only on success.
+#[async_trait]
+pub trait ResolvedCapability: CapabilityInfo {
     /// Resolve a `BindingRequest` into a concrete `Binding`.
     async fn bind(&self, request: BindingRequest) -> anyhow::Result<Binding>;
 
@@ -328,6 +344,10 @@ pub trait Capability: crate::registry::Named + Send + Sync {
     fn runtime_bindings(&self) -> Vec<EnvBinding> {
         vec![]
     }
+}
+
+impl crate::dependency::Catalogued for dyn ResolvedCapability {
+    type Metadata = CapabilityMetadata;
 }
 
 /*-- Metadata Types ----------------------------------------------------------*/
@@ -370,18 +390,6 @@ pub fn resolve_declared_model(
             _ => None,
         });
     models.resolve(model_id, requirement)
-}
-
-/// The model `resolve_refs` stored, for a `bind` that needs it.
-pub fn resolved_model<'a>(
-    configured_model: &'a Option<crate::models::ConfiguredModel>,
-    capability_id: &str,
-) -> anyhow::Result<&'a crate::models::ConfiguredModel> {
-    configured_model.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "capability '{capability_id}' was bound before its references were resolved"
-        )
-    })
 }
 
 /*-- Supporting Types --------------------------------------------------------*/

@@ -28,9 +28,8 @@ pub static MODEL_REGISTRY: LazyLock<base::ModelFactory> = LazyLock::new(|| {
 /// more than once. The instance is kept, so every later ask for that id
 /// returns the same object.
 pub struct ModelSource {
-    /// The configuration this source was built from. Narrows to
-    /// `HashMap<String, ModelConfig>` once `construct` stops taking the whole
-    /// configuration.
+    /// The configuration this source was built from. Only `config.models`
+    /// is read; `construct` takes the whole thing.
     config: crate::config::Config,
     providers: Arc<crate::providers::ProviderSource>,
     cache: std::sync::Mutex<HashMap<String, Arc<dyn Model>>>,
@@ -135,14 +134,6 @@ impl ModelSource {
             .clone())
     }
 
-    /// Instance ids built so far, sorted. Lets a test tell what a call
-    /// built from what it merely could have built.
-    #[cfg(test)]
-    pub(crate) fn cached_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.cache.lock().unwrap().keys().cloned().collect();
-        ids.sort();
-        ids
-    }
 }
 
 impl base::ModelLookup for ModelSource {
@@ -257,6 +248,16 @@ pub mod huggingface;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Instance ids built so far, sorted. Lets a test tell what a call built
+    /// from what it merely could have built, read straight off the cache: a
+    /// child module sees its parent's private fields, so this needs no
+    /// test-only accessor on `ModelSource` itself.
+    fn cached_ids(source: &ModelSource) -> Vec<String> {
+        let mut ids: Vec<String> = source.cache.lock().unwrap().keys().cloned().collect();
+        ids.sort();
+        ids
+    }
 
     #[test]
     fn model_source_constructs_one_instance_per_configured_model() {
@@ -488,10 +489,10 @@ mod tests {
         }
 
         let source = ModelSource::from_config(&config);
-        assert!(source.cached_ids().is_empty(), "nothing is built up front");
+        assert!(cached_ids(&source).is_empty(), "nothing is built up front");
         source.get("granite-3.1-8b-instruct").unwrap();
         assert_eq!(
-            source.cached_ids(),
+            cached_ids(&source),
             vec!["granite-3.1-8b-instruct".to_string()],
             "asking for one model must not drag in the other"
         );
@@ -523,7 +524,7 @@ mod tests {
         // The healthy model is reachable on its own, without the broken one
         // being touched at all.
         assert!(source.get("granite-3.1-8b-instruct").is_ok());
-        assert_eq!(source.cached_ids(), vec!["granite-3.1-8b-instruct"]);
+        assert_eq!(cached_ids(&source), vec!["granite-3.1-8b-instruct"]);
 
         let ids: Vec<String> = source.instances().into_iter().map(|(id, _)| id).collect();
         assert_eq!(ids, vec!["granite-3.1-8b-instruct".to_string()]);

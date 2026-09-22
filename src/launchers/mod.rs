@@ -30,9 +30,8 @@ pub static LAUNCHER_REGISTRY: LazyLock<base::LauncherFactory> = LazyLock::new(||
 /// and `claude-enterprise` both backed by `claude`). The instance is kept, so
 /// every later ask for that id returns the same object.
 pub struct LauncherSource {
-    /// The configuration this source was built from. Narrows to
-    /// `HashMap<String, LauncherConfig>` once `construct` stops taking the
-    /// whole configuration.
+    /// The configuration this source was built from. Only
+    /// `config.launchers` is read; `construct` takes the whole thing.
     config: crate::config::Config,
     cache: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Launcher>>>,
 }

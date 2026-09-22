@@ -1,5 +1,4 @@
 // Third Party
-use alog::use_channel;
 use serde::{Deserialize, Serialize};
 
 // Local
@@ -8,8 +7,6 @@ use crate::models::base::{
     ModelVariant,
 };
 use crate::registry::{ConfigConstructable, Named};
-
-use_channel!("MODEL");
 
 /*-- CustomModelConfig ---------------------------------------------------------*/
 
