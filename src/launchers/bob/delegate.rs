@@ -25,7 +25,9 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 
 // Local
-use crate::capabilities::{Binding, BindingRequest, BindingType, ResolvedCapability, SubAgentBinding};
+use crate::capabilities::{
+    Binding, BindingRequest, BindingType, ResolvedCapability, SubAgentBinding,
+};
 use crate::launchers::base::{LaunchContext, Launcher};
 use crate::launchers::pi::PiLauncher;
 use crate::registry::ConfigConstructable;

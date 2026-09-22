@@ -9,7 +9,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 // Local
-use crate::capabilities::{ApiType, Binding, BindingRequest, BindingType, McpBinding, ResolvedCapability, SubAgentBinding, SubAgentBindingRequest};
+use crate::capabilities::{
+    ApiType, Binding, BindingRequest, BindingType, McpBinding, ResolvedCapability, SubAgentBinding,
+    SubAgentBindingRequest,
+};
 use crate::launchers::base::HasLauncherMetadata as HasBobLauncherMetadata;
 use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command};
 use crate::launchers::shared::mcp_cli::{

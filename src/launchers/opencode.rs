@@ -21,7 +21,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 // Local
-use crate::capabilities::{AgentModelBinding, Binding, BindingType, KnownSubAgent, McpBinding, ResolvedCapability, SubAgentBinding, ToolName};
+use crate::capabilities::{
+    AgentModelBinding, Binding, BindingType, KnownSubAgent, McpBinding, ResolvedCapability,
+    SubAgentBinding, ToolName,
+};
 use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command};
 use crate::launchers::shared::mcp_cli::mcp_binding_request;
 use crate::providers::ApiType;

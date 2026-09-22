@@ -133,7 +133,6 @@ impl ModelSource {
             .or_insert(built)
             .clone())
     }
-
 }
 
 impl base::ModelLookup for ModelSource {

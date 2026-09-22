@@ -407,11 +407,11 @@ declare_sub_agent_full!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::{CapabilityInfo, ResolvedCapability};
     use crate::capabilities::base::{
         Binding, BindingRequest, BindingType, Dependency, HasCapabilityMetadata,
         SubAgentBindingRequest, ToolName,
     };
+    use crate::capabilities::{CapabilityInfo, ResolvedCapability};
     use crate::config::{Config, ModelConfig, ProviderConfig};
     use crate::models::{Model, ModelFunction};
     use crate::providers::{

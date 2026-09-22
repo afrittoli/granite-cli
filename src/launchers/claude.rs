@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 // Local
-use crate::capabilities::{Binding, BindingType, KnownSubAgent, McpBinding, ResolvedCapability, SubAgentBinding, ToolName};
+use crate::capabilities::{
+    Binding, BindingType, KnownSubAgent, McpBinding, ResolvedCapability, SubAgentBinding, ToolName,
+};
 use crate::launchers::base::HasLauncherMetadata as HasClaudeLauncherMetadata;
 use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command};
 use crate::launchers::shared::mcp_cli::{

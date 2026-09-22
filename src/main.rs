@@ -859,8 +859,7 @@ async fn run_launch(
     // a process-scoped resource -- e.g. `VisionMCPCapability`'s in-process
     // MCP server -- survives long enough for `on_shutdown` to tear it down
     // after the launched process exits, not before it starts.
-    let mut bound_capabilities: Vec<Box<dyn crate::capabilities::ResolvedCapability>> =
-        Vec::new();
+    let mut bound_capabilities: Vec<Box<dyn crate::capabilities::ResolvedCapability>> = Vec::new();
     for cap_id in &lc.enabled_capabilities {
         let cap_cfg = config.get_capability(cap_id).ok_or_else(|| {
             anyhow::anyhow!(

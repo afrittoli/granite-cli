@@ -397,7 +397,6 @@ mod tests {
         }
     }
 
-
     #[tokio::test]
     async fn bind_succeeds_for_matching_provider_and_model() {
         let cap = capability_with_test_model(
