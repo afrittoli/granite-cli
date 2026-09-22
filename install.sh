@@ -100,15 +100,10 @@ for arg in "$@"; do
         --no-setup) RUN_SETUP=false ;;
         --auto)     AUTO=true ;;
         --pull)     PULL=true ;;
+        --ci)       CI=1 ;;
         *)          error "Unknown option: $arg"; exit 1 ;;
     esac
 done
-
-# ── terminal detection ───────────────────────────────────────────────────────
-is_interactive_terminal() {
-    # Returns 0 (true) when stdin is connected to a terminal (TTY).
-    [ -t 0 ]
-}
 
 # ── termux detection ─────────────────────────────────────────────────────────
 is_termux() {
@@ -622,8 +617,8 @@ run_granite_setup() {
 
     # Build argument list for granite-cli setup
     local -a setup_args=()
-    # --auto: when --auto flag is given, or when running non-interactively
-    if [[ "$AUTO" == "true" ]] || ! is_interactive_terminal; then
+    # --auto: when --auto flag is given, or when CI mode is active
+    if [[ "$AUTO" == "true" ]] || is_ci; then
         setup_args+=("--auto")
     fi
     # --pull: only when explicitly requested
