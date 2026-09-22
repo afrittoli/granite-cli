@@ -21,48 +21,110 @@ pub static PROVIDER_REGISTRY: LazyLock<base::ProviderFactory> = LazyLock::new(||
 
 /*-- ProviderSource -----------------------------------------------------------*/
 
-/// The real `Configured<dyn Provider>`: eagerly constructs a live provider
-/// instance for every enabled `ProviderConfig`, keyed by its instance
-/// nickname (`provider_id`) rather than its catalog type (`provider_type`) --
-/// this is what lets multiple named instances of one catalog type (e.g.
-/// `openai-compatible` backing `llama-cpp`, `ollama`, `lm-studio`) coexist.
+/// The real `Configured<dyn Provider>`: builds a live provider instance the
+/// first time one is asked for by its instance nickname (`provider_id`)
+/// rather than its catalog type (`provider_type`) -- this is what lets
+/// multiple named instances of one catalog type (e.g. `openai-compatible`
+/// backing `llama-cpp`, `ollama`, `lm-studio`) coexist. The instance is kept,
+/// so every later ask for that id returns the same object.
 pub struct ProviderSource {
-    constructed: Vec<(String, Box<dyn Provider>)>,
+    /// The configuration this source was built from. Only
+    /// `config.providers` is read; `construct` takes the whole thing.
+    config: crate::config::Config,
+    /// When a session proxy is running, every provider handed out by `get`
+    /// points at it instead of the real upstream. Read from
+    /// `Config.model_proxy`, which a launch sets when it starts one.
+    model_proxy: Option<crate::proxy::ProxyHandle>,
+    /// Providers as configured, carrying their real connection details.
+    upstream: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Provider>>>,
+    /// The same providers pointed at the session proxy, built only while one
+    /// is running. Two views of one instance, so a launch can read a route's
+    /// upstream target without a second source holding a second copy of
+    /// every provider.
+    proxied: std::sync::Mutex<HashMap<String, std::sync::Arc<dyn Provider>>>,
 }
 
 impl ProviderSource {
     pub fn from_config(config: &crate::config::Config) -> Self {
-        let constructed = config
+        Self {
+            config: config.clone(),
+            model_proxy: config.model_proxy.clone(),
+            upstream: std::sync::Mutex::new(HashMap::new()),
+            proxied: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The provider configured under `provider_id`, pointed at the session
+    /// proxy when one is running, built on the first ask and returned from
+    /// the cache on every one after it. Errors when no entry is configured
+    /// under that id, or when its `provider_type` is not in the registry.
+    pub fn get(&self, provider_id: &str) -> anyhow::Result<std::sync::Arc<dyn Provider>> {
+        let upstream = self.upstream(provider_id)?;
+        let Some(handle) = &self.model_proxy else {
+            return Ok(upstream);
+        };
+        if let Some(built) = self.proxied.lock().unwrap().get(provider_id) {
+            return Ok(built.clone());
+        }
+        let wrapped: std::sync::Arc<dyn Provider> = std::sync::Arc::new(
+            crate::proxy::ProxiedProvider::wrap(upstream, handle.local_base_url.clone()),
+        );
+        Ok(self
+            .proxied
+            .lock()
+            .unwrap()
+            .entry(provider_id.to_string())
+            .or_insert(wrapped)
+            .clone())
+    }
+
+    /// The provider configured under `provider_id` carrying its real
+    /// connection details, whether or not a session proxy is running. The
+    /// launch reads a route's upstream target from here, since a provider
+    /// handed out by `get` reports the proxy's own address.
+    pub fn upstream(&self, provider_id: &str) -> anyhow::Result<std::sync::Arc<dyn Provider>> {
+        if let Some(built) = self.upstream.lock().unwrap().get(provider_id) {
+            return Ok(built.clone());
+        }
+        let provider_config = self
+            .config
             .providers
-            .values()
-            .filter_map(|provider_config| {
-                let result = PROVIDER_REGISTRY.construct(
-                    &provider_config.provider_type,
-                    &provider_config.provider_id,
-                    &provider_config.config,
-                    config,
-                );
-                if result.is_err() {
-                    alog_channel!(
-                        MessageLevel::Warning,
-                        "Could not construct provider '{}'",
-                        provider_config.provider_type
-                    );
-                }
-                result
-                    .ok()
-                    .map(|provider| (provider_config.provider_id.clone(), provider))
-            })
-            .collect();
-        Self { constructed }
+            .get(provider_id)
+            .ok_or_else(|| anyhow::anyhow!("provider '{provider_id}' is not configured"))?;
+        let built = PROVIDER_REGISTRY
+            .construct(
+                &provider_config.provider_type,
+                &provider_config.provider_id,
+                &provider_config.config,
+                &self.config,
+            )
+            .map_err(|e| anyhow::anyhow!("could not construct provider '{provider_id}': {e}"))?;
+        let built: std::sync::Arc<dyn Provider> = std::sync::Arc::from(built);
+        // Built outside the lock, so two callers can reach here for one id.
+        // `or_insert` keeps whichever landed first and drops the other, so
+        // the id has one instance however the calls interleave.
+        Ok(self
+            .upstream
+            .lock()
+            .unwrap()
+            .entry(provider_id.to_string())
+            .or_insert(built)
+            .clone())
     }
 }
 
 impl crate::dependency::Configured<dyn Provider> for ProviderSource {
-    fn instances(&self) -> Vec<(String, &(dyn Provider + 'static))> {
-        self.constructed
-            .iter()
-            .map(|(id, provider)| (id.clone(), provider.as_ref()))
+    fn instances(&self) -> Vec<(String, std::sync::Arc<dyn Provider + 'static>)> {
+        self.config
+            .providers
+            .keys()
+            .filter_map(|id| match self.get(id) {
+                Ok(provider) => Some((id.clone(), provider)),
+                Err(e) => {
+                    alog_channel!(MessageLevel::Warning, "{e}");
+                    None
+                }
+            })
             .collect()
     }
 

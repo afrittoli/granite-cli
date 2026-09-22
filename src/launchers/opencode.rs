@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 // Local
 use crate::capabilities::{
-    AgentModelBinding, Binding, BindingType, Capability, KnownSubAgent, McpBinding,
+    AgentModelBinding, Binding, BindingType, KnownSubAgent, McpBinding, ResolvedCapability,
     SubAgentBinding, ToolName,
 };
 use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command};
@@ -114,7 +114,7 @@ impl Launcher for OpenCodeLauncher {
         self.config.command_path.as_deref().unwrap_or("opencode")
     }
 
-    async fn bind_capability(&mut self, capability: &dyn Capability) -> anyhow::Result<()> {
+    async fn bind_capability(&mut self, capability: &dyn ResolvedCapability) -> anyhow::Result<()> {
         let supported = Self::metadata().supported_capabilities;
         let capability_types = capability.binding_types();
         if !capability_types.is_subset(&supported) {
@@ -1779,8 +1779,7 @@ mod tests {
         }
     }
 
-    #[async_trait]
-    impl Capability for FakeSubAgentCapability {
+    impl crate::capabilities::CapabilityInfo for FakeSubAgentCapability {
         fn name(&self) -> &str {
             "Fake Sub-Agent"
         }
@@ -1790,6 +1789,10 @@ mod tests {
         fn binding_types(&self) -> HashSet<BindingType> {
             HashSet::from([BindingType::SubAgent])
         }
+    }
+
+    #[async_trait]
+    impl crate::capabilities::ResolvedCapability for FakeSubAgentCapability {
         async fn bind(
             &self,
             _request: crate::capabilities::BindingRequest,

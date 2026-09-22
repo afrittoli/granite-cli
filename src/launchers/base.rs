@@ -36,7 +36,7 @@ pub trait Launcher: crate::registry::Named + Send + Sync {
     /// resolved `Binding` for use in `env_overlay` / `launch`.
     async fn bind_capability(
         &mut self,
-        capability: &dyn crate::capabilities::Capability,
+        capability: &dyn crate::capabilities::ResolvedCapability,
     ) -> anyhow::Result<()>;
 
     /// Resolve the binary to an absolute path.
@@ -476,7 +476,7 @@ pub(crate) mod tests {
 
         async fn bind_capability(
             &mut self,
-            _capability: &dyn crate::capabilities::Capability,
+            _capability: &dyn crate::capabilities::ResolvedCapability,
         ) -> anyhow::Result<()> {
             anyhow::bail!("Capability binding not supported");
         }

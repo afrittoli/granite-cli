@@ -28,33 +28,32 @@ pub struct AgentModelCapabilityConfig {
 pub struct AgentModelCapability {
     instance_id: String,
     config: AgentModelCapabilityConfig,
+}
+
+/// [`AgentModelCapability`] with the model its `model_id` names. Built only
+/// by `resolve_refs`, so holding one is what says the name resolved and the
+/// model meets what this capability's metadata requires of it.
+pub struct ResolvedAgentModelCapability {
+    inner: AgentModelCapability,
     configured_model: ConfiguredModel,
 }
 
 impl ConfigConstructable for AgentModelCapability {
     type Config = AgentModelCapabilityConfig;
 
-    /// Constructs the capability by resolving its model through
-    /// `ConfiguredModel`, which handles provider resolution (so
-    /// `model.provider()` works at bind time) and, when a usage-tracking
-    /// session is active, transparently wraps the model in a local tracking
-    /// proxy.
-    ///
-    /// `cfg` contains the capability's instance config (e.g. `{"model_id": "my-model"}`)
-    /// where `model_id` is the key into `global_config.models`. The resolved
-    /// `ModelConfig` supplies the catalog model ID and the provider ID.
+    /// Builds the capability from its own config alone. `cfg` holds the
+    /// capability's instance config (e.g. `{"model_id": "my-model"}`), where
+    /// `model_id` is a name resolved later by `resolve_refs`.
     fn new(
         instance_id: &str,
         cfg: &serde_json::Value,
-        global_config: &crate::config::Config,
+        _global_config: &crate::config::Config,
     ) -> Self {
         let config: AgentModelCapabilityConfig =
             serde_json::from_value(cfg.clone()).unwrap_or_default();
-        let configured_model = ConfiguredModel::resolve(&config.model_id, global_config);
         Self {
             instance_id: instance_id.to_string(),
             config,
-            configured_model,
         }
     }
 }
@@ -65,14 +64,19 @@ impl crate::registry::Named for AgentModelCapability {
     }
 }
 
+impl crate::registry::Named for ResolvedAgentModelCapability {
+    fn instance_id(&self) -> &str {
+        self.inner.instance_id()
+    }
+}
+
 impl AgentModelCapability {
     pub fn configured_model_id(&self) -> &str {
         &self.config.model_id
     }
 }
 
-#[async_trait]
-impl Capability for AgentModelCapability {
+impl crate::capabilities::CapabilityInfo for AgentModelCapability {
     fn name(&self) -> &str {
         "Agent Model Binding"
     }
@@ -84,7 +88,41 @@ impl Capability for AgentModelCapability {
     fn binding_types(&self) -> HashSet<BindingType> {
         HashSet::from([BindingType::AgentModel])
     }
+}
 
+impl crate::capabilities::CapabilityInfo for ResolvedAgentModelCapability {
+    fn name(&self) -> &str {
+        crate::capabilities::CapabilityInfo::name(&self.inner)
+    }
+
+    fn description(&self) -> &str {
+        crate::capabilities::CapabilityInfo::description(&self.inner)
+    }
+
+    fn binding_types(&self) -> HashSet<BindingType> {
+        crate::capabilities::CapabilityInfo::binding_types(&self.inner)
+    }
+}
+
+impl Capability for AgentModelCapability {
+    fn resolve_refs(
+        self: Box<Self>,
+        models: &dyn crate::models::ModelLookup,
+    ) -> anyhow::Result<Box<dyn crate::capabilities::ResolvedCapability>> {
+        let configured_model = crate::capabilities::base::resolve_declared_model(
+            models,
+            &Self::metadata(),
+            &self.config.model_id,
+        )?;
+        Ok(Box::new(ResolvedAgentModelCapability {
+            inner: *self,
+            configured_model,
+        }))
+    }
+}
+
+#[async_trait]
+impl crate::capabilities::ResolvedCapability for ResolvedAgentModelCapability {
     async fn bind(&self, request: BindingRequest) -> anyhow::Result<Binding> {
         let api_type = match request {
             BindingRequest::AgentModel(AgentModelBindingRequest { api_type }) => api_type,
@@ -94,12 +132,12 @@ impl Capability for AgentModelCapability {
                 other.binding_type()
             ),
         };
-        let model_id = &self.config.model_id;
+        let model_id = &self.inner.config.model_id;
+        let configured_model = &self.configured_model;
 
-        let (provider, endpoint, model_name) = self.configured_model.resolve_provider_endpoint(
+        let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
             model_id,
             api_type.clone(),
-            ModelFunction::Chat,
             ModelFunction::Chat,
         )?;
 
@@ -111,7 +149,7 @@ impl Capability for AgentModelCapability {
             endpoint_path: endpoint.path().to_string(),
             api_key: provider.api_key().cloned(),
             verify_ssl: provider.verify_ssl(),
-            context_length: Some(self.configured_model.model.context_length()),
+            context_length: Some(configured_model.model.context_length()),
             custom_headers: provider.custom_headers(),
         }))
     }
@@ -142,7 +180,8 @@ impl HasCapabilityMetadata for AgentModelCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ModelConfig};
+    use crate::capabilities::{CapabilityInfo, ResolvedCapability};
+    use crate::config::{Config, ModelConfig, ProviderConfig};
     use crate::models::Model;
     use crate::providers::{
         ApiEndpoint, ApiType, HealthStatus, ModelFormat, Provider, ProviderError,
@@ -242,7 +281,7 @@ mod tests {
     fn capability_with_test_model(
         functions: Vec<ModelFunction>,
         provider: FakeProvider,
-    ) -> AgentModelCapability {
+    ) -> ResolvedAgentModelCapability {
         capability_with_test_model_and_variant(functions, provider, None)
     }
 
@@ -253,11 +292,19 @@ mod tests {
         functions: Vec<ModelFunction>,
         provider: FakeProvider,
         configured_variant: Option<(&str, Vec<crate::models::ModelVariant>)>,
-    ) -> AgentModelCapability {
+    ) -> ResolvedAgentModelCapability {
         let (variant_str, variants) = configured_variant
             .map(|(s, v)| (Some(s.to_string()), v))
             .unwrap_or((None, vec![]));
         let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
         config.models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {
@@ -275,15 +322,14 @@ mod tests {
         );
         // Replace the real model with our test double that has a custom provider
         // and the specified variants list.
-        AgentModelCapability {
-            instance_id: cap.instance_id,
-            config: cap.config,
+        ResolvedAgentModelCapability {
+            inner: cap,
             configured_model: crate::models::ConfiguredModel::for_test(
                 Arc::new(TestModelWithVariants {
                     supported_functions: functions,
-                    provider,
                     variants,
                 }),
+                std::sync::Arc::new(provider),
                 variant_str,
             ),
         }
@@ -292,7 +338,6 @@ mod tests {
     /// Extended test model that carries a mutable variants list.
     struct TestModelWithVariants {
         supported_functions: Vec<ModelFunction>,
-        provider: FakeProvider,
         variants: Vec<crate::models::ModelVariant>,
     }
 
@@ -349,9 +394,6 @@ mod tests {
         }
         fn supported_functions(&self) -> &[ModelFunction] {
             &self.supported_functions
-        }
-        fn provider(&self) -> anyhow::Result<Box<dyn Provider>> {
-            Ok(Box::new(self.provider.clone()))
         }
     }
 
@@ -428,26 +470,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bind_fails_when_model_lacks_function() {
-        let cap = capability_with_test_model(
-            vec![ModelFunction::Embeddings],
-            ok_provider(
-                vec![ApiType::OpenAI],
-                ModelFunction::Chat,
-                ApiEndpoint::OpenAIChat,
-            ),
-        );
-
-        let err = cap
-            .bind(BindingRequest::AgentModel(AgentModelBindingRequest {
-                api_type: ApiType::OpenAI,
-            }))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("does not support"));
-    }
-
-    #[tokio::test]
     async fn bind_fails_when_no_matching_endpoint() {
         let cap = capability_with_test_model(
             vec![ModelFunction::Chat],
@@ -470,6 +492,14 @@ mod tests {
     #[test]
     fn binding_types_reports_agent_model() {
         let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
         config.models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {

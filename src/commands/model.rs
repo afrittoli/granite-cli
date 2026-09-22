@@ -166,7 +166,7 @@ impl ModelCommands {
     pub(crate) fn recommend_rows(
         filter_type: Option<&ModelType>,
         filter_providers: Option<&[&dyn Provider]>,
-        display_providers: &[(String, &dyn Provider)],
+        display_providers: &[(String, std::sync::Arc<dyn Provider>)],
         wide: bool,
         ui: &dyn crate::utils::ui::base::Ui,
         profile: &HardwareProfile,
@@ -290,7 +290,7 @@ impl ModelCommands {
         let providers: Option<Vec<&dyn Provider>> = if skip_all {
             None
         } else if providers_arg.is_empty() {
-            Some(instances.iter().map(|(_, p)| *p).collect())
+            Some(instances.iter().map(|(_, p)| &**p).collect())
         } else {
             let unknown: Vec<&str> = providers_arg
                 .iter()
@@ -317,7 +317,7 @@ impl ModelCommands {
                 instances
                     .iter()
                     .filter(|(iid, _)| providers_arg.contains(iid))
-                    .map(|(_, p)| *p)
+                    .map(|(_, p)| &**p)
                     .collect(),
             )
         };
@@ -754,7 +754,7 @@ impl ModelCommands {
                         .instances()
                         .into_iter()
                         .find(|(id, _)| id == &instance_id)
-                        .map(|(_, m)| m.provider())
+                        .map(|(id, _)| source.provider_for(&id))
                     {
                         Some(Ok(provider)) => {
                             ensure_model_pulled(
@@ -825,7 +825,7 @@ impl ModelCommands {
                 )
             })?;
 
-        let provider = model.provider().map_err(|e| {
+        let provider = source.provider_for(model_id).map_err(|e| {
             anyhow::anyhow!(
                 "Provider '{provider_id}' is not configured or enabled. Run `provider setup` first: {e}"
             )
@@ -1515,7 +1515,7 @@ mod tests {
         ));
         let source = ProviderSource::from_config(&ctx.config);
         let instances = source.instances();
-        let providers: Vec<&dyn Provider> = instances.iter().map(|(_, p)| *p).collect();
+        let providers: Vec<&dyn Provider> = instances.iter().map(|(_, p)| p.as_ref()).collect();
         let rows = ModelCommands::recommend_rows(
             None,
             Some(&providers),

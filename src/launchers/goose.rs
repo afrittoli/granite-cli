@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 // Local
 use crate::capabilities::{
-    AgentModelBinding, ApiType, Binding, BindingType, Capability, McpBinding,
+    AgentModelBinding, ApiType, Binding, BindingType, McpBinding, ResolvedCapability,
 };
 use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command};
 use crate::launchers::shared::mcp_cli::mcp_binding_request;
@@ -81,7 +81,7 @@ impl Launcher for GooseLauncher {
         self.config.command_path.as_deref().unwrap_or("goose")
     }
 
-    async fn bind_capability(&mut self, capability: &dyn Capability) -> anyhow::Result<()> {
+    async fn bind_capability(&mut self, capability: &dyn ResolvedCapability) -> anyhow::Result<()> {
         let supported = Self::metadata().supported_capabilities;
         let capability_types = capability.binding_types();
         if !capability_types.is_subset(&supported) {

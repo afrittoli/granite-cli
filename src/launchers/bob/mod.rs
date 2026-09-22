@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 // Local
 use crate::capabilities::{
-    ApiType, Binding, BindingRequest, BindingType, Capability, McpBinding, SubAgentBinding,
+    ApiType, Binding, BindingRequest, BindingType, McpBinding, ResolvedCapability, SubAgentBinding,
     SubAgentBindingRequest,
 };
 use crate::launchers::base::HasLauncherMetadata as HasBobLauncherMetadata;
@@ -136,7 +136,7 @@ impl Launcher for BobLauncher {
         self.config.command_path.as_deref().unwrap_or("bob")
     }
 
-    async fn bind_capability(&mut self, capability: &dyn Capability) -> anyhow::Result<()> {
+    async fn bind_capability(&mut self, capability: &dyn ResolvedCapability) -> anyhow::Result<()> {
         let supported = Self::metadata().supported_capabilities;
         let capability_types = capability.binding_types();
         if !capability_types.is_subset(&supported) {
@@ -567,8 +567,7 @@ mod tests {
         }
     }
 
-    #[async_trait]
-    impl Capability for FakeMcpCapability {
+    impl crate::capabilities::CapabilityInfo for FakeMcpCapability {
         fn name(&self) -> &str {
             "Fake Mcp"
         }
@@ -578,6 +577,10 @@ mod tests {
         fn binding_types(&self) -> HashSet<BindingType> {
             HashSet::from([BindingType::Mcp])
         }
+    }
+
+    #[async_trait]
+    impl crate::capabilities::ResolvedCapability for FakeMcpCapability {
         async fn bind(&self, _request: BindingRequest) -> anyhow::Result<Binding> {
             Ok(Binding::Mcp(McpBinding::Http {
                 url: "http://127.0.0.1:1/mcp".to_string(),
@@ -595,8 +598,7 @@ mod tests {
         }
     }
 
-    #[async_trait]
-    impl Capability for FakeSubAgentCapability {
+    impl crate::capabilities::CapabilityInfo for FakeSubAgentCapability {
         fn name(&self) -> &str {
             "Fake SubAgent"
         }
@@ -606,6 +608,10 @@ mod tests {
         fn binding_types(&self) -> HashSet<BindingType> {
             HashSet::from([BindingType::SubAgent])
         }
+    }
+
+    #[async_trait]
+    impl crate::capabilities::ResolvedCapability for FakeSubAgentCapability {
         async fn bind(&self, _request: BindingRequest) -> anyhow::Result<Binding> {
             Ok(Binding::SubAgent(SubAgentBinding {
                 description: "explores the repo".to_string(),

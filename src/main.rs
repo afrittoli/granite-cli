@@ -827,6 +827,7 @@ async fn run_launch(
     };
     if let Some(server) = &proxy_server {
         config.model_proxy = Some(server.handle.clone());
+        crate::proxy::register_proxy_routes(&config, &lc.enabled_capabilities, &server.handle, ui);
     }
 
     // Compute the tracker early so the LaunchContext can hold it (e.g. for Bob,
@@ -874,7 +875,7 @@ async fn run_launch(
     // a process-scoped resource -- e.g. `VisionMCPCapability`'s in-process
     // MCP server -- survives long enough for `on_shutdown` to tear it down
     // after the launched process exits, not before it starts.
-    let mut bound_capabilities: Vec<Box<dyn crate::capabilities::Capability>> = Vec::new();
+    let mut bound_capabilities: Vec<Box<dyn crate::capabilities::ResolvedCapability>> = Vec::new();
     for cap_id in &lc.enabled_capabilities {
         let cap_cfg = config.get_capability(cap_id).ok_or_else(|| {
             anyhow::anyhow!(
@@ -890,6 +891,15 @@ async fn run_launch(
                 &config,
             )
             .map_err(|e| anyhow::anyhow!("Failed to construct capability '{cap_id}': {e}"))?;
+        // This path builds through the registry rather than through
+        // `CapabilitySource`, so it wires the capability to what it names
+        // itself. `models` is built from the launch's own configuration, so a
+        // proxied launch resolves proxied providers. Resolution returns the
+        // form that binds, so the bind below cannot run against an
+        // unresolved capability.
+        let capability = capability
+            .resolve_refs(&crate::models::ModelSource::from_config(&config))
+            .map_err(|e| anyhow::anyhow!("Capability '{cap_id}': {e}"))?;
         capability.on_setup().await?;
         launcher.bind_capability(capability.as_ref()).await?;
         bound_capabilities.push(capability);

@@ -25,7 +25,9 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 
 // Local
-use crate::capabilities::{Binding, BindingRequest, BindingType, Capability, SubAgentBinding};
+use crate::capabilities::{
+    Binding, BindingRequest, BindingType, ResolvedCapability, SubAgentBinding,
+};
 use crate::launchers::base::{LaunchContext, Launcher};
 use crate::launchers::pi::PiLauncher;
 use crate::registry::ConfigConstructable;
@@ -61,10 +63,12 @@ struct DelegateSubAgent {
     ctx: LaunchContext,
 }
 
-/// Tiny internal `Capability` impl that hands a pre-resolved `Binding` back
-/// unconditionally -- lets a `SubAgentBinding`'s already-resolved
-/// `AgentModelBinding` be fed into `PiLauncher::bind_capability` without
-/// duplicating that launcher's own capability-resolution logic.
+/// Tiny internal `ResolvedCapability` impl that hands a pre-resolved
+/// `Binding` back unconditionally -- lets a `SubAgentBinding`'s
+/// already-resolved `AgentModelBinding` be fed into
+/// `PiLauncher::bind_capability` without duplicating that launcher's own
+/// capability-resolution logic. It names nothing, so it is built resolved and
+/// never implements `Capability`.
 struct StaticCapabilityBinding {
     instance_id: String,
     binding: Binding,
@@ -76,8 +80,7 @@ impl crate::registry::Named for StaticCapabilityBinding {
     }
 }
 
-#[async_trait::async_trait]
-impl Capability for StaticCapabilityBinding {
+impl crate::capabilities::CapabilityInfo for StaticCapabilityBinding {
     fn name(&self) -> &str {
         "Static Binding"
     }
@@ -89,7 +92,10 @@ impl Capability for StaticCapabilityBinding {
     fn binding_types(&self) -> std::collections::HashSet<BindingType> {
         std::collections::HashSet::from([self.binding.binding_type()])
     }
+}
 
+#[async_trait::async_trait]
+impl ResolvedCapability for StaticCapabilityBinding {
     async fn bind(&self, _request: BindingRequest) -> anyhow::Result<Binding> {
         Ok(self.binding.clone())
     }

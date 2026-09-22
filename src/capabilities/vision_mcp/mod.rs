@@ -80,6 +80,13 @@ impl Default for VisionMCPCapabilityConfig {
 pub struct VisionMCPCapability {
     instance_id: String,
     config: VisionMCPCapabilityConfig,
+}
+
+/// [`VisionMCPCapability`] with the model its `model_id` names. Built only by
+/// `resolve_refs`, so holding one is what says the name resolved and the
+/// model meets what this capability's metadata requires of it.
+pub struct ResolvedVisionMCPCapability {
+    inner: VisionMCPCapability,
     configured_model: ConfiguredModel,
     /// The in-process Streamable HTTP server started by `bind()`. `None`
     /// before `bind()` runs.
@@ -96,17 +103,20 @@ impl ConfigConstructable for VisionMCPCapability {
     fn new(
         instance_id: &str,
         cfg: &serde_json::Value,
-        global_config: &crate::config::Config,
+        _global_config: &crate::config::Config,
     ) -> Self {
         let config: VisionMCPCapabilityConfig =
             serde_json::from_value(cfg.clone()).unwrap_or_default();
-        let configured_model = ConfiguredModel::resolve(&config.model_id, global_config);
         Self {
             instance_id: instance_id.to_string(),
             config,
-            configured_model,
-            http_server: Mutex::new(None),
         }
+    }
+}
+
+impl crate::registry::Named for ResolvedVisionMCPCapability {
+    fn instance_id(&self) -> &str {
+        self.inner.instance_id()
     }
 }
 
@@ -117,7 +127,7 @@ impl crate::registry::Named for VisionMCPCapability {
 }
 
 #[async_trait]
-impl Capability for VisionMCPCapability {
+impl crate::capabilities::CapabilityInfo for VisionMCPCapability {
     fn name(&self) -> &str {
         "Vision MCP Server"
     }
@@ -129,7 +139,42 @@ impl Capability for VisionMCPCapability {
     fn binding_types(&self) -> HashSet<BindingType> {
         HashSet::from([BindingType::Mcp])
     }
+}
 
+impl crate::capabilities::CapabilityInfo for ResolvedVisionMCPCapability {
+    fn name(&self) -> &str {
+        crate::capabilities::CapabilityInfo::name(&self.inner)
+    }
+
+    fn description(&self) -> &str {
+        crate::capabilities::CapabilityInfo::description(&self.inner)
+    }
+
+    fn binding_types(&self) -> HashSet<BindingType> {
+        crate::capabilities::CapabilityInfo::binding_types(&self.inner)
+    }
+}
+
+impl Capability for VisionMCPCapability {
+    fn resolve_refs(
+        self: Box<Self>,
+        models: &dyn crate::models::ModelLookup,
+    ) -> anyhow::Result<Box<dyn crate::capabilities::ResolvedCapability>> {
+        let configured_model = crate::capabilities::base::resolve_declared_model(
+            models,
+            &Self::metadata(),
+            &self.config.model_id,
+        )?;
+        Ok(Box::new(ResolvedVisionMCPCapability {
+            inner: *self,
+            configured_model,
+            http_server: Mutex::new(None),
+        }))
+    }
+}
+
+#[async_trait]
+impl crate::capabilities::ResolvedCapability for ResolvedVisionMCPCapability {
     async fn bind(&self, request: BindingRequest) -> anyhow::Result<Binding> {
         let McpBindingRequest {
             supported_transports,
@@ -146,17 +191,17 @@ impl Capability for VisionMCPCapability {
              VisionMCPCapability only serves Streamable HTTP)"
         );
 
-        let model_id = &self.config.model_id;
+        let model_id = &self.inner.config.model_id;
         // The vision backend speaks the OpenAI-compatible chat/vision
         // dialect, the one every granite-cli provider can serve -- same
         // rationale as `pi`/`opencode`'s AgentModel binding. The model must
         // support ImageUnderstanding, but the endpoint is looked up via
         // Chat, since that's the endpoint that actually serves vision
         // requests.
-        let (provider, endpoint, model_name) = self.configured_model.resolve_provider_endpoint(
+        let configured_model = &self.configured_model;
+        let (provider, endpoint, model_name) = configured_model.resolve_provider_endpoint(
             model_id,
             ApiType::OpenAI,
-            ModelFunction::ImageUnderstanding,
             ModelFunction::Chat,
         )?;
 
@@ -164,9 +209,9 @@ impl Capability for VisionMCPCapability {
             vlm_base_url(provider.base_url(), endpoint.path()),
             model_name,
             provider.api_key().map(|k| k.0.clone()).unwrap_or_default(),
-            self.config.timeout_seconds,
-            self.config.max_image_bytes,
-            self.config.extra_headers.clone(),
+            self.inner.config.timeout_seconds,
+            self.inner.config.max_image_bytes,
+            self.inner.config.extra_headers.clone(),
         )?;
 
         let tool_registry = VlmToolRegistry::new(Arc::new(vlm));
@@ -176,7 +221,7 @@ impl Capability for VisionMCPCapability {
             StreamableHttpServerConfig::default(),
         );
         let router = axum::Router::new().route_service("/mcp", service);
-        let server = SubServer::spawn(router, &format!("vision-mcp ({})", self.instance_id))?;
+        let server = SubServer::spawn(router, &format!("vision-mcp ({})", self.inner.instance_id))?;
         let url = format!("http://{}/mcp", server.local_addr);
         *self.http_server.lock().await = Some(server);
 
@@ -233,7 +278,8 @@ fn vlm_base_url(base_url: &str, endpoint_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ModelConfig};
+    use crate::capabilities::{CapabilityInfo, ResolvedCapability};
+    use crate::config::{Config, ModelConfig, ProviderConfig};
     use crate::models::{Model, ModelVariant};
     use crate::providers::{ApiEndpoint, HealthStatus, ModelFormat, Provider, ProviderError};
     use crate::registry::Secret;
@@ -317,7 +363,6 @@ mod tests {
 
     struct TestVisionModel {
         supported_functions: Vec<ModelFunction>,
-        provider: FakeProvider,
     }
 
     impl ConfigConstructable for TestVisionModel {
@@ -370,9 +415,6 @@ mod tests {
         fn supported_functions(&self) -> &[ModelFunction] {
             &self.supported_functions
         }
-        fn provider(&self) -> anyhow::Result<Box<dyn Provider>> {
-            Ok(Box::new(self.provider.clone()))
-        }
     }
 
     /// Builds a `VisionMCPCapability` with a real registry model id (so
@@ -381,8 +423,16 @@ mod tests {
     fn capability_with_test_model(
         functions: Vec<ModelFunction>,
         provider: FakeProvider,
-    ) -> VisionMCPCapability {
+    ) -> ResolvedVisionMCPCapability {
         let mut config = Config::default();
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
         config.models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {
@@ -398,14 +448,13 @@ mod tests {
             &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
             &config,
         );
-        VisionMCPCapability {
-            instance_id: cap.instance_id,
-            config: cap.config,
+        ResolvedVisionMCPCapability {
+            inner: cap,
             configured_model: ConfiguredModel::for_test(
                 Arc::new(TestVisionModel {
                     supported_functions: functions,
-                    provider,
                 }),
+                Arc::new(provider),
                 None,
             ),
             http_server: Mutex::new(None),
@@ -482,6 +531,62 @@ mod tests {
         std::net::TcpListener::bind(addr).unwrap();
     }
 
+    /// A `ModelLookup` that applies the requirement it is handed to one
+    /// fixed model, so a test can see what a capability demanded of the name
+    /// it resolved rather than only that it resolved one.
+    struct CheckingLookup {
+        model: Arc<dyn Model>,
+    }
+
+    impl crate::models::ModelLookup for CheckingLookup {
+        fn resolve(
+            &self,
+            model_id: &str,
+            requirement: Option<&crate::capabilities::ModelRequirement>,
+        ) -> anyhow::Result<ConfiguredModel> {
+            use crate::dependency::Requirement;
+            if let Some(requirement) = requirement {
+                anyhow::ensure!(
+                    requirement.admits_instance(&*self.model),
+                    "model '{model_id}' does not satisfy what this capability requires of it"
+                );
+            }
+            Ok(ConfiguredModel::for_test(
+                Arc::clone(&self.model),
+                Arc::new(ok_provider()),
+                None,
+            ))
+        }
+    }
+
+    #[test]
+    fn resolve_refs_refuses_a_model_that_cannot_understand_images() {
+        // `bind` makes no judgement about the model any more, so what keeps
+        // image requests away from a text model is the `ModelRequirement`
+        // this capability's metadata declares, applied when the name is
+        // resolved. This asserts the declaration reaches that check.
+        let cap = Box::new(VisionMCPCapability::new(
+            "vision",
+            &serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
+            &Config::default(),
+        ));
+        let lookup = CheckingLookup {
+            model: Arc::new(TestVisionModel {
+                supported_functions: vec![ModelFunction::Chat],
+            }),
+        };
+
+        let err = cap
+            .resolve_refs(&lookup)
+            .err()
+            .expect("a model that cannot understand images must not resolve for vision-mcp")
+            .to_string();
+        assert!(
+            err.contains("granite-3.1-8b-instruct"),
+            "the error must name the model, got: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn bind_errors_when_launcher_offers_only_stdio() {
         let cap =
@@ -491,19 +596,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no MCP transport in common"));
-    }
-
-    #[tokio::test]
-    async fn bind_fails_when_model_lacks_image_understanding() {
-        let cap = capability_with_test_model(vec![ModelFunction::Chat], ok_provider());
-        let err = cap
-            .bind(request([McpTransportKind::Http]))
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("does not support Image Understanding")
-        );
     }
 
     #[tokio::test]
