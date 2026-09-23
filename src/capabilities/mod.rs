@@ -34,10 +34,25 @@ pub struct CapabilitySource {
 }
 
 impl CapabilitySource {
-    pub fn from_config(config: &crate::config::Config) -> Self {
+    /// Capabilities over a model source of their own, for a test that needs
+    /// no other kind. Commands ask the application context.
+    #[cfg(test)]
+    pub(crate) fn from_config(config: &crate::config::Config) -> Self {
+        Self::with_models(
+            config,
+            std::sync::Arc::new(crate::models::ModelSource::from_config(config)),
+        )
+    }
+
+    /// Capabilities resolved against a model source somebody else built, so
+    /// two capabilities naming one model share the object it resolved to.
+    pub(crate) fn with_models(
+        config: &crate::config::Config,
+        models: std::sync::Arc<crate::models::ModelSource>,
+    ) -> Self {
         Self {
             config: config.clone(),
-            models: std::sync::Arc::new(crate::models::ModelSource::from_config(config)),
+            models,
             cache: std::sync::Mutex::new(HashMap::new()),
         }
     }

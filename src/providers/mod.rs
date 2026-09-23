@@ -44,10 +44,10 @@ pub struct ProviderSource {
 }
 
 impl ProviderSource {
-    /// Providers carrying their real connection details. This is what the
-    /// launch path reads to register a route's upstream target, which has to
-    /// happen before the proxy swap rather than from behind it.
-    pub fn from_config(config: &crate::config::Config) -> Self {
+    /// Providers carrying their real connection details, for a test that
+    /// needs no other kind. Commands ask the application context.
+    #[cfg(test)]
+    pub(crate) fn from_config(config: &crate::config::Config) -> Self {
         Self::with_proxy(config, None)
     }
 

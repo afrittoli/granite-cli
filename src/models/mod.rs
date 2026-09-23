@@ -36,23 +36,26 @@ pub struct ModelSource {
 }
 
 impl ModelSource {
-    /// Models whose providers carry their real connection details.
-    pub fn from_config(config: &crate::config::Config) -> Self {
-        Self::with_proxy(config, None)
+    /// Models over a provider source of their own, for a test that needs no
+    /// other kind. Commands ask the application context, whose sources share
+    /// one provider per configured id.
+    #[cfg(test)]
+    pub(crate) fn from_config(config: &crate::config::Config) -> Self {
+        Self::with_providers(
+            config,
+            Arc::new(crate::providers::ProviderSource::from_config(config)),
+        )
     }
 
-    /// Models whose providers point at `model_proxy` when a launch started
-    /// one, so a capability resolved against this source binds to the proxy.
-    pub fn with_proxy(
+    /// Models resolved against a provider source somebody else built, so
+    /// one snapshot has one provider per configured id however it is reached.
+    pub(crate) fn with_providers(
         config: &crate::config::Config,
-        model_proxy: Option<crate::proxy::ProxyHandle>,
+        providers: Arc<crate::providers::ProviderSource>,
     ) -> Self {
         Self {
             config: config.clone(),
-            providers: Arc::new(crate::providers::ProviderSource::with_proxy(
-                config,
-                model_proxy,
-            )),
+            providers,
             cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -579,7 +582,13 @@ mod tests {
         );
         let server = ProxyServer::start().unwrap();
 
-        let source = ModelSource::with_proxy(&config, Some(server.handle.clone()));
+        let source = ModelSource::with_providers(
+            &config,
+            Arc::new(crate::providers::ProviderSource::with_proxy(
+                &config,
+                Some(server.handle.clone()),
+            )),
+        );
 
         // Registering the route is the launch path's job, so do here what
         // `register_proxy_routes` does there: read the real upstream details
