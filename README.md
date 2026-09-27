@@ -25,6 +25,9 @@ This script automatically:
 | `GRANITE_CLI_INSTALL_DIR` | Custom installation directory |
 | `VERBOSE` | Set to `1` for verbose output |
 | `CI` or `NONINTERACTIVE` | Set to `1` for non-interactive / CI mode |
+| `NO_SETUP` | Set to a truthy value (`1`, `t`, `y`, `true`, `yes`) to skip `granite-cli setup` after install |
+| `AUTO` | Set to a truthy value to run setup in auto/non-interactive mode (default: `false`; enabled automatically in CI) |
+| `PULL` | Set to a truthy value to pull models automatically during setup (default: `false`) |
 
 ### Install from source
 
