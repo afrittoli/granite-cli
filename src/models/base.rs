@@ -374,7 +374,9 @@ impl Searchable for ModelMetadata {
 
 /*-- Supporting Types --------------------------------------------------------*/
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema, clap::ValueEnum,
+)]
 pub enum ModelType {
     #[default]
     Text,

@@ -14,6 +14,7 @@
 #   NO_SETUP                  — Set to truthy value to skip `granite-cli setup` (truthy: 1, t, y, true, yes)
 #   AUTO                      — Set to truthy value to pass `--auto` through to setup (default: false)
 #   PULL                      — Set to truthy value to pass `--pull` through to setup (default: false)
+#   NO_COMPLETIONS            — Set to truthy value to skip installing the shell completion script
 
 set -euo pipefail
 
@@ -73,6 +74,7 @@ NONINTERACTIVE="${NONINTERACTIVE:-}"
 NO_SETUP="${NO_SETUP:-}"
 AUTO="${AUTO:-}"
 PULL="${PULL:-}"
+NO_COMPLETIONS="${NO_COMPLETIONS:-}"
 
 # NO_SETUP is truthy when set to 1, t, y, true, or yes (case insensitive)
 if [[ "$(echo "${NO_SETUP}" | tr '[:upper:]' '[:lower:]')" =~ ^(1|t|y|true|yes)$ ]]; then
@@ -95,9 +97,17 @@ else
     PULL=false
 fi
 
+# NO_COMPLETIONS: truthy when set to 1, t, y, true, or yes (case insensitive)
+if [[ "$(echo "${NO_COMPLETIONS}" | tr '[:upper:]' '[:lower:]')" =~ ^(1|t|y|true|yes)$ ]]; then
+    INSTALL_COMPLETIONS=false
+else
+    INSTALL_COMPLETIONS=true
+fi
+
 for arg in "$@"; do
     case "$arg" in
         --no-setup) RUN_SETUP=false ;;
+        --no-completions) INSTALL_COMPLETIONS=false ;;
         --auto)     AUTO=true ;;
         --pull)     PULL=true ;;
         --ci)       CI=1 ;;
@@ -607,6 +617,60 @@ cleanup_tmp() {
     rm -rf "$tmp_dir" 2>/dev/null || true
 }
 
+# ── shell completion ─────────────────────────────────────────────────────────
+# Write the completion script from `granite-cli completions <shell>` for the
+# shell named in $SHELL. bash and fish load scripts from these user
+# directories automatically; zsh needs an fpath entry, so only the
+# instructions are printed.
+install_completions() {
+    local bin_path="${INSTALL_DIR}/${BIN_NAME}"
+    local shell_name dest
+
+    if [[ "$INSTALL_COMPLETIONS" != "true" ]]; then
+        return 0
+    fi
+    # The Windows binary cannot write completions for a Unix shell here.
+    if [[ "$OS" == *windows* ]]; then
+        return 0
+    fi
+    if [[ ! -x "$bin_path" ]]; then
+        bin_path="$(command -v "${BIN_NAME}" 2>/dev/null)" || return 0
+    fi
+
+    shell_name="$(basename "${SHELL:-}")"
+    case "$shell_name" in
+        bash)
+            dest="${XDG_DATA_HOME:-${HOME}/.local/share}/bash-completion/completions/${BIN_NAME}"
+            ;;
+        fish)
+            dest="${XDG_CONFIG_HOME:-${HOME}/.config}/fish/completions/${BIN_NAME}.fish"
+            ;;
+        zsh)
+            info "To enable zsh completion, write the script to a directory on your fpath:"
+            echo "   mkdir -p ~/.zfunc"
+            echo "   ${BIN_NAME} completions zsh > ~/.zfunc/_${BIN_NAME}"
+            echo "   Then add these lines to ~/.zshrc, before any existing compinit call:"
+            echo "   fpath=(~/.zfunc \$fpath)"
+            echo "   autoload -Uz compinit && compinit"
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    mkdir -p "$(dirname "$dest")" || {
+        warn "Cannot create $(dirname "$dest"); skipping shell completion"
+        return 0
+    }
+    if "${bin_path}" completions "$shell_name" > "$dest" 2>/dev/null; then
+        ok "Installed ${shell_name} completion to ${dest}"
+    else
+        rm -f "$dest"
+        warn "Could not generate ${shell_name} completion (this is optional)"
+    fi
+}
+
 # ── post-install setup ───────────────────────────────────────────────────────
 run_granite_setup() {
     local bin_path="${INSTALL_DIR}/${BIN_NAME}"
@@ -676,6 +740,7 @@ main() {
 
     if [[ "$installed" == "true" ]]; then
         echo "Installation complete!"
+        install_completions
         run_granite_setup
         exit 0
     fi
