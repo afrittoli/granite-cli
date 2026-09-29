@@ -710,7 +710,6 @@ pub(crate) mod tests {
         assert_eq!(ui.password("Secret?").unwrap(), "s3cr3t");
     }
 
-
     // -- CaptureUi pull lifecycle --------------------------------------------
 
     #[test]
