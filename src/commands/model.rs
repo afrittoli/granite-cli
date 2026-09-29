@@ -49,8 +49,7 @@ fn sort_enriched_rows(rows: &mut [(Vec<String>, ModelMetadata)]) {
 /// Returns a short human-readable label describing *why* a model matched
 /// `query`, or `None` if there is no match.
 ///
-/// Priority: id > tags > family. Description is intentionally excluded —
-/// search matches on structured fields only, not free-text blobs.
+/// Priority: id > tags > family > description (short excerpt shown).
 fn search_match_reason(id: &str, m: &ModelMetadata, q: &str) -> Option<String> {
     if id.to_lowercase().contains(q) {
         return Some("id".to_string());
@@ -66,6 +65,15 @@ fn search_match_reason(id: &str, m: &ModelMetadata, q: &str) -> Option<String> {
     }
     if m.family.to_lowercase().contains(q) {
         return Some("family".to_string());
+    }
+    if let Some(desc) = &m.description {
+        if desc.to_lowercase().contains(q) {
+            let lower = desc.to_lowercase();
+            let pos = lower.find(q).unwrap_or(0);
+            let start = pos.saturating_sub(20);
+            let snippet: String = desc[start..].chars().take(60).collect();
+            return Some(format!("description: \"…{}…\"", snippet.trim()));
+        }
     }
     None
 }

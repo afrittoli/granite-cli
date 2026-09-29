@@ -55,12 +55,14 @@ mod searchable_tests {
     }
 
     #[test]
-    fn searchable_fields_excludes_description() {
-        // Description is intentionally excluded from search — it is a free-text
-        // blob that would produce noisy, hard-to-explain matches.
+    fn searchable_fields_includes_description_when_present() {
         let m = metadata("Granite 3.1", Some("A text model"), vec![]);
-        assert!(!m.search_fields().contains(&"A text model"));
-        // Only family is present (no tags either)
+        assert!(m.search_fields().contains(&"A text model"));
+    }
+
+    #[test]
+    fn searchable_fields_omits_description_when_absent() {
+        let m = metadata("Granite 3.1", None, vec![]);
         assert_eq!(m.search_fields().len(), 1);
     }
 
