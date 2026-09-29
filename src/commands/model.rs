@@ -46,6 +46,20 @@ fn sort_enriched_rows(rows: &mut [(Vec<String>, ModelMetadata)]) {
     });
 }
 
+/// Numeric sort key for match priority: lower = more relevant.
+/// id(0) > tag(1) > family(2) > description(3)
+fn match_priority(matched_on: &str) -> u8 {
+    if matched_on.starts_with("tag:") {
+        0
+    } else if matched_on == "id" {
+        1
+    } else if matched_on == "family" {
+        2
+    } else {
+        3 // description
+    }
+}
+
 /// Returns a short human-readable label describing *why* a model matched
 /// `query`, or `None` if there is no match.
 ///
@@ -162,7 +176,16 @@ impl ModelCommands {
                 Some((row, m.clone()))
             })
             .collect();
-        sort_enriched_rows(&mut rows);
+        // Sort by match priority first (id > tag > family > description),
+        // then by the usual family/version/size within each priority group.
+        rows.sort_by(|(row_a, meta_a), (row_b, meta_b)| {
+            match_priority(&row_a[5])
+                .cmp(&match_priority(&row_b[5]))
+                .then_with(|| meta_a.family.cmp(&meta_b.family))
+                .then_with(|| compare_versions_desc(&meta_a.version, &meta_b.version))
+                .then_with(|| meta_b.size.cmp(&meta_a.size))
+                .then_with(|| row_a[0].cmp(&row_b[0]))
+        });
         rows.into_iter().map(|(row, _)| row).collect()
     }
 
