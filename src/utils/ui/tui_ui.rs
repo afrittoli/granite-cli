@@ -72,7 +72,7 @@ pub enum Prompt {
 }
 
 /// The answer the TUI sends back for one [`Prompt`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     Index(usize),
     Indices(Vec<usize>),

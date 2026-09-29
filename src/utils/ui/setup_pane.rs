@@ -112,7 +112,7 @@ impl PromptState {
             PromptState::MultiSelect { .. } => {
                 "[↑↓/jk] Move  [Space] Toggle  [Enter] Confirm  [Esc] Cancel"
             }
-            PromptState::Confirm { .. } => "[←→/hl] Toggle  [Enter] Confirm  [Esc] Cancel",
+            PromptState::Confirm { .. } => "[y/n/←→/hl] Select  [Enter] Confirm  [Esc] Cancel",
             PromptState::Text { .. } => "[typing] Edit  [Enter] Confirm  [Esc] Cancel",
         }
     }
@@ -276,14 +276,10 @@ impl SetupPane {
                         *yes = !*yes;
                     }
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        self.active = None;
-                        let _ = self.answer_tx.send(Answer::Bool(true));
-                        return true;
+                        *yes = true;
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') => {
-                        self.active = None;
-                        let _ = self.answer_tx.send(Answer::Bool(false));
-                        return true;
+                        *yes = false;
                     }
                     KeyCode::Enter => {
                         let answer = *yes;
@@ -606,5 +602,62 @@ fn format_bytes(b: u64) -> String {
         format!("{:.1} KB", b as f64 / 1_024.0)
     } else {
         format!("{b} B")
+    }
+}
+
+/*-- tests ------------------------------------------------------------------*/
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::sync::mpsc::sync_channel;
+
+    #[test]
+    fn confirm_requires_enter_after_y_or_n() {
+        let (prompt_tx, prompt_rx) = sync_channel(1);
+        let (answer_tx, answer_rx) = sync_channel(1);
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pulls = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+        let mut pane = SetupPane::new("Test Pane".to_string(), output, pulls, prompt_rx, answer_tx);
+
+        prompt_tx
+            .send(Prompt::Confirm {
+                message: "Confirm action?".to_string(),
+                default: false,
+            })
+            .unwrap();
+
+        assert!(pane.poll());
+
+        // Pressing 'y' should toggle `yes` to true without submitting
+        let event_y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(pane.handle_key(event_y));
+        assert!(answer_rx.try_recv().is_err());
+        match pane.active {
+            Some(PromptState::Confirm { yes, .. }) => assert!(yes),
+            _ => panic!("Expected active Confirm prompt"),
+        }
+
+        // Pressing 'n' should toggle `yes` to false without submitting
+        let event_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(pane.handle_key(event_n));
+        assert!(answer_rx.try_recv().is_err());
+        match pane.active {
+            Some(PromptState::Confirm { yes, .. }) => assert!(!yes),
+            _ => panic!("Expected active Confirm prompt"),
+        }
+
+        // Pressing 'y' again
+        let event_y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(pane.handle_key(event_y));
+        assert!(answer_rx.try_recv().is_err());
+
+        // Pressing Enter confirms and sends the value
+        let event_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(pane.handle_key(event_enter));
+        assert_eq!(answer_rx.try_recv().unwrap(), Answer::Bool(true));
+        assert!(pane.active.is_none());
     }
 }

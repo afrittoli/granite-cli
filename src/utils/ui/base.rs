@@ -221,6 +221,7 @@ pub trait Ui: Send + Sync + Any {
         Ok(dialoguer::Confirm::new()
             .with_prompt(prompt)
             .default(default)
+            .wait_for_newline(true)
             .interact()?)
     }
 
