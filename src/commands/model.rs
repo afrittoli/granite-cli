@@ -11,7 +11,6 @@ use crate::models::{
 use crate::providers::{
     PROVIDER_REGISTRY, Provider, ProviderMetadata, ProviderSource, ProviderType, PullResult,
 };
-use crate::utils::Searchable;
 use crate::utils::hardware::{HardwareProfile, detect_hardware};
 use crate::utils::prompt_from_schema;
 use crate::utils::ui::Ui;
@@ -45,6 +44,39 @@ fn sort_enriched_rows(rows: &mut [(Vec<String>, ModelMetadata)]) {
             .then_with(|| meta_b.size.cmp(&meta_a.size))
             .then_with(|| row_a[0].cmp(&row_b[0]))
     });
+}
+
+/// Returns a short human-readable label describing *why* a model matched
+/// `query`, or `None` if there is no match.
+///
+/// Priority: id > tags > family > description (first 60 chars shown).
+fn search_match_reason(id: &str, m: &ModelMetadata, q: &str) -> Option<String> {
+    if id.to_lowercase().contains(q) {
+        return Some("id".to_string());
+    }
+    let matching_tags: Vec<&str> = m
+        .tags
+        .iter()
+        .map(String::as_str)
+        .filter(|t| t.to_lowercase().contains(q))
+        .collect();
+    if !matching_tags.is_empty() {
+        return Some(format!("tag: {}", matching_tags.join(", ")));
+    }
+    if m.family.to_lowercase().contains(q) {
+        return Some("family".to_string());
+    }
+    if let Some(desc) = &m.description {
+        if desc.to_lowercase().contains(q) {
+            // Show a short excerpt around the match position
+            let lower = desc.to_lowercase();
+            let pos = lower.find(q).unwrap_or(0);
+            let start = pos.saturating_sub(20);
+            let snippet: String = desc[start..].chars().take(60).collect();
+            return Some(format!("description: \"…{}…\"", snippet.trim()));
+        }
+    }
+    None
 }
 
 pub struct ModelCommands;
@@ -118,21 +150,17 @@ impl ModelCommands {
         let models = MODEL_REGISTRY.entries();
         let mut rows: Vec<(Vec<String>, ModelMetadata)> = models
             .iter()
-            .filter(|(id, m)| {
-                id.to_lowercase().contains(&q)
-                    || m.search_fields()
-                        .iter()
-                        .any(|f| f.to_lowercase().contains(&q))
-            })
-            .map(|(id, m)| {
+            .filter_map(|(id, m)| {
+                let matched_on = search_match_reason(id, m, &q)?;
                 let row = vec![
                     id.to_string(),
                     m.family.clone(),
                     m.format_size(),
                     m.context_length.to_string(),
                     m.model_type.to_string(),
+                    matched_on,
                 ];
-                (row, m.clone())
+                Some((row, m.clone()))
             })
             .collect();
         sort_enriched_rows(&mut rows);
@@ -147,7 +175,7 @@ impl ModelCommands {
         }
         ctx.ui.table(
             &format!("Search results for '{}' ({} models)", query, rows.len()),
-            &["ID", "FAMILY", "SIZE", "CONTEXT", "TYPE"],
+            &["ID", "FAMILY", "SIZE", "CONTEXT", "TYPE", "MATCHED ON"],
             &rows,
         );
         Ok(())
