@@ -364,9 +364,6 @@ impl std::fmt::Display for ModelMetadata {
 impl Searchable for ModelMetadata {
     fn search_fields(&self) -> Vec<&str> {
         let mut fields: Vec<&str> = vec![self.family.as_str()];
-        if let Some(desc) = &self.description {
-            fields.push(desc.as_str());
-        }
         fields.extend(self.tags.iter().map(String::as_str));
         fields
     }
@@ -505,14 +502,12 @@ mod searchable_tests {
     }
 
     #[test]
-    fn searchable_fields_includes_description_when_present() {
+    fn searchable_fields_excludes_description() {
+        // Description is intentionally excluded from search — it is a free-text
+        // blob that would produce noisy, hard-to-explain matches.
         let m = metadata("Granite 3.1", Some("A text model"), vec![]);
-        assert!(m.search_fields().contains(&"A text model"));
-    }
-
-    #[test]
-    fn searchable_fields_omits_description_when_absent() {
-        let m = metadata("Granite 3.1", None, vec![]);
+        assert!(!m.search_fields().contains(&"A text model"));
+        // Only family is present (no tags either)
         assert_eq!(m.search_fields().len(), 1);
     }
 
