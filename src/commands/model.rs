@@ -47,7 +47,7 @@ fn sort_enriched_rows(rows: &mut [(Vec<String>, ModelMetadata)]) {
 }
 
 /// Numeric sort key for match priority: lower = more relevant.
-/// id(0) > tag(1) > family(2) > description(3)
+/// tag(0) > id(1) > family(2) > description(3)
 fn match_priority(matched_on: &str) -> u8 {
     if matched_on.starts_with("tag:") {
         0
@@ -63,7 +63,7 @@ fn match_priority(matched_on: &str) -> u8 {
 /// Returns a short human-readable label describing *why* a model matched
 /// `query`, or `None` if there is no match.
 ///
-/// Priority: id > tags > family > description (short excerpt shown).
+/// Priority: tags > id > family > description (short excerpt shown).
 fn search_match_reason(id: &str, m: &ModelMetadata, q: &str) -> Option<String> {
     if id.to_lowercase().contains(q) {
         return Some("id".to_string());

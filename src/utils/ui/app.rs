@@ -757,23 +757,29 @@ impl App {
 
         match self.section {
             Section::Models => {
-                let filtered_ids = self.filtered_ids(query);
-                // Use the shared data layer — catalog_rows returns [id, family, size, context, type]
-                let all_rows = ModelCommands::catalog_rows(None);
-                let entries: Vec<Vec<String>> = all_rows
-                    .into_iter()
-                    .filter(|r| filtered_ids.contains(&r[0]))
-                    .collect();
-
                 // Model instances are keyed by model ID directly
                 let configured_ids: std::collections::HashSet<&str> =
                     self.ctx.config.models.keys().map(|k| k.as_str()).collect();
 
-                let header = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE"]).style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                );
+                // When a search is active, use search_rows so the MATCHED ON
+                // column is shown and results are sorted by match priority.
+                // When browsing without a query, use catalog_rows as usual.
+                let searching = !query.is_empty();
+                let (entries, header) = if searching {
+                    let rows = ModelCommands::search_rows(query);
+                    let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE", "MATCHED ON"])
+                        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+                    (rows, h)
+                } else {
+                    let filtered_ids = self.filtered_ids(query);
+                    let rows = ModelCommands::catalog_rows(None)
+                        .into_iter()
+                        .filter(|r| filtered_ids.contains(&r[0]))
+                        .collect();
+                    let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE"])
+                        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+                    (rows, h)
+                };
 
                 let rows: Vec<Row> = entries
                     .iter()
@@ -791,29 +797,51 @@ impl App {
                         } else {
                             Cell::from("")
                         };
-                        // columns: [0]=id [1]=family [2]=size [3]=context [4]=type
-                        Row::new(vec![
-                            marker,
-                            Cell::from(r[0].clone()),
-                            Cell::from(r[1].clone()),
-                            Cell::from(r[2].clone()),
-                            Cell::from(r[4].clone()),
-                        ])
-                        .style(style)
+                        if searching {
+                            // search_rows: [0]=id [1]=family [2]=size [3]=context [4]=type [5]=matched_on
+                            Row::new(vec![
+                                marker,
+                                Cell::from(r[0].clone()),
+                                Cell::from(r[1].clone()),
+                                Cell::from(r[2].clone()),
+                                Cell::from(r[4].clone()),
+                                Cell::from(r[5].clone()),
+                            ])
+                            .style(style)
+                        } else {
+                            // catalog_rows: [0]=id [1]=family [2]=size [3]=context [4]=type
+                            Row::new(vec![
+                                marker,
+                                Cell::from(r[0].clone()),
+                                Cell::from(r[1].clone()),
+                                Cell::from(r[2].clone()),
+                                Cell::from(r[4].clone()),
+                            ])
+                            .style(style)
+                        }
                     })
                     .collect();
 
-                let table =
-                    Table::new(
-                        rows,
-                        [
-                            Constraint::Length(2),
-                            Constraint::Percentage(43),
-                            Constraint::Percentage(25),
-                            Constraint::Percentage(10),
-                            Constraint::Percentage(20),
-                        ],
-                    )
+                let widths: &[Constraint] = if searching {
+                    &[
+                        Constraint::Length(2),
+                        Constraint::Percentage(30),
+                        Constraint::Percentage(18),
+                        Constraint::Percentage(8),
+                        Constraint::Percentage(12),
+                        Constraint::Percentage(30),
+                    ]
+                } else {
+                    &[
+                        Constraint::Length(2),
+                        Constraint::Percentage(43),
+                        Constraint::Percentage(25),
+                        Constraint::Percentage(10),
+                        Constraint::Percentage(20),
+                    ]
+                };
+
+                let table = Table::new(rows, widths.to_vec())
                     .header(header)
                     .block(Block::default().borders(Borders::ALL).title(
                         if self.configured_only[0] {
