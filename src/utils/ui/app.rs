@@ -1530,6 +1530,14 @@ impl App {
                             Span::raw(api_types),
                         ]),
                         Line::from(vec![Span::styled("Formats: ", bold), Span::raw(formats)]),
+                        Line::from(vec![
+                            Span::styled("Tags: ", bold),
+                            Span::raw(if p.tags.is_empty() {
+                                "(none)".to_string()
+                            } else {
+                                p.tags.join(", ")
+                            }),
+                        ]),
                         Line::from(""),
                         Line::from(Span::styled("Endpoints:", bold)),
                     ];
@@ -1589,6 +1597,14 @@ impl App {
                         Line::from(vec![
                             Span::styled("Supported capabilities: ", bold),
                             Span::raw(supported_caps),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Tags: ", bold),
+                            Span::raw(if l.tags.is_empty() {
+                                "(none)".to_string()
+                            } else {
+                                l.tags.join(", ")
+                            }),
                         ]),
                         Line::from(""),
                         Line::from(Span::styled("Configured instances:", bold)),

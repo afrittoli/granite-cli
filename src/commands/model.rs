@@ -1384,6 +1384,18 @@ mod tests {
         assert!(!rows.is_empty());
     }
 
+    #[test]
+    fn search_tag_match_returns_rows() {
+        let ctx = empty_ctx();
+        // "vision" or "instruct" or "guardian" is a tag in catalog models
+        ModelCommands::search(&ctx, "vision").unwrap();
+        let tables = tables!(ctx);
+        assert!(!tables.is_empty());
+        let (_, _, rows) = &tables[0];
+        assert!(!rows.is_empty());
+        assert!(rows.iter().any(|r| r[0].contains("vision")));
+    }
+
     // ── recommend ─────────────────────────────────────────────────────────────
 
     /// `--providers all` sentinel: skip the provider-filter check entirely,
