@@ -590,22 +590,38 @@ impl App {
                     Section::Models => MODEL_REGISTRY
                         .entries()
                         .get(id.as_str())
-                        .map(|m| m.search_fields().iter().any(|f| f.to_lowercase().contains(&q)))
+                        .map(|m| {
+                            m.search_fields()
+                                .iter()
+                                .any(|f| f.to_lowercase().contains(&q))
+                        })
                         .unwrap_or(false),
                     Section::Providers => PROVIDER_REGISTRY
                         .entries()
                         .get(id.as_str())
-                        .map(|m| m.search_fields().iter().any(|f| f.to_lowercase().contains(&q)))
+                        .map(|m| {
+                            m.search_fields()
+                                .iter()
+                                .any(|f| f.to_lowercase().contains(&q))
+                        })
                         .unwrap_or(false),
                     Section::Launchers => crate::launchers::LAUNCHER_REGISTRY
                         .entries()
                         .get(id.as_str())
-                        .map(|m| m.search_fields().iter().any(|f| f.to_lowercase().contains(&q)))
+                        .map(|m| {
+                            m.search_fields()
+                                .iter()
+                                .any(|f| f.to_lowercase().contains(&q))
+                        })
                         .unwrap_or(false),
                     Section::Capabilities => crate::capabilities::CAPABILITY_REGISTRY
                         .entries()
                         .get(id.as_str())
-                        .map(|m| m.search_fields().iter().any(|f| f.to_lowercase().contains(&q)))
+                        .map(|m| {
+                            m.search_fields()
+                                .iter()
+                                .any(|f| f.to_lowercase().contains(&q))
+                        })
                         .unwrap_or(false),
                     // Recommend/Sessions/Hardware: id-only match is correct
                     _ => false,
@@ -767,8 +783,11 @@ impl App {
                 let searching = !query.is_empty();
                 let (entries, header) = if searching {
                     let rows = ModelCommands::search_rows(query);
-                    let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE", "MATCHED ON"])
-                        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+                    let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE", "MATCHED ON"]).style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    );
                     (rows, h)
                 } else {
                     let filtered_ids = self.filtered_ids(query);
@@ -776,8 +795,11 @@ impl App {
                         .into_iter()
                         .filter(|r| filtered_ids.contains(&r[0]))
                         .collect();
-                    let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE"])
-                        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+                    let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE"]).style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    );
                     (rows, h)
                 };
 
@@ -841,15 +863,15 @@ impl App {
                     ]
                 };
 
-                let table = Table::new(rows, widths.to_vec())
-                    .header(header)
-                    .block(Block::default().borders(Borders::ALL).title(
-                        if self.configured_only[0] {
+                let table = Table::new(rows, widths.to_vec()).header(header).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(if self.configured_only[0] {
                             " Models [s: show catalog] "
                         } else {
                             " Models [h: hide catalog] "
-                        },
-                    ));
+                        }),
+                );
 
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
             }
