@@ -17,6 +17,7 @@ use crate::commands::{
 use crate::dependency::Configured;
 use crate::models::MODEL_REGISTRY;
 use crate::providers::PROVIDER_REGISTRY;
+use crate::utils::Searchable;
 use crate::utils::ui::setup_pane::SetupPane;
 use crate::utils::ui::tui::{restore_terminal, setup_terminal};
 use crate::utils::ui::tui_ui::{Answer, OutputLine, TuiUi};
@@ -575,12 +576,42 @@ impl App {
             Section::Hardware => vec![],
         };
         if q.is_empty() {
-            ids
-        } else {
-            ids.into_iter()
-                .filter(|id| id.to_lowercase().contains(&q))
-                .collect()
+            return ids;
         }
+        ids.into_iter()
+            .filter(|id| {
+                if id.to_lowercase().contains(&q) {
+                    return true;
+                }
+                // Also match against structured search_fields() (family, tags)
+                // for each registry so that e.g. searching "vision" surfaces
+                // models tagged "vision" even when the id doesn't contain it.
+                match self.section {
+                    Section::Models => MODEL_REGISTRY
+                        .entries()
+                        .get(id.as_str())
+                        .map(|m| m.search_fields().iter().any(|f| f.to_lowercase().contains(&q)))
+                        .unwrap_or(false),
+                    Section::Providers => PROVIDER_REGISTRY
+                        .entries()
+                        .get(id.as_str())
+                        .map(|m| m.search_fields().iter().any(|f| f.to_lowercase().contains(&q)))
+                        .unwrap_or(false),
+                    Section::Launchers => crate::launchers::LAUNCHER_REGISTRY
+                        .entries()
+                        .get(id.as_str())
+                        .map(|m| m.search_fields().iter().any(|f| f.to_lowercase().contains(&q)))
+                        .unwrap_or(false),
+                    Section::Capabilities => crate::capabilities::CAPABILITY_REGISTRY
+                        .entries()
+                        .get(id.as_str())
+                        .map(|m| m.search_fields().iter().any(|f| f.to_lowercase().contains(&q)))
+                        .unwrap_or(false),
+                    // Recommend/Sessions/Hardware: id-only match is correct
+                    _ => false,
+                }
+            })
+            .collect()
     }
 
     fn row_count(&self) -> usize {
@@ -2227,6 +2258,59 @@ mod tests {
         let a = app();
         let ids = a.filtered_ids("zzznomatch");
         assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn filtered_ids_matches_model_by_tag_not_id() {
+        // "granite-docling-258M" has tag "vision" but id does not contain "vision".
+        // The fix ensures tag-based matches are included in the TUI results.
+        let a = app();
+        let ids = a.filtered_ids("docling");
+        // Confirm at least one docling model is present via id match first
+        assert!(!ids.is_empty(), "expected docling models by id");
+
+        // Now test a tag-only match: search "vision" must return models whose
+        // id contains "vision" OR whose tags contain "vision" (e.g. docling).
+        let ids_vision = a.filtered_ids("vision");
+        assert!(
+            !ids_vision.is_empty(),
+            "expected vision models from tag or id"
+        );
+        // granite-docling-258M has tag "vision" but id does not contain "vision"
+        assert!(
+            ids_vision.iter().any(|id| id.contains("docling")),
+            "expected docling model to appear via tag:vision match; got {ids_vision:?}"
+        );
+    }
+
+    #[test]
+    fn filtered_ids_tag_match_provider_section() {
+        // Switch to Providers section and search for "local" — ollama/llamacpp
+        // have that tag, even though their registry id doesn't contain "local".
+        let mut a = app();
+        a.section = Section::Providers;
+        let ids = a.filtered_ids("local");
+        assert!(
+            !ids.is_empty(),
+            "expected providers matching tag 'local'; got none"
+        );
+        assert!(
+            ids.iter().any(|id| id == "ollama" || id == "llama-cpp"),
+            "expected ollama or llama-cpp to match via tag 'local'; got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn filtered_ids_tag_match_launcher_section() {
+        // Switch to Launchers section and search for "agent" — goose/hermes/openclaw
+        // have that tag.
+        let mut a = app();
+        a.section = Section::Launchers;
+        let ids = a.filtered_ids("agent");
+        assert!(
+            !ids.is_empty(),
+            "expected launchers matching tag 'agent'; got none"
+        );
     }
 
     // -- detail scroll --------------------------------------------------------
