@@ -619,9 +619,10 @@ cleanup_tmp() {
 
 # ── shell completion ─────────────────────────────────────────────────────────
 # Write the completion script from `granite-cli completions <shell>` for the
-# shell named in $SHELL. bash and fish load scripts from these user
-# directories automatically; zsh needs an fpath entry, so only the
-# instructions are printed.
+# shell named in $SHELL. fish loads scripts from its user directory
+# automatically. bash loads the user directory only through the
+# bash-completion package, so the script is written and the steps to load it
+# are printed. zsh needs an fpath entry, so only the instructions are printed.
 install_completions() {
     local bin_path="${INSTALL_DIR}/${BIN_NAME}"
     local shell_name dest
@@ -665,6 +666,12 @@ install_completions() {
     }
     if "${bin_path}" completions "$shell_name" > "$dest" 2>/dev/null; then
         ok "Installed ${shell_name} completion to ${dest}"
+        if [[ "$shell_name" == "bash" ]]; then
+            info "bash loads this file only when the bash-completion package (version 2) is installed and sourced from your shell profile:"
+            echo "   https://github.com/scop/bash-completion"
+            echo "   Without bash-completion, add this line to ~/.bashrc instead:"
+            echo "   source \"${dest}\""
+        fi
     else
         rm -f "$dest"
         warn "Could not generate ${shell_name} completion (this is optional)"
