@@ -114,6 +114,18 @@ impl Section {
         }
     }
 
+    fn prev(&self) -> Self {
+        match self {
+            Section::Models => Section::Hardware,
+            Section::Providers => Section::Models,
+            Section::Launchers => Section::Providers,
+            Section::Capabilities => Section::Launchers,
+            Section::Recommend => Section::Capabilities,
+            Section::Sessions => Section::Recommend,
+            Section::Hardware => Section::Sessions,
+        }
+    }
+
     fn label(&self) -> &'static str {
         match self {
             Section::Models => "Models",
@@ -279,6 +291,11 @@ impl App {
                 }
                 KeyCode::Tab => {
                     self.section = self.section.next();
+                    self.row = 0;
+                    self.sync_table_state();
+                }
+                KeyCode::BackTab => {
+                    self.section = self.section.prev();
                     self.row = 0;
                     self.sync_table_state();
                 }
