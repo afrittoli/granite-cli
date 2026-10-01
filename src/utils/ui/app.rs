@@ -1738,23 +1738,23 @@ impl App {
             match &self.mode {
                 AppMode::Browse if self.section == Section::Sessions => {
                     if self.hide_inactive {
-                        "[↑↓/jk] Navigate  [Tab] Section  [Enter] Detail  [s] Show inactive  [q] Quit"
+                        "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail  [s] Show inactive  [q] Quit"
                     } else {
-                        "[↑↓/jk] Navigate  [Tab] Section  [Enter] Detail  [h] Hide inactive  [q] Quit"
+                        "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail  [h] Hide inactive  [q] Quit"
                     }
                 }
                 AppMode::Browse if self.section == Section::Hardware => {
-                    "[↑↓/jk] Scroll  [Tab] Section  [q] Quit"
+                    "[↑↓/jk] Scroll  [Tab/⇧Tab] Section  [q] Quit"
                 }
                 AppMode::Browse if Self::configured_only_idx(&self.section).is_some() => {
                     if self.configured_only[Self::configured_only_idx(&self.section).unwrap()] {
-                        "[↑↓/jk] Navigate  [Tab] Section  [Enter] Detail/Setup  [/] Search  [s] Show catalog  [q] Quit  ✓ = configured"
+                        "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [s] Show catalog  [q] Quit  ✓ = configured"
                     } else {
-                        "[↑↓/jk] Navigate  [Tab] Section  [Enter] Detail/Setup  [/] Search  [h] Hide catalog  [q] Quit  ✓ = configured"
+                        "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [h] Hide catalog  [q] Quit  ✓ = configured"
                     }
                 }
                 AppMode::Browse => {
-                    "[↑↓/jk] Navigate  [Tab] Section  [Enter] Detail/Setup  [/] Search  [q] Quit  ✓ = configured"
+                    "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [q] Quit  ✓ = configured"
                 }
                 AppMode::Search(_) => "[typing] Filter  [Enter] Confirm  [Esc] Cancel",
                 AppMode::Detail(_) => "[↑↓/jk] Scroll  [Enter] Setup  [Backspace/Esc/q] Back",
@@ -2054,6 +2054,41 @@ mod tests {
         let mut a = app();
         a.row = 3;
         a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(a.row, 0);
+    }
+
+    #[test]
+    fn app_backtab_cycles_models_to_hardware() {
+        let mut a = app();
+        a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(a.section, Section::Hardware);
+    }
+
+    #[test]
+    fn app_backtab_reaches_sessions_on_second_press() {
+        // Models →(1) Hardware →(2) Sessions
+        let mut a = app();
+        for _ in 0..2 {
+            a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        }
+        assert_eq!(a.section, Section::Sessions);
+    }
+
+    #[test]
+    fn app_backtab_cycles_through_all_seven_sections() {
+        // Seven sections backwards: Models → Hardware → Sessions → Recommend → Capabilities → Launchers → Providers → Models
+        let mut a = app();
+        for _ in 0..7 {
+            a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        }
+        assert_eq!(a.section, Section::Models);
+    }
+
+    #[test]
+    fn app_backtab_resets_row_to_zero() {
+        let mut a = app();
+        a.row = 3;
+        a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert_eq!(a.row, 0);
     }
 
