@@ -65,9 +65,9 @@ fn match_priority(matched_on: &str) -> u8 {
 ///
 /// Priority: tags > id > family > description (short excerpt shown).
 fn search_match_reason(id: &str, m: &ModelMetadata, q: &str) -> Option<String> {
-    if id.to_lowercase().contains(q) {
-        return Some("id".to_string());
-    }
+    // Check tags first: match_priority ranks tag(0) above id(1), so the label
+    // and sort order must agree — a model that matches on both tag and id is
+    // reported as a tag match and sorted with the tag group.
     let matching_tags: Vec<&str> = m
         .tags
         .iter()
@@ -77,15 +77,23 @@ fn search_match_reason(id: &str, m: &ModelMetadata, q: &str) -> Option<String> {
     if !matching_tags.is_empty() {
         return Some(format!("tag: {}", matching_tags.join(", ")));
     }
+    if id.to_lowercase().contains(q) {
+        return Some("id".to_string());
+    }
     if m.family.to_lowercase().contains(q) {
         return Some("family".to_string());
     }
     if let Some(desc) = &m.description {
-        if desc.to_lowercase().contains(q) {
-            let lower = desc.to_lowercase();
-            let pos = lower.find(q).unwrap_or(0);
-            let start = pos.saturating_sub(20);
-            let snippet: String = desc[start..].chars().take(60).collect();
+        let lower = desc.to_lowercase();
+        if let Some(pos) = lower.find(q) {
+            // Use char-based indexing to avoid slicing inside a multi-byte
+            // UTF-8 character, which would panic on non-ASCII descriptions.
+            let char_pos = lower[..pos].chars().count();
+            let snippet: String = desc
+                .chars()
+                .skip(char_pos.saturating_sub(20))
+                .take(60)
+                .collect();
             return Some(format!("description: \"…{}…\"", snippet.trim()));
         }
     }
@@ -176,7 +184,7 @@ impl ModelCommands {
                 Some((row, m.clone()))
             })
             .collect();
-        // Sort by match priority first (id > tag > family > description),
+        // Sort by match priority first (tag > id > family > description),
         // then by the usual family/version/size within each priority group.
         rows.sort_by(|(row_a, meta_a), (row_b, meta_b)| {
             match_priority(&row_a[5])
@@ -1437,13 +1445,18 @@ mod tests {
     #[test]
     fn search_tag_match_returns_rows() {
         let ctx = empty_ctx();
-        // "vision" or "instruct" or "guardian" is a tag in catalog models
+        // "vision" is a tag on docling and vision models in the catalog.
         ModelCommands::search(&ctx, "vision").unwrap();
         let tables = tables!(ctx);
         assert!(!tables.is_empty());
         let (_, _, rows) = &tables[0];
         assert!(!rows.is_empty());
-        assert!(rows.iter().any(|r| r[0].contains("vision")));
+        // r[5] is the MATCHED ON column; at least one row must be a tag match.
+        assert!(
+            rows.iter().any(|r| r[5].starts_with("tag:")),
+            "expected at least one tag: match, got: {:?}",
+            rows.iter().map(|r| &r[5]).collect::<Vec<_>>()
+        );
     }
 
     // ── recommend ─────────────────────────────────────────────────────────────

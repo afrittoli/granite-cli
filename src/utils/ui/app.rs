@@ -584,44 +584,29 @@ impl App {
                     return true;
                 }
                 // Also match against structured search_fields() (family, tags)
-                // for each registry so that e.g. searching "vision" surfaces
-                // models tagged "vision" even when the id doesn't contain it.
+                // via the Searchable trait's matches_query helper, so that e.g.
+                // searching "vision" surfaces models tagged "vision" even when
+                // the id doesn't contain it.
                 match self.section {
                     Section::Models => MODEL_REGISTRY
                         .entries()
                         .get(id.as_str())
-                        .map(|m| {
-                            m.search_fields()
-                                .iter()
-                                .any(|f| f.to_lowercase().contains(&q))
-                        })
+                        .map(|m| m.matches_query(&q))
                         .unwrap_or(false),
                     Section::Providers => PROVIDER_REGISTRY
                         .entries()
                         .get(id.as_str())
-                        .map(|m| {
-                            m.search_fields()
-                                .iter()
-                                .any(|f| f.to_lowercase().contains(&q))
-                        })
+                        .map(|m| m.matches_query(&q))
                         .unwrap_or(false),
                     Section::Launchers => crate::launchers::LAUNCHER_REGISTRY
                         .entries()
                         .get(id.as_str())
-                        .map(|m| {
-                            m.search_fields()
-                                .iter()
-                                .any(|f| f.to_lowercase().contains(&q))
-                        })
+                        .map(|m| m.matches_query(&q))
                         .unwrap_or(false),
                     Section::Capabilities => crate::capabilities::CAPABILITY_REGISTRY
                         .entries()
                         .get(id.as_str())
-                        .map(|m| {
-                            m.search_fields()
-                                .iter()
-                                .any(|f| f.to_lowercase().contains(&q))
-                        })
+                        .map(|m| m.matches_query(&q))
                         .unwrap_or(false),
                     // Recommend/Sessions/Hardware: id-only match is correct
                     _ => false,
@@ -635,6 +620,19 @@ impl App {
     }
 
     fn selected_id(&self) -> Option<String> {
+        // When a search query is active in the Models section, the table is
+        // rendered from search_rows (sorted by match priority), not from
+        // filtered_ids (sorted by catalog order). Use search_rows as the
+        // source of truth so that self.row indexes the correct entry.
+        if let AppMode::Search(ref q) = self.mode
+            && self.section == Section::Models
+            && !q.is_empty()
+        {
+            return ModelCommands::search_rows(q)
+                .into_iter()
+                .nth(self.row)
+                .map(|r| r[0].clone());
+        }
         self.filtered_ids(self.active_query())
             .into_iter()
             .nth(self.row)
@@ -777,12 +775,27 @@ impl App {
                 let configured_ids: std::collections::HashSet<&str> =
                     self.ctx.config.models.keys().map(|k| k.as_str()).collect();
 
-                // When a search is active, use search_rows so the MATCHED ON
-                // column is shown and results are sorted by match priority.
-                // When browsing without a query, use catalog_rows as usual.
+                // When a search is active, switch to search_rows so that:
+                //   • The MATCHED ON column is shown.
+                //   • Results are sorted by match priority (tag > id > family > desc).
+                //   • selected_id() uses the same ordering (see its impl above).
+                // When browsing without a query, use catalog_rows filtered by
+                // filtered_ids (which respects configured_only).
                 let searching = !query.is_empty();
                 let (entries, header) = if searching {
-                    let rows = ModelCommands::search_rows(query);
+                    // Respect configured_only: if hide-catalog is on, restrict
+                    // search results to models that have a configured instance.
+                    let only = self.configured_only[0];
+                    let rows: Vec<Vec<String>> = if only {
+                        let configured_ids: std::collections::HashSet<&str> =
+                            self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+                        ModelCommands::search_rows(query)
+                            .into_iter()
+                            .filter(|r| configured_ids.contains(r[0].as_str()))
+                            .collect()
+                    } else {
+                        ModelCommands::search_rows(query)
+                    };
                     let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE", "MATCHED ON"]).style(
                         Style::default()
                             .fg(Color::Cyan)
@@ -2299,10 +2312,21 @@ mod tests {
     fn filtered_ids_substring_filters_correctly() {
         let a = app();
         let ids = a.filtered_ids("3.1");
-        // Results are non-empty and every returned id either contains "3.1"
-        // directly, or matched via search_fields() (family/description/tags).
         assert!(!ids.is_empty());
-        assert!(ids.iter().any(|id| id.contains("3.1")));
+        // Every returned id must have matched on the query — either the id
+        // itself contains "3.1", or one of its search_fields() does (e.g. the
+        // family "Granite 3.1"). This is stronger than `any` and equivalent to
+        // the original `all` assertion on main, extended to cover field matches.
+        assert!(ids.iter().all(|id| {
+            if id.contains("3.1") {
+                return true;
+            }
+            MODEL_REGISTRY
+                .entries()
+                .get(id.as_str())
+                .map(|m| m.matches_query("3.1"))
+                .unwrap_or(false)
+        }));
     }
 
     #[test]
