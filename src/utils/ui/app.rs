@@ -481,18 +481,39 @@ impl App {
         }
     }
 
+    /// Model search rows filtered by the hide-catalog flag.
+    /// Used by both `render_browse` (to build the table) and `filtered_ids`
+    /// (to derive ids in match-priority order), so that `row_count` and
+    /// `selected_id` always index the same list as the rendered table.
+    fn model_search_rows(&self, query: &str) -> Vec<Vec<String>> {
+        let only = self.configured_only[0];
+        let configured_ids: std::collections::HashSet<&str> =
+            self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+        ModelCommands::search_rows(query)
+            .into_iter()
+            .filter(|r| !only || configured_ids.contains(r[0].as_str()))
+            .collect()
+    }
+
     fn filtered_ids(&self, query: &str) -> Vec<String> {
         let q = query.to_lowercase();
         // IDs must be returned in the same order as the browse table renders
         // them so that self.row correctly indexes the highlighted entry.
         //
-        // Models: catalog_rows uses sort_enriched_rows (family/version/size),
-        //         not alphabetical — derive IDs from there.
-        // Recommend: recommend_rows_cache is sorted by variant size; preserve
-        //            that order instead of re-sorting alphabetically.
-        // Providers/Launchers/Capabilities: render code sorts by key, so
-        //                                   alphabetical sort here is correct.
+        // Models with a query: the table renders model_search_rows (match-
+        //   priority order), so return its ids directly so that row_count
+        //   and selected_id follow the same list.
+        // Models without a query: catalog_rows (family/version/size order).
+        // Recommend: recommend_rows_cache (variant size order).
+        // Providers/Launchers/Capabilities: alphabetical (matches render).
         // Hardware: no selectable rows.
+        if self.section == Section::Models && !q.is_empty() {
+            return self
+                .model_search_rows(query)
+                .into_iter()
+                .map(|r| r[0].clone())
+                .collect();
+        }
         let ids: Vec<String> = match self.section {
             Section::Models => {
                 let only = self.configured_only[0];
@@ -588,11 +609,6 @@ impl App {
                 // searching "vision" surfaces models tagged "vision" even when
                 // the id doesn't contain it.
                 match self.section {
-                    Section::Models => MODEL_REGISTRY
-                        .entries()
-                        .get(id.as_str())
-                        .map(|m| m.matches_query(&q))
-                        .unwrap_or(false),
                     Section::Providers => PROVIDER_REGISTRY
                         .entries()
                         .get(id.as_str())
@@ -608,7 +624,8 @@ impl App {
                         .get(id.as_str())
                         .map(|m| m.matches_query(&q))
                         .unwrap_or(false),
-                    // Recommend/Sessions/Hardware: id-only match is correct
+                    // Models with query: handled by early-return above.
+                    // Recommend/Sessions/Hardware: id-only match is correct.
                     _ => false,
                 }
             })
@@ -620,19 +637,6 @@ impl App {
     }
 
     fn selected_id(&self) -> Option<String> {
-        // When a search query is active in the Models section, the table is
-        // rendered from search_rows (sorted by match priority), not from
-        // filtered_ids (sorted by catalog order). Use search_rows as the
-        // source of truth so that self.row indexes the correct entry.
-        if let AppMode::Search(ref q) = self.mode
-            && self.section == Section::Models
-            && !q.is_empty()
-        {
-            return ModelCommands::search_rows(q)
-                .into_iter()
-                .nth(self.row)
-                .map(|r| r[0].clone());
-        }
         self.filtered_ids(self.active_query())
             .into_iter()
             .nth(self.row)
@@ -783,19 +787,11 @@ impl App {
                 // filtered_ids (which respects configured_only).
                 let searching = !query.is_empty();
                 let (entries, header) = if searching {
-                    // Respect configured_only: if hide-catalog is on, restrict
-                    // search results to models that have a configured instance.
-                    let only = self.configured_only[0];
-                    let rows: Vec<Vec<String>> = if only {
-                        let configured_ids: std::collections::HashSet<&str> =
-                            self.ctx.config.models.keys().map(|k| k.as_str()).collect();
-                        ModelCommands::search_rows(query)
-                            .into_iter()
-                            .filter(|r| configured_ids.contains(r[0].as_str()))
-                            .collect()
-                    } else {
-                        ModelCommands::search_rows(query)
-                    };
+                    // model_search_rows applies configured_only and match-
+                    // priority sort — the same list filtered_ids returns for
+                    // Models+query, so row index, row_count, and selected_id
+                    // all stay in sync with the rendered table.
+                    let rows = self.model_search_rows(query);
                     let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE", "MATCHED ON"]).style(
                         Style::default()
                             .fg(Color::Cyan)
