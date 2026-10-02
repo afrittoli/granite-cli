@@ -32,9 +32,7 @@ impl ConstructError {
             detail: detail.to_string(),
         }
     }
-}
 
-impl ConstructError {
     /// This failure as a message naming the instance it is about, for a
     /// source that knows which kind and id it was asked for. One wording for
     /// all four kinds, so the same problem reads the same whichever source

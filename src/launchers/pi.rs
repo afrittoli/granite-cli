@@ -27,6 +27,8 @@ use_channel!("LNCHR");
 
 /*-- public --*/
 
+/// Every field should have a serde default so that delegate construction is
+/// possible from an empty settings object.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct PiLauncherConfig {
     /// Override path to the `pi` binary for non-PATH installs.

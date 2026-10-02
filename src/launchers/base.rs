@@ -405,9 +405,7 @@ pub struct LaunchContext {
     /// (e.g. Bob, which has no model-configuration capability and so never makes
     /// a request the proxy could intercept).
     pub usage_tracker: Option<std::sync::Arc<crate::proxy::UsageTracker>>,
-    /// The session proxy for this launch, when one was started. Carried here
-    /// rather than read from configuration at construction, so a launcher is
-    /// built from its own settings alone.
+    /// The session proxy for this launch, when one was started.
     pub model_proxy: Option<crate::proxy::ProxyHandle>,
 }
 
