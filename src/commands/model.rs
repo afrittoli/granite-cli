@@ -89,11 +89,16 @@ fn search_match_reason(id: &str, m: &ModelMetadata, q: &str) -> Option<String> {
             // Use char-based indexing to avoid slicing inside a multi-byte
             // UTF-8 character, which would panic on non-ASCII descriptions.
             let char_pos = lower[..pos].chars().count();
+            // Collapse internal whitespace (newlines, tabs, multiple spaces)
+            // so that multi-line descriptions don't split a table row.
             let snippet: String = desc
                 .chars()
                 .skip(char_pos.saturating_sub(20))
                 .take(60)
-                .collect();
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             return Some(format!("description: \"…{}…\"", snippet.trim()));
         }
     }
@@ -1396,6 +1401,131 @@ mod tests {
             &crate::config::Config::default(),
         );
         assert!(requirement.admits_instance(&provider));
+    }
+
+    // -- match_priority -------------------------------------------------------
+
+    #[test]
+    fn match_priority_family_returns_2() {
+        assert_eq!(match_priority("family"), 2);
+    }
+
+    #[test]
+    fn match_priority_description_returns_3() {
+        assert_eq!(match_priority("description: \"…some text…\""), 3);
+    }
+
+    // -- search_match_reason --------------------------------------------------
+
+    #[test]
+    fn search_match_reason_returns_family_when_family_matches() {
+        // Use inline metadata: family matches, id and tags do not.
+        // This avoids depending on the live registry.
+        use crate::models::{LayerKind, LayerTypeCount, ModelArchitecture, ModelType};
+        let m = ModelMetadata {
+            family: "AlphaFamily".to_string(),
+            version: "1.0".to_string(),
+            size: 1_000_000_000,
+            context_length: 4096,
+            model_type: ModelType::Text,
+            huggingface_repo: "test/test".to_string(),
+            native_dtype: "bfloat16".to_string(),
+            architecture: ModelArchitecture {
+                num_hidden_layers: 1,
+                hidden_size: 1,
+                num_attention_heads: 1,
+                num_key_value_heads: 1,
+                head_dim: 1,
+                layer_types: vec![LayerTypeCount {
+                    kind: LayerKind::FullAttention,
+                    count: 1,
+                }],
+            },
+            variants: vec![],
+            description: None,
+            tags: vec![],
+            supported_functions: vec![],
+        };
+        // "alphafamily" is in family but not in id or tags.
+        let result = search_match_reason("some-model-beta", &m, "alphafamily");
+        assert_eq!(result, Some("family".to_string()));
+    }
+
+    #[test]
+    fn search_match_reason_returns_none_when_no_field_matches() {
+        let models = MODEL_REGISTRY.entries();
+        let (id, m) = models.iter().next().expect("registry must not be empty");
+        let result = search_match_reason(id, m, "zzznomatchquery");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn search_match_reason_family_only_match() {
+        use crate::models::{LayerKind, LayerTypeCount, ModelArchitecture, ModelType};
+        // Construct metadata whose family matches but id and tags do not.
+        let m = ModelMetadata {
+            family: "UniqueFamily".to_string(),
+            version: "1.0".to_string(),
+            size: 1_000_000_000,
+            context_length: 4096,
+            model_type: ModelType::Text,
+            huggingface_repo: "test/test".to_string(),
+            native_dtype: "bfloat16".to_string(),
+            architecture: ModelArchitecture {
+                num_hidden_layers: 1,
+                hidden_size: 1,
+                num_attention_heads: 1,
+                num_key_value_heads: 1,
+                head_dim: 1,
+                layer_types: vec![LayerTypeCount {
+                    kind: LayerKind::FullAttention,
+                    count: 1,
+                }],
+            },
+            variants: vec![],
+            description: None,
+            tags: vec![],
+            supported_functions: vec![],
+        };
+        let result = search_match_reason("some-model-id", &m, "uniquefamily");
+        assert_eq!(result, Some("family".to_string()));
+    }
+
+    #[test]
+    fn search_match_reason_description_collapses_whitespace_in_snippet() {
+        use crate::models::{LayerKind, LayerTypeCount, ModelArchitecture, ModelType};
+        let m = ModelMetadata {
+            family: "TestFamily".to_string(),
+            version: "1.0".to_string(),
+            size: 1_000_000_000,
+            context_length: 4096,
+            model_type: ModelType::Text,
+            huggingface_repo: "test/test".to_string(),
+            native_dtype: "bfloat16".to_string(),
+            architecture: ModelArchitecture {
+                num_hidden_layers: 1,
+                hidden_size: 1,
+                num_attention_heads: 1,
+                num_key_value_heads: 1,
+                head_dim: 1,
+                layer_types: vec![LayerTypeCount {
+                    kind: LayerKind::FullAttention,
+                    count: 1,
+                }],
+            },
+            variants: vec![],
+            description: Some("First line.\nSecond line with target here.".to_string()),
+            tags: vec![],
+            supported_functions: vec![],
+        };
+        let result = search_match_reason("some-id", &m, "target");
+        assert!(result.is_some());
+        let label = result.unwrap();
+        // Newline must be collapsed — no raw \n in the output
+        assert!(
+            !label.contains('\n'),
+            "snippet must not contain newlines: {label:?}"
+        );
     }
 
     // -- search ---------------------------------------------------------------

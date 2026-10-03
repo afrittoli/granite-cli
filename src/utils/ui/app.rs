@@ -2385,6 +2385,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn filtered_ids_tag_match_capability_section() {
+        let mut a = app();
+        a.section = Section::Capabilities;
+        // "agent" is a tag on agent-model and sub-agent capabilities.
+        let ids = a.filtered_ids("agent");
+        assert!(
+            !ids.is_empty(),
+            "expected capabilities matching tag 'agent'; got none"
+        );
+    }
+
+    // -- selected_id ----------------------------------------------------------
+
+    #[test]
+    fn selected_id_returns_first_id_at_row_zero() {
+        let a = app();
+        let expected = a.filtered_ids("").into_iter().next();
+        assert_eq!(a.selected_id(), expected);
+    }
+
+    #[test]
+    fn selected_id_returns_none_when_row_exceeds_count() {
+        let mut a = app();
+        // Hardware section has no rows.
+        a.section = Section::Hardware;
+        a.row = 99;
+        assert_eq!(a.selected_id(), None);
+    }
+
+    #[test]
+    fn selected_id_advances_with_row() {
+        let mut a = app();
+        let ids = a.filtered_ids("");
+        if ids.len() >= 2 {
+            a.row = 1;
+            assert_eq!(a.selected_id(), ids.into_iter().nth(1));
+        }
+    }
+
+    #[test]
+    fn selected_id_in_search_mode_uses_search_order() {
+        let mut a = app();
+        a.mode = AppMode::Search("vision".to_string());
+        a.row = 0;
+        // Must equal filtered_ids("vision").nth(0) which uses model_search_rows
+        let expected = a.filtered_ids("vision").into_iter().next();
+        assert_eq!(a.selected_id(), expected);
+    }
+
     // -- detail scroll --------------------------------------------------------
 
     #[test]
