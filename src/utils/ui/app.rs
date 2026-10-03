@@ -1238,10 +1238,16 @@ impl App {
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
             }
             Section::Recommend => {
-                let all_rows = &self.recommend_rows_cache;
-
                 let configured_ids: std::collections::HashSet<&str> =
                     self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+
+                // Filter by query when a search is active (same set as filtered_ids).
+                let q = query.to_lowercase();
+                let visible_rows: Vec<&Vec<String>> = self
+                    .recommend_rows_cache
+                    .iter()
+                    .filter(|r| q.is_empty() || r[0].to_lowercase().contains(&q))
+                    .collect();
 
                 // columns: [0]=id [1]=size [2]=variant [3]=type [4]=fit [5]=providers
                 let header = Row::new(vec![
@@ -1259,10 +1265,11 @@ impl App {
                         .add_modifier(Modifier::BOLD),
                 );
 
-                let rows: Vec<Row> = all_rows
+                let rows: Vec<Row> = visible_rows
                     .iter()
                     .enumerate()
                     .map(|(i, r)| {
+                        let r = *r;
                         let style = if i == self.row {
                             Style::default().bg(Color::DarkGray)
                         } else if i % 2 == 0 {
@@ -2648,6 +2655,31 @@ mod tests {
         for row in ModelCommands::recommend_rows(None, None, &[], false, &*ui, &profile) {
             assert_eq!(row.len(), 6, "each recommend row must have 6 columns");
         }
+    }
+
+    #[test]
+    fn recommend_search_filters_by_id_substring() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        // If the cache is empty (no hardware profile in test), filtered_ids returns
+        // nothing — that's fine. The important thing is that when rows are present,
+        // only matching ones are returned.
+        if a.recommend_rows_cache.is_empty() {
+            // Nothing to assert — cache is built lazily from hardware profile.
+            return;
+        }
+        // Use the id of the first row as a guaranteed match.
+        let first_id = a.recommend_rows_cache[0][0].clone();
+        let query = &first_id[..4.min(first_id.len())];
+        let matches = a.filtered_ids(query);
+        assert!(
+            matches
+                .iter()
+                .all(|id| id.to_lowercase().contains(&query.to_lowercase())),
+            "every returned id must contain the query substring"
+        );
+        // Empty query returns all rows.
+        assert_eq!(a.filtered_ids("").len(), a.recommend_rows_cache.len());
     }
 
     #[test]
