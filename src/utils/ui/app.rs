@@ -3020,4 +3020,248 @@ mod tests {
             "stale session must show when hide_inactive=false"
         );
     }
+
+    // -- catalog_match_reason -------------------------------------------------
+
+    #[test]
+    fn catalog_match_reason_returns_id_when_id_matches() {
+        // id "claude" contains query "clau" → matched on id regardless of search_fields
+        struct FakeMeta;
+        impl crate::utils::Searchable for FakeMeta {
+            fn search_fields(&self) -> Vec<&str> {
+                vec![]
+            }
+        }
+        let reason =
+            App::catalog_match_reason("claude", &FakeMeta as &dyn crate::utils::Searchable, "clau");
+        assert_eq!(reason, "id");
+    }
+
+    #[test]
+    fn catalog_match_reason_returns_tag_when_tag_matches() {
+        // Use a capability whose id does NOT match but a search_field (tag) does.
+        // Pick a known capability — "agent-model" has tags but not "agen" in the id prefix check.
+        // We directly construct a fake Searchable to avoid catalog coupling.
+        struct FakeMeta {
+            fields: Vec<&'static str>,
+        }
+        impl crate::utils::Searchable for FakeMeta {
+            fn search_fields(&self) -> Vec<&str> {
+                self.fields.clone()
+            }
+        }
+        let meta = FakeMeta {
+            fields: vec!["vision", "instruct"],
+        };
+        // id "zzz" does not match query "vision"; tag "vision" does match and has no spaces
+        let reason =
+            App::catalog_match_reason("zzz", &meta as &dyn crate::utils::Searchable, "vision");
+        assert_eq!(reason, "tag: vision");
+    }
+
+    #[test]
+    fn catalog_match_reason_returns_name_when_field_has_spaces() {
+        struct FakeMeta {
+            fields: Vec<&'static str>,
+        }
+        impl crate::utils::Searchable for FakeMeta {
+            fn search_fields(&self) -> Vec<&str> {
+                self.fields.clone()
+            }
+        }
+        let meta = FakeMeta {
+            fields: vec!["granite base model"],
+        };
+        // id "zzz" doesn't match; field has spaces → "name"
+        let reason =
+            App::catalog_match_reason("zzz", &meta as &dyn crate::utils::Searchable, "granite");
+        assert_eq!(reason, "name");
+    }
+
+    #[test]
+    fn catalog_match_reason_falls_back_to_id_when_nothing_matches() {
+        struct FakeMeta;
+        impl crate::utils::Searchable for FakeMeta {
+            fn search_fields(&self) -> Vec<&str> {
+                vec![]
+            }
+        }
+        // Neither id nor any field matches — fallback is "id"
+        let reason =
+            App::catalog_match_reason("zzz", &FakeMeta as &dyn crate::utils::Searchable, "xyz");
+        assert_eq!(reason, "id");
+    }
+
+    // -- configured_only_idx --------------------------------------------------
+
+    #[test]
+    fn configured_only_idx_models_is_zero() {
+        assert_eq!(App::configured_only_idx(&Section::Models), Some(0));
+    }
+
+    #[test]
+    fn configured_only_idx_providers_is_one() {
+        assert_eq!(App::configured_only_idx(&Section::Providers), Some(1));
+    }
+
+    #[test]
+    fn configured_only_idx_launchers_is_two() {
+        assert_eq!(App::configured_only_idx(&Section::Launchers), Some(2));
+    }
+
+    #[test]
+    fn configured_only_idx_capabilities_is_three() {
+        assert_eq!(App::configured_only_idx(&Section::Capabilities), Some(3));
+    }
+
+    #[test]
+    fn configured_only_idx_recommend_is_none() {
+        assert_eq!(App::configured_only_idx(&Section::Recommend), None);
+    }
+
+    #[test]
+    fn configured_only_idx_sessions_is_none() {
+        assert_eq!(App::configured_only_idx(&Section::Sessions), None);
+    }
+
+    #[test]
+    fn configured_only_idx_hardware_is_none() {
+        assert_eq!(App::configured_only_idx(&Section::Hardware), None);
+    }
+
+    // -- active_query ---------------------------------------------------------
+
+    #[test]
+    fn active_query_in_browse_returns_active_search() {
+        let mut a = app();
+        a.active_search = "granite".to_string();
+        a.mode = AppMode::Browse;
+        assert_eq!(a.active_query(), "granite");
+    }
+
+    #[test]
+    fn active_query_in_search_mode_returns_live_query() {
+        let mut a = app();
+        a.active_search = "old".to_string();
+        a.mode = AppMode::Search("new".to_string());
+        assert_eq!(a.active_query(), "new");
+    }
+
+    #[test]
+    fn active_query_in_detail_returns_active_search() {
+        let mut a = app();
+        a.active_search = "filter".to_string();
+        a.mode = AppMode::Detail("some-id".to_string());
+        assert_eq!(a.active_query(), "filter");
+    }
+
+    // -- filtered_ids hardware arm / empty-query early return -----------------
+
+    #[test]
+    fn filtered_ids_hardware_section_always_empty() {
+        let mut a = app();
+        a.section = Section::Hardware;
+        assert!(a.filtered_ids("").is_empty());
+        assert!(a.filtered_ids("anything").is_empty());
+    }
+
+    #[test]
+    fn filtered_ids_empty_query_returns_all_for_providers() {
+        let mut a = app();
+        a.section = Section::Providers;
+        let all = a.filtered_ids("");
+        let registry_len = crate::providers::PROVIDER_REGISTRY.entries().len();
+        assert_eq!(all.len(), registry_len);
+    }
+
+    #[test]
+    fn filtered_ids_empty_query_returns_all_for_launchers() {
+        let mut a = app();
+        a.section = Section::Launchers;
+        let all = a.filtered_ids("");
+        let registry_len = crate::launchers::LAUNCHER_REGISTRY.entries().len();
+        assert_eq!(all.len(), registry_len);
+    }
+
+    #[test]
+    fn filtered_ids_empty_query_returns_all_for_capabilities() {
+        let mut a = app();
+        a.section = Section::Capabilities;
+        let all = a.filtered_ids("");
+        let registry_len = crate::capabilities::CAPABILITY_REGISTRY.entries().len();
+        assert_eq!(all.len(), registry_len);
+    }
+
+    // -- Providers / Launchers / Capabilities search filter -------------------
+
+    #[test]
+    fn filtered_ids_providers_substring_match() {
+        let mut a = app();
+        a.section = Section::Providers;
+        // "ollama" is a known provider id
+        let ids = a.filtered_ids("ollama");
+        assert!(
+            ids.iter().any(|id| id.contains("ollama")),
+            "expected 'ollama' in filtered provider ids; got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn filtered_ids_launchers_substring_match() {
+        let mut a = app();
+        a.section = Section::Launchers;
+        // "claude" is a known launcher id
+        let ids = a.filtered_ids("claude");
+        assert!(
+            ids.iter().any(|id| id.contains("claude")),
+            "expected 'claude' in filtered launcher ids; got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn filtered_ids_launchers_no_match_returns_empty() {
+        let mut a = app();
+        a.section = Section::Launchers;
+        let ids = a.filtered_ids("zzzz_no_match_zzzz");
+        assert!(ids.is_empty(), "expected empty; got {ids:?}");
+    }
+
+    #[test]
+    fn filtered_ids_capabilities_no_match_returns_empty() {
+        let mut a = app();
+        a.section = Section::Capabilities;
+        let ids = a.filtered_ids("zzzz_no_match_zzzz");
+        assert!(ids.is_empty(), "expected empty; got {ids:?}");
+    }
+
+    // -- search Enter commits filter, Esc clears it ---------------------------
+
+    #[test]
+    fn search_enter_commits_active_search() {
+        let mut a = app();
+        a.mode = AppMode::Search("goose".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.mode, AppMode::Browse);
+        assert_eq!(a.active_search, "goose");
+    }
+
+    #[test]
+    fn active_query_after_enter_returns_committed_search() {
+        let mut a = app();
+        a.mode = AppMode::Search("3.3".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // After Enter, active_query() must return the committed search in Browse mode
+        assert_eq!(a.active_query(), "3.3");
+    }
+
+    #[test]
+    fn search_esc_clears_active_search() {
+        let mut a = app();
+        a.active_search = "prev-filter".to_string();
+        a.mode = AppMode::Search("typing".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(a.mode, AppMode::Browse);
+        assert_eq!(a.active_search, "");
+        assert_eq!(a.active_query(), "");
+    }
 }
