@@ -418,6 +418,8 @@ pub struct LaunchContext {
     /// (e.g. Bob, which has no model-configuration capability and so never makes
     /// a request the proxy could intercept).
     pub usage_tracker: Option<std::sync::Arc<crate::proxy::UsageTracker>>,
+    /// The session proxy for this launch, when one was started.
+    pub model_proxy: Option<crate::proxy::ProxyHandle>,
 }
 
 /// A single environment variable binding contributed to the subprocess overlay.
@@ -436,7 +438,7 @@ define_factory!(Launcher, LauncherMetadata, LauncherFactory);
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::registry::ConfigConstructable;
+    use crate::registry::{ConfigConstructable, ConstructError};
 
     /// Minimal Launcher implementation used only in tests.
     pub(crate) struct FakeLauncher {
@@ -455,11 +457,7 @@ pub(crate) mod tests {
     impl ConfigConstructable for FakeLauncher {
         type Config = crate::registry::NoConfig;
 
-        fn new(
-            instance_id: &str,
-            cfg: &serde_json::Value,
-            _global_config: &crate::config::Config,
-        ) -> Self {
+        fn new(instance_id: &str, cfg: &serde_json::Value) -> Result<Self, ConstructError> {
             let command_name = cfg
                 .get("command_name")
                 .and_then(|v| v.as_str())
@@ -469,11 +467,11 @@ pub(crate) mod tests {
                 .get("command_path")
                 .and_then(|v| v.as_str())
                 .map(PathBuf::from);
-            Self {
+            Ok(Self {
                 instance_id: instance_id.to_string(),
                 command_name,
                 command_path,
-            }
+            })
         }
     }
 
@@ -524,8 +522,8 @@ pub(crate) mod tests {
             &serde_json::json!({
                 "command_name": "this-binary-absolutely-does-not-exist-9x7z"
             }),
-            &crate::config::Config::default(),
-        );
+        )
+        .unwrap();
         assert!(launcher.validate_command().is_err());
     }
 
@@ -537,8 +535,8 @@ pub(crate) mod tests {
                 "command_name": "fake",
                 "command_path": "/this/path/does/not/exist/fake"
             }),
-            &crate::config::Config::default(),
-        );
+        )
+        .unwrap();
         assert!(launcher.validate_command().is_err());
     }
 
@@ -549,24 +547,21 @@ pub(crate) mod tests {
             &serde_json::json!({
                 "command_path": "ls"
             }),
-            &crate::config::Config::default(),
-        );
+        )
+        .unwrap();
         assert!(launcher.validate_command().is_ok());
     }
 
     #[tokio::test]
     async fn env_overlay_default_is_empty() {
-        let launcher = FakeLauncher::new(
-            "my-fake",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let launcher = FakeLauncher::new("my-fake", &serde_json::json!({})).unwrap();
         let ctx = LaunchContext {
             launcher_id: "test".to_string(),
             working_dir: PathBuf::from("/tmp"),
             base_env: HashMap::new(),
             dry_run: false,
             usage_tracker: None,
+            model_proxy: None,
         };
         let overlay = launcher.env_overlay(&ctx).await.unwrap();
         assert!(overlay.is_empty());
@@ -574,11 +569,7 @@ pub(crate) mod tests {
 
     #[test]
     fn map_tool_name_default_passes_through_other_and_returns_none_for_everything_else() {
-        let launcher = FakeLauncher::new(
-            "my-fake",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let launcher = FakeLauncher::new("my-fake", &serde_json::json!({})).unwrap();
         assert_eq!(
             launcher.map_tool_name(&ToolName::Other("SomeRawTool".to_string())),
             Some("SomeRawTool".to_string())
@@ -605,12 +596,7 @@ pub(crate) mod tests {
     fn launcher_factory_construct() {
         let mut factory = LauncherFactory::new();
         factory.register::<FakeLauncher>("fake");
-        let result = factory.construct(
-            "fake",
-            "my-fake",
-            &serde_json::json!({}),
-            &crate::config::Config::default(),
-        );
+        let result = factory.construct("fake", "my-fake", &serde_json::json!({}));
         assert!(result.is_ok());
     }
 
@@ -652,6 +638,7 @@ pub(crate) mod tests {
             base_env: HashMap::new(),
             dry_run: true,
             usage_tracker: None,
+            model_proxy: None,
         };
         let status = run_command(
             PathBuf::from("/usr/bin/echo"),
@@ -675,6 +662,7 @@ pub(crate) mod tests {
             base_env: HashMap::new(),
             dry_run: false,
             usage_tracker: None,
+            model_proxy: None,
         };
         #[cfg(unix)]
         let (binary, args) = (PathBuf::from("/bin/echo"), vec!["hello".to_string()]);

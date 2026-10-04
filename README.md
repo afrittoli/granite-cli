@@ -28,6 +28,7 @@ This script automatically:
 | `NO_SETUP` | Set to a truthy value (`1`, `t`, `y`, `true`, `yes`) to skip `granite-cli setup` after install |
 | `AUTO` | Set to a truthy value to run setup in auto/non-interactive mode (default: `false`; enabled automatically in CI) |
 | `PULL` | Set to a truthy value to pull models automatically during setup (default: `false`) |
+| `NO_COMPLETIONS` | Set to a truthy value to skip installing the shell completion script (see [Shell completion](#shell-completion)) |
 
 ### Install from source
 
@@ -57,6 +58,48 @@ If building from source is required, the script handles all Termux-specific buil
 ```sh
 granite-cli --help
 ```
+
+### Shell completion
+
+`granite-cli completions <SHELL>` prints a completion script to stdout. Supported shells are `bash`, `zsh`, `fish`, `elvish` and `powershell`. The install script writes the script for bash and fish to the directories below, and prints the zsh steps.
+
+**bash** (requires the `bash-completion` package for the directory-based setup):
+
+```sh
+mkdir -p ~/.local/share/bash-completion/completions
+granite-cli completions bash > ~/.local/share/bash-completion/completions/granite-cli
+```
+
+Or load it from `~/.bashrc`:
+
+```sh
+source <(granite-cli completions bash)
+```
+
+The bash 3.2 that ships with macOS does not support `source <(...)`. Use `eval "$(granite-cli completions bash)"` there.
+
+**zsh**: write `_granite-cli` into a directory on `fpath`:
+
+```sh
+mkdir -p ~/.zfunc
+granite-cli completions zsh > ~/.zfunc/_granite-cli
+```
+
+Then add these lines to `~/.zshrc`, before any existing `compinit` call:
+
+```sh
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit && compinit
+```
+
+**fish**:
+
+```sh
+mkdir -p ~/.config/fish/completions
+granite-cli completions fish > ~/.config/fish/completions/granite-cli.fish
+```
+
+Regenerate the script after upgrading `granite-cli` so that new commands and flags complete.
 
 ## Roadmap
 
