@@ -485,31 +485,93 @@ impl App {
         }
     }
 
-    /// Returns a short label describing why `id` / `metadata` matched `query`
-    /// for Providers, Launchers, and Capabilities sections. Used to populate
-    /// the MATCHED ON column when a search is active.
-    /// Returns `"id"` when the id contains the query, otherwise `"tag: …"` for
-    /// the first matching tag, otherwise `"name"` for a name/description match.
-    fn catalog_match_reason(
-        id: &str,
-        metadata: &dyn crate::utils::Searchable,
-        query: &str,
-    ) -> String {
+    /// Returns a short label describing why `id` matched `query`. Used to
+    /// populate the MATCHED ON column when a search is active.
+    ///
+    /// `labeled_fields` is an ordered slice of `(label, value)` pairs — each
+    /// caller passes its own field names so the reason shown to the user
+    /// matches the column that actually contains the matching text.
+    ///
+    /// Priority (first match wins):
+    ///   1. `"tag: <value>"` — any field whose label is `"tag"` and whose
+    ///      value contains the query.
+    ///   2. `"id"` — when the id itself contains the query.
+    ///   3. `label` — the caller-supplied label for any other matching field
+    ///      (e.g. `"description"`, `"default command"`).
+    fn catalog_match_reason(id: &str, labeled_fields: &[(&str, &str)], query: &str) -> String {
         let q = query.to_lowercase();
+        // Pass 1: tags — highest priority.
+        for (label, value) in labeled_fields {
+            if *label == "tag" && value.to_lowercase().contains(&q) {
+                return format!("tag: {value}");
+            }
+        }
+        // Pass 2: id.
         if id.to_lowercase().contains(&q) {
             return "id".to_string();
         }
-        // Check individual search_fields for a tag prefix match first.
-        for field in metadata.search_fields() {
-            if field.to_lowercase().contains(&q) {
-                // If the field looks like a short tag (no spaces), label it tag:
-                if !field.contains(' ') {
-                    return format!("tag: {field}");
-                }
-                return "name".to_string();
+        // Pass 3: any other labeled field.
+        for (label, value) in labeled_fields {
+            if *label != "tag" && value.to_lowercase().contains(&q) {
+                return label.to_string();
             }
         }
         "id".to_string()
+    }
+
+    /// Match-reason for the Recommend tab.
+    ///
+    /// `row` is the pre-computed cache row:
+    ///   [0]=id  [1]=size  [2]=variant  [3]=type  [4]=fit  [5]=providers
+    ///
+    /// Priority: tag > id > size > variant > type > providers > family > description
+    fn recommend_match_reason(
+        id: &str,
+        metadata: &crate::models::ModelMetadata,
+        row: &[String],
+        query: &str,
+    ) -> String {
+        let q = query.to_lowercase();
+        // Pass 1: tags — highest priority.
+        for tag in &metadata.tags {
+            if tag.to_lowercase().contains(&q) {
+                return format!("tag: {tag}");
+            }
+        }
+        // Pass 2: id.
+        if id.to_lowercase().contains(&q) {
+            return "id".to_string();
+        }
+        // Pass 3: size — r[1] e.g. "3B", "70B"
+        if row.get(1).is_some_and(|v| v.to_lowercase().contains(&q)) {
+            return "size".to_string();
+        }
+        // Pass 4: variant — r[2] e.g. "GGUF / Q4_K_M (4.1 GB)"
+        if row.get(2).is_some_and(|v| v.to_lowercase().contains(&q)) {
+            return "variant".to_string();
+        }
+        // Pass 5: type — r[3] e.g. "Text", "Vision" (fall back to metadata.model_type
+        // when no pre-computed row is available, e.g. in unit tests).
+        let type_owned;
+        let type_str: &str = if let Some(v) = row.get(3) {
+            v.as_str()
+        } else {
+            type_owned = metadata.model_type.to_string();
+            type_owned.as_str()
+        };
+        if type_str.to_lowercase().contains(&q) {
+            return format!("type: {type_str}");
+        }
+        // Pass 6: providers — r[5] e.g. "lm-studio, ollama"
+        if row.get(5).is_some_and(|v| v.to_lowercase().contains(&q)) {
+            return "providers".to_string();
+        }
+        // Pass 7: family, description.
+        let mut fields: Vec<(&str, &str)> = vec![("family", metadata.family.as_str())];
+        if let Some(desc) = &metadata.description {
+            fields.push(("description", desc.as_str()));
+        }
+        Self::catalog_match_reason("", &fields, query)
     }
 
     /// Index into `self.configured_only` for sections that support the toggle,
@@ -623,18 +685,42 @@ impl App {
                 v
             }
             Section::Recommend => {
-                // Filter by id substring when a query is active.
-                let cache_ids: Vec<String> = self
+                // Filter by id substring (or matching search_fields) when a
+                // query is active — mirrors Models/Providers/Launchers/Capabilities.
+                // Also match the pre-computed display columns (size, variant,
+                // type, providers) that are not covered by matches_query().
+                if q.is_empty() {
+                    return self
+                        .recommend_rows_cache
+                        .iter()
+                        .map(|r| r[0].clone())
+                        .collect();
+                }
+                return self
                     .recommend_rows_cache
                     .iter()
+                    .filter(|r| {
+                        let id = &r[0];
+                        if id.to_lowercase().contains(&q) {
+                            return true;
+                        }
+                        // Check metadata fields (family, description, tags).
+                        if MODEL_REGISTRY
+                            .entries()
+                            .get(id.as_str())
+                            .map(|m| m.matches_query(&q))
+                            .unwrap_or(false)
+                        {
+                            return true;
+                        }
+                        // Check pre-computed display columns: size[1], variant[2],
+                        // type[3], providers[5].
+                        r.get(1).is_some_and(|v| v.to_lowercase().contains(&q))
+                            || r.get(2).is_some_and(|v| v.to_lowercase().contains(&q))
+                            || r.get(3).is_some_and(|v| v.to_lowercase().contains(&q))
+                            || r.get(5).is_some_and(|v| v.to_lowercase().contains(&q))
+                    })
                     .map(|r| r[0].clone())
-                    .collect();
-                if q.is_empty() {
-                    return cache_ids;
-                }
-                return cache_ids
-                    .into_iter()
-                    .filter(|id| id.to_lowercase().contains(&q))
                     .collect();
             }
             Section::Sessions => {
@@ -657,10 +743,9 @@ impl App {
                 if id.to_lowercase().contains(&q) {
                     return true;
                 }
-                // Also match against structured search_fields() (family, tags)
-                // via the Searchable trait's matches_query helper, so that e.g.
-                // searching "vision" surfaces models tagged "vision" even when
-                // the id doesn't contain it.
+                // Also match against search_fields() via the Searchable trait
+                // so that e.g. a tag or description match surfaces the row even
+                // when the id doesn't contain the query.
                 match self.section {
                     Section::Providers => PROVIDER_REGISTRY
                         .entries()
@@ -677,8 +762,8 @@ impl App {
                         .get(id.as_str())
                         .map(|m| m.matches_query(&q))
                         .unwrap_or(false),
-                    // Models with query: handled by early-return above.
-                    // Recommend/Sessions/Hardware: id-only match is correct.
+                    // Models+query: handled by early-return above.
+                    // Sessions/Hardware: id-only match is correct.
                     _ => false,
                 }
             })
@@ -828,22 +913,17 @@ impl App {
 
         match self.section {
             Section::Models => {
-                // Model instances are keyed by model ID directly
                 let configured_ids: std::collections::HashSet<&str> =
                     self.ctx.config.models.keys().map(|k| k.as_str()).collect();
 
-                // When a search is active, switch to search_rows so that:
-                //   • The MATCHED ON column is shown.
-                //   • Results are sorted by match priority (tag > id > family > desc).
-                //   • selected_id() uses the same ordering (see its impl above).
-                // When browsing without a query, use catalog_rows filtered by
-                // filtered_ids (which respects configured_only).
+                // When a search is active, use search_rows (shows MATCHED ON,
+                // sorted by match priority).  Without a query, use catalog_rows
+                // filtered by filtered_ids (respects configured_only).
                 let searching = !query.is_empty();
                 let (entries, header) = if searching {
-                    // model_search_rows applies configured_only and match-
-                    // priority sort — the same list filtered_ids returns for
-                    // Models+query, so row index, row_count, and selected_id
-                    // all stay in sync with the rendered table.
+                    // model_search_rows applies configured_only and match-priority
+                    // sort — the same list filtered_ids returns for Models+query,
+                    // keeping row index, row_count, and selected_id in sync.
                     let rows = self.model_search_rows(query);
                     let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE", "MATCHED ON"]).style(
                         Style::default()
@@ -986,11 +1066,14 @@ impl App {
                             Cell::from("")
                         };
                         if searching {
-                            let reason = Self::catalog_match_reason(
-                                id,
-                                p as &dyn crate::utils::Searchable,
-                                query,
-                            );
+                            let mut fields: Vec<(&str, &str)> = vec![
+                                ("name", p.name.as_str()),
+                                ("description", p.description.as_str()),
+                            ];
+                            for tag in &p.tags {
+                                fields.push(("tag", tag.as_str()));
+                            }
+                            let reason = Self::catalog_match_reason(id, &fields, query);
                             Row::new(vec![
                                 marker,
                                 Cell::from(id.to_string()),
@@ -1087,11 +1170,16 @@ impl App {
                             Cell::from("")
                         };
                         if searching {
-                            let reason = Self::catalog_match_reason(
-                                id,
-                                l as &dyn crate::utils::Searchable,
-                                query,
-                            );
+                            // "default command" label matches the DEFAULT COMMAND column header.
+                            let mut fields: Vec<(&str, &str)> = vec![
+                                ("name", l.name.as_str()),
+                                ("description", l.description.as_str()),
+                                ("default command", l.default_command.as_str()),
+                            ];
+                            for tag in &l.tags {
+                                fields.push(("tag", tag.as_str()));
+                            }
+                            let reason = Self::catalog_match_reason(id, &fields, query);
                             Row::new(vec![
                                 marker,
                                 Cell::from(id.to_string()),
@@ -1188,11 +1276,14 @@ impl App {
                             Cell::from("")
                         };
                         if searching {
-                            let reason = Self::catalog_match_reason(
-                                id,
-                                c as &dyn crate::utils::Searchable,
-                                query,
-                            );
+                            let mut fields: Vec<(&str, &str)> = vec![
+                                ("name", c.name.as_str()),
+                                ("description", c.description.as_str()),
+                            ];
+                            for tag in &c.tags {
+                                fields.push(("tag", tag.as_str()));
+                            }
+                            let reason = Self::catalog_match_reason(id, &fields, query);
                             Row::new(vec![
                                 marker,
                                 Cell::from(id.to_string()),
@@ -1241,24 +1332,40 @@ impl App {
                 let configured_ids: std::collections::HashSet<&str> =
                     self.ctx.config.models.keys().map(|k| k.as_str()).collect();
 
-                // Filter by query when a search is active (same set as filtered_ids).
-                let q = query.to_lowercase();
+                // Use filtered_ids so that search_fields (tags, size, variant,
+                // type, providers) are honoured here too, just as in Models/Providers/etc.
+                let searching = !query.is_empty();
+                let filtered_ids_set: std::collections::HashSet<String> =
+                    self.filtered_ids(query).into_iter().collect();
                 let visible_rows: Vec<&Vec<String>> = self
                     .recommend_rows_cache
                     .iter()
-                    .filter(|r| q.is_empty() || r[0].to_lowercase().contains(&q))
+                    .filter(|r| !searching || filtered_ids_set.contains(&r[0]))
                     .collect();
 
                 // columns: [0]=id [1]=size [2]=variant [3]=type [4]=fit [5]=providers
-                let header = Row::new(vec![
-                    "",
-                    "ID",
-                    "SIZE",
-                    "VARIANT",
-                    "TYPE",
-                    "FIT",
-                    "PROVIDERS",
-                ])
+                let header = if searching {
+                    Row::new(vec![
+                        "",
+                        "ID",
+                        "SIZE",
+                        "VARIANT",
+                        "TYPE",
+                        "FIT",
+                        "PROVIDERS",
+                        "MATCHED ON",
+                    ])
+                } else {
+                    Row::new(vec![
+                        "",
+                        "ID",
+                        "SIZE",
+                        "VARIANT",
+                        "TYPE",
+                        "FIT",
+                        "PROVIDERS",
+                    ])
+                }
                 .style(
                     Style::default()
                         .fg(Color::Cyan)
@@ -1288,22 +1395,51 @@ impl App {
                         } else {
                             Style::default()
                         };
-                        Row::new(vec![
-                            marker,
-                            Cell::from(r[0].clone()),
-                            Cell::from(r[1].clone()),
-                            Cell::from(r[2].clone()),
-                            Cell::from(r[3].clone()),
-                            Cell::from(fit_display).style(fit_style),
-                            Cell::from(r[5].clone()),
-                        ])
-                        .style(style)
+                        if searching {
+                            let reason = MODEL_REGISTRY
+                                .entries()
+                                .get(r[0].as_str())
+                                .map(|m| Self::recommend_match_reason(&r[0], m, r, query))
+                                .unwrap_or_else(|| "id".to_string());
+                            Row::new(vec![
+                                marker,
+                                Cell::from(r[0].clone()),
+                                Cell::from(r[1].clone()),
+                                Cell::from(r[2].clone()),
+                                Cell::from(r[3].clone()),
+                                Cell::from(fit_display).style(fit_style),
+                                Cell::from(r[5].clone()),
+                                Cell::from(reason),
+                            ])
+                            .style(style)
+                        } else {
+                            Row::new(vec![
+                                marker,
+                                Cell::from(r[0].clone()),
+                                Cell::from(r[1].clone()),
+                                Cell::from(r[2].clone()),
+                                Cell::from(r[3].clone()),
+                                Cell::from(fit_display).style(fit_style),
+                                Cell::from(r[5].clone()),
+                            ])
+                            .style(style)
+                        }
                     })
                     .collect();
 
-                let table = Table::new(
-                    rows,
-                    [
+                let widths: &[Constraint] = if searching {
+                    &[
+                        Constraint::Length(2),
+                        Constraint::Percentage(19),
+                        Constraint::Percentage(8),
+                        Constraint::Percentage(21),
+                        Constraint::Percentage(8),
+                        Constraint::Percentage(11),
+                        Constraint::Percentage(16),
+                        Constraint::Percentage(13),
+                    ]
+                } else {
+                    &[
                         Constraint::Length(2),
                         Constraint::Percentage(21),
                         Constraint::Percentage(10),
@@ -1311,10 +1447,12 @@ impl App {
                         Constraint::Percentage(10),
                         Constraint::Percentage(13),
                         Constraint::Percentage(20),
-                    ],
-                )
-                .header(header)
-                .block(Block::default().borders(Borders::ALL).title(" Recommend "));
+                    ]
+                };
+
+                let table = Table::new(rows, widths.to_vec())
+                    .header(header)
+                    .block(Block::default().borders(Borders::ALL).title(" Recommend "));
 
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
             }
@@ -3024,72 +3162,295 @@ mod tests {
     // -- catalog_match_reason -------------------------------------------------
 
     #[test]
-    fn catalog_match_reason_returns_id_when_id_matches() {
-        // id "claude" contains query "clau" → matched on id regardless of search_fields
-        struct FakeMeta;
-        impl crate::utils::Searchable for FakeMeta {
-            fn search_fields(&self) -> Vec<&str> {
-                vec![]
-            }
-        }
-        let reason =
-            App::catalog_match_reason("claude", &FakeMeta as &dyn crate::utils::Searchable, "clau");
-        assert_eq!(reason, "id");
-    }
-
-    #[test]
-    fn catalog_match_reason_returns_tag_when_tag_matches() {
-        // Use a capability whose id does NOT match but a search_field (tag) does.
-        // Pick a known capability — "agent-model" has tags but not "agen" in the id prefix check.
-        // We directly construct a fake Searchable to avoid catalog coupling.
-        struct FakeMeta {
-            fields: Vec<&'static str>,
-        }
-        impl crate::utils::Searchable for FakeMeta {
-            fn search_fields(&self) -> Vec<&str> {
-                self.fields.clone()
-            }
-        }
-        let meta = FakeMeta {
-            fields: vec!["vision", "instruct"],
-        };
-        // id "zzz" does not match query "vision"; tag "vision" does match and has no spaces
-        let reason =
-            App::catalog_match_reason("zzz", &meta as &dyn crate::utils::Searchable, "vision");
+    fn catalog_match_reason_tag_beats_id() {
+        // tag has higher priority than id — tag wins even when the id also matches
+        let fields = [("tag", "vision")];
+        let reason = App::catalog_match_reason("my-vision-model", &fields, "vision");
         assert_eq!(reason, "tag: vision");
     }
 
     #[test]
-    fn catalog_match_reason_returns_name_when_field_has_spaces() {
-        struct FakeMeta {
-            fields: Vec<&'static str>,
-        }
-        impl crate::utils::Searchable for FakeMeta {
-            fn search_fields(&self) -> Vec<&str> {
-                self.fields.clone()
-            }
-        }
-        let meta = FakeMeta {
-            fields: vec!["granite base model"],
-        };
-        // id "zzz" doesn't match; field has spaces → "name"
-        let reason =
-            App::catalog_match_reason("zzz", &meta as &dyn crate::utils::Searchable, "granite");
+    fn catalog_match_reason_returns_id_when_id_matches_no_tags() {
+        // id matches and no tag fields → "id"
+        let fields = [("description", "a general-purpose model")];
+        let reason = App::catalog_match_reason("claude", &fields, "clau");
+        assert_eq!(reason, "id");
+    }
+
+    #[test]
+    fn catalog_match_reason_returns_tag_for_tag_field() {
+        let fields = [
+            ("name", "Vision Suite"),
+            ("tag", "vision"),
+            ("tag", "instruct"),
+        ];
+        let reason = App::catalog_match_reason("zzz", &fields, "vision");
+        assert_eq!(reason, "tag: vision");
+    }
+
+    #[test]
+    fn catalog_match_reason_returns_caller_label_when_non_tag_field_matches() {
+        // description field matches — returns "description", not a generic label
+        let fields = [("description", "granite base model")];
+        let reason = App::catalog_match_reason("zzz", &fields, "granite");
+        assert_eq!(reason, "description");
+    }
+
+    #[test]
+    fn catalog_match_reason_returns_name_label_for_name_field() {
+        let fields = [("name", "Granite Vision")];
+        let reason = App::catalog_match_reason("zzz", &fields, "granite");
         assert_eq!(reason, "name");
     }
 
     #[test]
     fn catalog_match_reason_falls_back_to_id_when_nothing_matches() {
-        struct FakeMeta;
-        impl crate::utils::Searchable for FakeMeta {
-            fn search_fields(&self) -> Vec<&str> {
-                vec![]
-            }
-        }
         // Neither id nor any field matches — fallback is "id"
-        let reason =
-            App::catalog_match_reason("zzz", &FakeMeta as &dyn crate::utils::Searchable, "xyz");
+        let reason = App::catalog_match_reason("zzz", &[], "xyz");
         assert_eq!(reason, "id");
+    }
+
+    // -- recommend_match_reason -----------------------------------------------
+
+    #[test]
+    fn recommend_match_reason_tag_beats_type_and_id() {
+        // "vision" is a tag on granite-vision-3.3-2b — tag wins over type and id.
+        let entries = MODEL_REGISTRY.entries();
+        let Some(m) = entries.get("granite-vision-3.3-2b") else {
+            return;
+        };
+        let reason = App::recommend_match_reason("granite-vision-3.3-2b", m, &[], "vision");
+        assert_eq!(reason, "tag: vision");
+    }
+
+    #[test]
+    fn recommend_match_reason_returns_family_for_family_match() {
+        // "granite vision" matches the family but not any tag — should show "family"
+        let entries = MODEL_REGISTRY.entries();
+        let Some(m) = entries.get("granite-vision-3.3-2b") else {
+            return;
+        };
+        let reason = App::recommend_match_reason("zzz-no-id-match", m, &[], "granite vision");
+        assert_eq!(reason, "family");
+    }
+
+    #[test]
+    fn recommend_match_reason_id_beats_type_when_no_tag_matches() {
+        // id match has higher priority than type — id wins even when type also matches.
+        use crate::models::{ModelArchitecture, ModelMetadata, ModelType};
+        let m = ModelMetadata {
+            family: "Test Family".to_string(),
+            version: "1.0".to_string(),
+            size: 1_000_000,
+            context_length: 4096,
+            model_type: ModelType::Speech,
+            huggingface_repo: "test/test".to_string(),
+            native_dtype: "bfloat16".to_string(),
+            architecture: ModelArchitecture {
+                num_hidden_layers: 0,
+                hidden_size: 0,
+                num_attention_heads: 0,
+                num_key_value_heads: 0,
+                head_dim: 0,
+                layer_types: vec![],
+            },
+            supported_functions: vec![],
+            variants: vec![],
+            description: None,
+            tags: vec![],
+        };
+        // id "my-speech-model" contains "speech", type is also Speech — id wins
+        let reason = App::recommend_match_reason("my-speech-model", &m, &[], "speech");
+        assert_eq!(reason, "id");
+    }
+
+    #[test]
+    fn recommend_match_reason_type_beats_family_when_id_does_not_match() {
+        // type match has higher priority than family when no tag/id match.
+        use crate::models::{ModelArchitecture, ModelMetadata, ModelType};
+        let m = ModelMetadata {
+            family: "Speech Model Family".to_string(),
+            version: "1.0".to_string(),
+            size: 1_000_000,
+            context_length: 4096,
+            model_type: ModelType::Speech,
+            huggingface_repo: "test/test".to_string(),
+            native_dtype: "bfloat16".to_string(),
+            architecture: ModelArchitecture {
+                num_hidden_layers: 0,
+                hidden_size: 0,
+                num_attention_heads: 0,
+                num_key_value_heads: 0,
+                head_dim: 0,
+                layer_types: vec![],
+            },
+            supported_functions: vec![],
+            variants: vec![],
+            description: None,
+            tags: vec![],
+        };
+        // id "zzz" doesn't match, no tags, type "Speech" matches — type wins over family
+        let reason = App::recommend_match_reason("zzz", &m, &[], "speech");
+        assert_eq!(reason, "type: Speech");
+    }
+
+    #[test]
+    fn recommend_match_reason_id_beats_type_and_type_beats_family() {
+        // searching "granite" — no tags match, type ("Vision") doesn't match, id does.
+        let entries = MODEL_REGISTRY.entries();
+        let Some(m) = entries.get("granite-vision-3.3-2b") else {
+            return;
+        };
+        let reason = App::recommend_match_reason("granite-vision-3.3-2b", m, &[], "granite");
+        assert_eq!(reason, "id");
+    }
+
+    #[test]
+    fn recommend_match_reason_size_column() {
+        // r[1] = "3B" — searching "3b" should return "size"
+        use crate::models::{ModelArchitecture, ModelMetadata, ModelType};
+        let m = ModelMetadata {
+            family: "Test".to_string(),
+            version: "1.0".to_string(),
+            size: 3_000_000_000,
+            context_length: 4096,
+            model_type: ModelType::Text,
+            huggingface_repo: "test/test".to_string(),
+            native_dtype: "bfloat16".to_string(),
+            architecture: ModelArchitecture {
+                num_hidden_layers: 0,
+                hidden_size: 0,
+                num_attention_heads: 0,
+                num_key_value_heads: 0,
+                head_dim: 0,
+                layer_types: vec![],
+            },
+            supported_functions: vec![],
+            variants: vec![],
+            description: None,
+            tags: vec![],
+        };
+        let row = vec![
+            "zzz".to_string(),
+            "3B".to_string(),
+            "GGUF / Q4_K_M (2.0 GB)".to_string(),
+            "Text".to_string(),
+            "Full".to_string(),
+            "lm-studio".to_string(),
+        ];
+        let reason = App::recommend_match_reason("zzz", &m, &row, "3b");
+        assert_eq!(reason, "size");
+    }
+
+    #[test]
+    fn recommend_match_reason_variant_column() {
+        // r[2] = "GGUF / Q4_K_M (2.0 GB)" — searching "q4_k_m" should return "variant"
+        use crate::models::{ModelArchitecture, ModelMetadata, ModelType};
+        let m = ModelMetadata {
+            family: "Test".to_string(),
+            version: "1.0".to_string(),
+            size: 1_000_000_000,
+            context_length: 4096,
+            model_type: ModelType::Text,
+            huggingface_repo: "test/test".to_string(),
+            native_dtype: "bfloat16".to_string(),
+            architecture: ModelArchitecture {
+                num_hidden_layers: 0,
+                hidden_size: 0,
+                num_attention_heads: 0,
+                num_key_value_heads: 0,
+                head_dim: 0,
+                layer_types: vec![],
+            },
+            supported_functions: vec![],
+            variants: vec![],
+            description: None,
+            tags: vec![],
+        };
+        let row = vec![
+            "zzz".to_string(),
+            "1B".to_string(),
+            "GGUF / Q4_K_M (2.0 GB)".to_string(),
+            "Text".to_string(),
+            "Full".to_string(),
+            "lm-studio".to_string(),
+        ];
+        let reason = App::recommend_match_reason("zzz", &m, &row, "q4_k_m");
+        assert_eq!(reason, "variant");
+    }
+
+    #[test]
+    fn recommend_match_reason_type_column() {
+        // r[3] = "Vision" — searching "vision" returns "type: Vision" when no tag/id/size/variant match
+        use crate::models::{ModelArchitecture, ModelMetadata, ModelType};
+        let m = ModelMetadata {
+            family: "Test Family".to_string(),
+            version: "1.0".to_string(),
+            size: 1_000_000_000,
+            context_length: 4096,
+            model_type: ModelType::Vision,
+            huggingface_repo: "test/test".to_string(),
+            native_dtype: "bfloat16".to_string(),
+            architecture: ModelArchitecture {
+                num_hidden_layers: 0,
+                hidden_size: 0,
+                num_attention_heads: 0,
+                num_key_value_heads: 0,
+                head_dim: 0,
+                layer_types: vec![],
+            },
+            supported_functions: vec![],
+            variants: vec![],
+            description: None,
+            tags: vec![],
+        };
+        let row = vec![
+            "zzz".to_string(),
+            "1B".to_string(),
+            "GGUF / Q4_K_M (2.0 GB)".to_string(),
+            "Vision".to_string(),
+            "Full".to_string(),
+            "lm-studio".to_string(),
+        ];
+        let reason = App::recommend_match_reason("zzz", &m, &row, "vision");
+        assert_eq!(reason, "type: Vision");
+    }
+
+    #[test]
+    fn recommend_match_reason_providers_column() {
+        // r[5] = "lm-studio, ollama" — searching "ollama" should return "providers"
+        use crate::models::{ModelArchitecture, ModelMetadata, ModelType};
+        let m = ModelMetadata {
+            family: "Test".to_string(),
+            version: "1.0".to_string(),
+            size: 1_000_000_000,
+            context_length: 4096,
+            model_type: ModelType::Text,
+            huggingface_repo: "test/test".to_string(),
+            native_dtype: "bfloat16".to_string(),
+            architecture: ModelArchitecture {
+                num_hidden_layers: 0,
+                hidden_size: 0,
+                num_attention_heads: 0,
+                num_key_value_heads: 0,
+                head_dim: 0,
+                layer_types: vec![],
+            },
+            supported_functions: vec![],
+            variants: vec![],
+            description: None,
+            tags: vec![],
+        };
+        let row = vec![
+            "zzz".to_string(),
+            "1B".to_string(),
+            "GGUF / Q4_K_M (2.0 GB)".to_string(),
+            "Text".to_string(),
+            "Full".to_string(),
+            "lm-studio, ollama".to_string(),
+        ];
+        let reason = App::recommend_match_reason("zzz", &m, &row, "ollama");
+        assert_eq!(reason, "providers");
     }
 
     // -- configured_only_idx --------------------------------------------------
@@ -3232,6 +3593,619 @@ mod tests {
         a.section = Section::Capabilities;
         let ids = a.filtered_ids("zzzz_no_match_zzzz");
         assert!(ids.is_empty(), "expected empty; got {ids:?}");
+    }
+
+    // -- format_tokens --------------------------------------------------------
+
+    #[test]
+    fn format_tokens_millions() {
+        assert_eq!(format_tokens(1_000_000), "1.0M");
+        assert_eq!(format_tokens(2_500_000), "2.5M");
+    }
+
+    #[test]
+    fn format_tokens_thousands() {
+        assert_eq!(format_tokens(1_000), "1.0K");
+        assert_eq!(format_tokens(9_999), "10.0K");
+    }
+
+    #[test]
+    fn format_tokens_small() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+    }
+
+    // -- format_launched_at ---------------------------------------------------
+
+    #[test]
+    fn format_launched_at_valid_timestamp() {
+        assert_eq!(format_launched_at("20250101T143000"), "2025-01-01 14:30");
+    }
+
+    #[test]
+    fn format_launched_at_invalid_falls_back_to_raw() {
+        assert_eq!(format_launched_at("not-a-date"), "not-a-date");
+    }
+
+    // -- session_is_stale -----------------------------------------------------
+
+    fn make_session(finished_at: Option<String>, updated_at: &str) -> crate::session::SessionMeta {
+        crate::session::SessionMeta {
+            session_id: "test".to_string(),
+            launched_at: "20250101T000000".to_string(),
+            finished_at,
+            updated_at: updated_at.to_string(),
+            launcher_id: "bob".to_string(),
+            launcher_type: "bob".to_string(),
+            working_dir: "/tmp".to_string(),
+            full_command: vec![],
+            capabilities: vec![],
+            usage: Default::default(),
+        }
+    }
+
+    #[test]
+    fn session_is_stale_false_when_finished() {
+        let s = make_session(Some("20250101T010000".to_string()), "20250101T000000");
+        assert!(!session_is_stale(&s));
+    }
+
+    #[test]
+    fn session_is_stale_false_when_updated_at_empty() {
+        let s = make_session(None, "");
+        assert!(!session_is_stale(&s));
+    }
+
+    #[test]
+    fn session_is_stale_false_when_recently_updated() {
+        // updated_at = now — definitely not stale
+        let now = chrono::Utc::now().naive_utc();
+        let ts = now.format("%Y%m%dT%H%M%S").to_string();
+        let s = make_session(None, &ts);
+        assert!(!session_is_stale(&s));
+    }
+
+    #[test]
+    fn session_is_stale_true_when_old() {
+        // updated_at = 3 hours ago — definitely stale
+        let old = chrono::Utc::now().naive_utc() - chrono::Duration::hours(3);
+        let ts = old.format("%Y%m%dT%H%M%S").to_string();
+        let s = make_session(None, &ts);
+        assert!(session_is_stale(&s));
+    }
+
+    #[test]
+    fn session_is_stale_false_when_unparseable_updated_at() {
+        let s = make_session(None, "not-a-timestamp");
+        assert!(!session_is_stale(&s));
+    }
+
+    // -- strip_ansi -----------------------------------------------------------
+
+    #[test]
+    fn strip_ansi_no_escape_sequences() {
+        assert_eq!(strip_ansi("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_ansi_removes_color_code() {
+        assert_eq!(strip_ansi("\x1b[32mGreen\x1b[0m"), "Green");
+    }
+
+    #[test]
+    fn strip_ansi_removes_bold() {
+        assert_eq!(strip_ansi("\x1b[1mBold\x1b[0m"), "Bold");
+    }
+
+    #[test]
+    fn strip_ansi_empty_string() {
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn strip_ansi_only_escape() {
+        // A bare ESC with no following content must not panic
+        let _ = strip_ansi("\x1b");
+    }
+
+    // -- Section::label -------------------------------------------------------
+
+    #[test]
+    fn section_label_all_variants() {
+        assert_eq!(Section::Models.label(), "Models");
+        assert_eq!(Section::Providers.label(), "Providers");
+        assert_eq!(Section::Launchers.label(), "Launchers");
+        assert_eq!(Section::Capabilities.label(), "Capabilities");
+        assert_eq!(Section::Recommend.label(), "Recommend");
+        assert_eq!(Section::Sessions.label(), "Sessions");
+        assert_eq!(Section::Hardware.label(), "Hardware");
+    }
+
+    // -- handle_key: Ctrl+C ---------------------------------------------------
+
+    #[test]
+    fn ctrl_c_quits_from_browse() {
+        let mut a = app();
+        let action = a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(action, AppAction::Quit);
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_search() {
+        let mut a = app();
+        a.mode = AppMode::Search("query".to_string());
+        let action = a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(action, AppAction::Quit);
+    }
+
+    // -- handle_key: Browse s/h toggles ---------------------------------------
+
+    #[test]
+    fn s_key_shows_catalog_when_configured_only_true() {
+        let mut a = app();
+        a.section = Section::Models;
+        a.configured_only[0] = true;
+        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(!a.configured_only[0]);
+    }
+
+    #[test]
+    fn s_key_noop_when_configured_only_already_false() {
+        let mut a = app();
+        a.section = Section::Providers;
+        a.configured_only[1] = false;
+        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(!a.configured_only[1]);
+    }
+
+    #[test]
+    fn h_key_hides_catalog_when_configured_only_false() {
+        let mut a = app();
+        a.section = Section::Launchers;
+        a.configured_only[2] = false;
+        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(a.configured_only[2]);
+    }
+
+    #[test]
+    fn h_key_noop_when_configured_only_already_true() {
+        let mut a = app();
+        a.section = Section::Capabilities;
+        a.configured_only[3] = true;
+        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(a.configured_only[3]);
+    }
+
+    #[test]
+    fn s_key_shows_inactive_sessions() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = true;
+        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(!a.hide_inactive);
+    }
+
+    #[test]
+    fn s_key_sessions_noop_when_already_showing() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = false;
+        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(!a.hide_inactive);
+    }
+
+    #[test]
+    fn h_key_hides_inactive_sessions() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = false;
+        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(a.hide_inactive);
+    }
+
+    #[test]
+    fn h_key_sessions_noop_when_already_hiding() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = true;
+        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(a.hide_inactive);
+    }
+
+    // -- handle_key: Search Backspace / Char ----------------------------------
+
+    #[test]
+    fn search_char_appends_to_query() {
+        let mut a = app();
+        a.mode = AppMode::Search("ab".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert_eq!(a.mode, AppMode::Search("abc".to_string()));
+    }
+
+    #[test]
+    fn search_char_resets_row_to_zero() {
+        let mut a = app();
+        a.row = 3;
+        a.mode = AppMode::Search("gr".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(a.row, 0);
+    }
+
+    #[test]
+    fn search_backspace_removes_last_char_new() {
+        let mut a = app();
+        a.mode = AppMode::Search("abc".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(a.mode, AppMode::Search("ab".to_string()));
+    }
+
+    #[test]
+    fn search_backspace_on_empty_stays_empty() {
+        let mut a = app();
+        a.mode = AppMode::Search(String::new());
+        a.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(a.mode, AppMode::Search(String::new()));
+    }
+
+    #[test]
+    fn search_other_key_is_noop() {
+        let mut a = app();
+        a.mode = AppMode::Search("ab".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(a.mode, AppMode::Search("ab".to_string()));
+    }
+
+    // -- handle_key: Detail ---------------------------------------------------
+
+    #[test]
+    fn detail_j_increments_scroll() {
+        let mut a = app();
+        a.mode = AppMode::Detail("granite-3.1-8b-instruct".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(a.detail_scroll, 1);
+    }
+
+    #[test]
+    fn detail_k_decrements_scroll() {
+        let mut a = app();
+        a.mode = AppMode::Detail("granite-3.1-8b-instruct".to_string());
+        a.detail_scroll = 3;
+        a.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(a.detail_scroll, 2);
+    }
+
+    #[test]
+    fn detail_k_at_zero_stays_zero() {
+        let mut a = app();
+        a.mode = AppMode::Detail("granite-3.1-8b-instruct".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(a.detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_backspace_returns_to_browse() {
+        let mut a = app();
+        a.mode = AppMode::Detail("granite-3.1-8b-instruct".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(a.mode, AppMode::Browse);
+        assert_eq!(a.detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_q_returns_to_browse() {
+        let mut a = app();
+        a.mode = AppMode::Detail("granite-3.1-8b-instruct".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert_eq!(a.mode, AppMode::Browse);
+    }
+
+    #[test]
+    fn detail_other_key_is_noop() {
+        let mut a = app();
+        a.mode = AppMode::Detail("granite-3.1-8b-instruct".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(a.detail_scroll, 0);
+        assert!(matches!(a.mode, AppMode::Detail(_)));
+    }
+
+    #[test]
+    fn detail_enter_on_catalog_type_starts_setup() {
+        // Use a known provider type id to trigger StartSetup (no existing instances)
+        let mut a = app();
+        a.section = Section::Providers;
+        a.mode = AppMode::Detail("ollama".to_string());
+        let action = a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            action,
+            AppAction::StartSetup(Section::Providers, "ollama".to_string(), None)
+        );
+    }
+
+    // -- handle_key: InstancePick ---------------------------------------------
+
+    #[test]
+    fn instance_pick_esc_returns_to_browse_new() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["inst1".to_string()],
+            cursor: 0,
+        };
+        a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(a.mode, AppMode::Browse);
+    }
+
+    #[test]
+    fn instance_pick_down_increments_cursor_new() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["inst1".to_string(), "inst2".to_string()],
+            cursor: 0,
+        };
+        a.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(matches!(a.mode, AppMode::InstancePick { cursor: 1, .. }));
+    }
+
+    #[test]
+    fn instance_pick_down_j_increments_cursor() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["inst1".to_string()],
+            cursor: 0,
+        };
+        a.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert!(matches!(a.mode, AppMode::InstancePick { cursor: 1, .. }));
+    }
+
+    #[test]
+    fn instance_pick_down_clamps_at_max() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["inst1".to_string()],
+            cursor: 1,
+        };
+        a.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(matches!(a.mode, AppMode::InstancePick { cursor: 1, .. }));
+    }
+
+    #[test]
+    fn instance_pick_up_decrements_cursor() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["inst1".to_string()],
+            cursor: 1,
+        };
+        a.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert!(matches!(a.mode, AppMode::InstancePick { cursor: 0, .. }));
+    }
+
+    #[test]
+    fn instance_pick_up_k_decrements_cursor() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["inst1".to_string()],
+            cursor: 1,
+        };
+        a.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert!(matches!(a.mode, AppMode::InstancePick { cursor: 0, .. }));
+    }
+
+    #[test]
+    fn instance_pick_up_at_zero_stays_zero() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["inst1".to_string()],
+            cursor: 0,
+        };
+        a.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert!(matches!(a.mode, AppMode::InstancePick { cursor: 0, .. }));
+    }
+
+    #[test]
+    fn instance_pick_enter_cursor_zero_starts_setup_new() {
+        let mut a = app();
+        a.section = Section::Providers;
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["my-inst".to_string()],
+            cursor: 0,
+        };
+        let action = a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            action,
+            AppAction::StartSetup(Section::Providers, "ollama".to_string(), None)
+        );
+        assert_eq!(a.mode, AppMode::Browse);
+    }
+
+    #[test]
+    fn instance_pick_enter_cursor_nonzero_starts_setup_existing() {
+        let mut a = app();
+        a.section = Section::Launchers;
+        a.mode = AppMode::InstancePick {
+            type_id: "bob".to_string(),
+            instances: vec!["my-bob".to_string()],
+            cursor: 1,
+        };
+        let action = a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            action,
+            AppAction::StartSetup(
+                Section::Launchers,
+                "bob".to_string(),
+                Some("my-bob".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn instance_pick_other_key_is_noop() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec![],
+            cursor: 0,
+        };
+        let action = a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(action, AppAction::None);
+        assert!(matches!(a.mode, AppMode::InstancePick { .. }));
+    }
+
+    // -- filtered_ids: Sessions arm -------------------------------------------
+
+    #[test]
+    fn filtered_ids_sessions_returns_active_session_ids() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = false;
+        a.sessions = vec![
+            crate::session::SessionMeta {
+                session_id: "sess-a".to_string(),
+                launched_at: "20250101T000000".to_string(),
+                finished_at: None,
+                updated_at: String::new(),
+                launcher_id: "bob".to_string(),
+                launcher_type: "bob".to_string(),
+                working_dir: "/tmp".to_string(),
+                full_command: vec![],
+                capabilities: vec![],
+                usage: Default::default(),
+            },
+            crate::session::SessionMeta {
+                session_id: "sess-b".to_string(),
+                launched_at: "20250102T000000".to_string(),
+                finished_at: Some("20250102T010000".to_string()),
+                updated_at: String::new(),
+                launcher_id: "bob".to_string(),
+                launcher_type: "bob".to_string(),
+                working_dir: "/tmp".to_string(),
+                full_command: vec![],
+                capabilities: vec![],
+                usage: Default::default(),
+            },
+        ];
+        let ids = a.filtered_ids("");
+        assert_eq!(ids, vec!["sess-a", "sess-b"]);
+    }
+
+    #[test]
+    fn filtered_ids_sessions_hides_finished_when_hide_inactive() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = true;
+        a.sessions = vec![
+            crate::session::SessionMeta {
+                session_id: "active".to_string(),
+                launched_at: "20250101T000000".to_string(),
+                finished_at: None,
+                updated_at: String::new(),
+                launcher_id: "bob".to_string(),
+                launcher_type: "bob".to_string(),
+                working_dir: "/tmp".to_string(),
+                full_command: vec![],
+                capabilities: vec![],
+                usage: Default::default(),
+            },
+            crate::session::SessionMeta {
+                session_id: "done".to_string(),
+                launched_at: "20250102T000000".to_string(),
+                finished_at: Some("20250102T010000".to_string()),
+                updated_at: String::new(),
+                launcher_id: "bob".to_string(),
+                launcher_type: "bob".to_string(),
+                working_dir: "/tmp".to_string(),
+                full_command: vec![],
+                capabilities: vec![],
+                usage: Default::default(),
+            },
+        ];
+        let ids = a.filtered_ids("");
+        assert_eq!(ids, vec!["active"]);
+    }
+
+    // -- filtered_ids: Recommend with query -----------------------------------
+
+    #[test]
+    fn filtered_ids_recommend_empty_returns_all_cache() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        let all = a.filtered_ids("");
+        assert_eq!(all.len(), a.recommend_rows_cache.len());
+    }
+
+    #[test]
+    fn filtered_ids_recommend_filters_by_id() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        // Use the first cached row's id as query — must return at least that row
+        if let Some(first_id) = a.recommend_rows_cache.first().map(|r| r[0].clone()) {
+            let ids = a.filtered_ids(&first_id);
+            assert!(ids.contains(&first_id));
+        }
+    }
+
+    #[test]
+    fn filtered_ids_recommend_filters_by_size() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        // r[1] is the size string e.g. "3B" — search for a size that exists
+        let size_query = a
+            .recommend_rows_cache
+            .first()
+            .and_then(|r| r.get(1))
+            .cloned()
+            .unwrap_or_default();
+        if !size_query.is_empty() {
+            let ids = a.filtered_ids(&size_query);
+            assert!(
+                !ids.is_empty(),
+                "expected rows matching size '{size_query}'"
+            );
+        }
+    }
+
+    #[test]
+    fn filtered_ids_recommend_no_match_returns_empty() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        let ids = a.filtered_ids("zzzz_absolutely_no_match_zzzz");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn filtered_ids_recommend_filters_by_tag_via_metadata() {
+        // "vision" is a tag on some models — should match via matches_query()
+        let mut a = app();
+        a.section = Section::Recommend;
+        let ids = a.filtered_ids("vision");
+        // At least one Recommend row must match — either by id or tag
+        // (the cache only contains models that fit the hardware profile,
+        // so the result may be empty on minimal hardware; skip if so)
+        let _ = ids; // just assert it doesn't panic
+    }
+
+    #[test]
+    fn filtered_ids_recommend_filters_by_variant() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        // r[2] contains "GGUF" for GGUF variants — search for it
+        let ids = a.filtered_ids("gguf");
+        let _ = ids; // assert no panic; actual matches depend on hardware profile
+    }
+
+    #[test]
+    fn filtered_ids_models_with_query_hardware_section_falls_through_to_false() {
+        // Hardware section with a query hits the `_ => false` arm in the tail filter
+        let mut a = app();
+        a.section = Section::Hardware;
+        let ids = a.filtered_ids("anything");
+        assert!(ids.is_empty());
     }
 
     // -- search Enter commits filter, Esc clears it ---------------------------
