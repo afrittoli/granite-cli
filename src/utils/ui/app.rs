@@ -4321,6 +4321,151 @@ mod tests {
         assert!(ids.is_empty());
     }
 
+    // -- Esc in Browse clears filter before quitting --------------------------
+
+    #[test]
+    fn browse_esc_clears_active_filter_instead_of_quitting() {
+        // Lines 297-305: Esc with active filter → clear filter, return None
+        let mut a = app();
+        a.active_search[0] = "vision".to_string();
+        a.mode = AppMode::Browse;
+        let action = a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(action, AppAction::None, "Esc should clear filter, not quit");
+        assert_eq!(a.active_search[0], "", "filter should be cleared");
+        assert_eq!(a.row, 0);
+    }
+
+    #[test]
+    fn browse_esc_quits_when_no_filter_active() {
+        // Lines 297-305: Esc with no active filter → quit
+        let mut a = app();
+        a.mode = AppMode::Browse;
+        let action = a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(action, AppAction::Quit);
+    }
+
+    #[test]
+    fn browse_esc_clears_providers_filter() {
+        // Esc clears the Providers section slot (index 1)
+        let mut a = app();
+        a.section = Section::Providers;
+        a.active_search[1] = "local".to_string();
+        a.mode = AppMode::Browse;
+        let action = a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(action, AppAction::None);
+        assert_eq!(a.active_search[1], "");
+    }
+
+    // -- active_search_idx covers all sections --------------------------------
+
+    #[test]
+    fn active_search_idx_capabilities_is_three() {
+        // Line 636: Capabilities arm
+        assert_eq!(App::active_search_idx(&Section::Capabilities), Some(3));
+    }
+
+    #[test]
+    fn active_search_idx_recommend_is_four() {
+        // Line 637: Recommend arm
+        assert_eq!(App::active_search_idx(&Section::Recommend), Some(4));
+    }
+
+    #[test]
+    fn active_search_idx_sessions_is_none() {
+        assert_eq!(App::active_search_idx(&Section::Sessions), None);
+    }
+
+    #[test]
+    fn active_search_idx_hardware_is_none() {
+        assert_eq!(App::active_search_idx(&Section::Hardware), None);
+    }
+
+    // -- active_search scoped per section -------------------------------------
+
+    #[test]
+    fn active_search_does_not_carry_across_tab() {
+        // Committing a search in Models then tabbing to Providers should
+        // give an empty active_query for Providers.
+        let mut a = app();
+        a.mode = AppMode::Search("vision".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.active_query(), "vision"); // Models slot set
+        a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(a.section, Section::Providers);
+        assert_eq!(a.active_query(), "", "Providers slot must start empty");
+    }
+
+    #[test]
+    fn active_search_persists_when_returning_to_section() {
+        // Commit a search in Models, Tab away, Tab back — filter restored.
+        let mut a = app();
+        a.mode = AppMode::Search("granite".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // Tab through all sections back to Models (7 sections total)
+        for _ in 0..7 {
+            a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        assert_eq!(a.section, Section::Models);
+        assert_eq!(
+            a.active_query(),
+            "granite",
+            "Models filter must survive Tab round-trip"
+        );
+    }
+
+    // -- catalog_match_reason pass 3 (non-tag field) --------------------------
+
+    #[test]
+    fn catalog_match_reason_non_tag_field_hit_before_fallback() {
+        // Line 555-556: Pass 3 — non-tag field matches, returns its label
+        let fields = [("description", "a reasoning model"), ("tag", "other")];
+        let reason = App::catalog_match_reason("zzz", &fields, "reasoning");
+        assert_eq!(reason, "description");
+    }
+
+    // -- hint bar filter_active arm -------------------------------------------
+
+    #[test]
+    fn active_query_returns_empty_for_sessions_section() {
+        // Lines 2159-2160: active_search_idx returns None for Sessions
+        let mut a = app();
+        a.section = Section::Sessions;
+        assert_eq!(a.active_query(), "");
+    }
+
+    #[test]
+    fn active_query_returns_recommend_slot() {
+        // Lines 2159-2160: active_search_idx returns Some(4) for Recommend
+        let mut a = app();
+        a.section = Section::Recommend;
+        a.active_search[4] = "3b".to_string();
+        assert_eq!(a.active_query(), "3b");
+    }
+
+    // -- search Enter/Esc scoped to section slot ------------------------------
+
+    #[test]
+    fn search_enter_commits_to_providers_slot() {
+        let mut a = app();
+        a.section = Section::Providers;
+        a.mode = AppMode::Search("local".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.active_search[1], "local");
+        assert_eq!(a.active_search[0], "", "Models slot must be untouched");
+    }
+
+    #[test]
+    fn search_esc_clears_launchers_slot_only() {
+        let mut a = app();
+        a.section = Section::Launchers;
+        a.active_search[2] = "agent".to_string();
+        a.active_search[0] = "kept".to_string(); // Models slot must survive
+        a.mode = AppMode::Search("typing".to_string());
+        a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(a.active_search[2], "", "Launchers slot cleared");
+        assert_eq!(a.active_search[0], "kept", "Models slot untouched");
+    }
+
     // -- search Enter commits filter, Esc clears it ---------------------------
 
     #[test]
