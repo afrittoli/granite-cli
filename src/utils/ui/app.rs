@@ -2169,15 +2169,27 @@ impl App {
                 AppMode::Browse if self.section == Section::Hardware => {
                     "[↑↓/jk] Scroll  [Tab/⇧Tab] Section  [q] Quit"
                 }
-                AppMode::Browse if filter_active => {
-                    "[↑↓/jk] Navigate  [Tab] Section  [/] Search  [Esc] Clear filter  [q] Quit"
-                }
                 AppMode::Browse if Self::configured_only_idx(&self.section).is_some() => {
-                    if self.configured_only[Self::configured_only_idx(&self.section).unwrap()] {
-                        "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [s] Show catalog  [q] Quit  ✓ = configured"
-                    } else {
-                        "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [h] Hide catalog  [q] Quit  ✓ = configured"
+                    let catalog_hidden =
+                        self.configured_only[Self::configured_only_idx(&self.section).unwrap()];
+                    match (catalog_hidden, filter_active) {
+                        (true, false) => {
+                            "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [s] Show catalog  [q] Quit  ✓ = configured"
+                        }
+                        (true, true) => {
+                            "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [Esc] Clear filter  [s] Show catalog  [q] Quit  ✓ = configured"
+                        }
+                        (false, false) => {
+                            "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [h] Hide catalog  [q] Quit  ✓ = configured"
+                        }
+                        (false, true) => {
+                            "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [Esc] Clear filter  [h] Hide catalog  [q] Quit  ✓ = configured"
+                        }
                     }
+                }
+                AppMode::Browse if filter_active => {
+                    // Recommend section: has no catalog toggle but may have an active filter.
+                    "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [Esc] Clear filter  [q] Quit  ✓ = configured"
                 }
                 AppMode::Browse => {
                     "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [q] Quit  ✓ = configured"
