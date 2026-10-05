@@ -194,10 +194,12 @@ pub struct App {
     pub sessions: Vec<crate::session::SessionMeta>,
     /// When true (default), sessions with `finished_at` set are hidden.
     pub hide_inactive: bool,
-    /// The last confirmed search query (set when Enter is pressed in Search
+    /// Per-section committed search query (set when Enter is pressed in Search
     /// mode). Kept so Browse mode continues to show filtered results after
-    /// the user commits a search — Esc clears it.
-    pub active_search: String,
+    /// the user commits a search — Esc clears the current section's slot.
+    /// Indices: 0=Models, 1=Providers, 2=Launchers, 3=Capabilities, 4=Recommend.
+    /// Sessions and Hardware are not searchable and have no slot.
+    pub active_search: [String; 5],
 }
 
 impl App {
@@ -238,7 +240,7 @@ impl App {
             configured_only,
             sessions,
             hide_inactive,
-            active_search: String::new(),
+            active_search: Default::default(),
         }
     }
 
@@ -289,7 +291,19 @@ impl App {
 
         match self.mode.clone() {
             AppMode::Browse => match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return AppAction::Quit,
+                KeyCode::Char('q') => return AppAction::Quit,
+                KeyCode::Esc => {
+                    // If a filter is active for this section, clear it instead of quitting.
+                    if let Some(i) = Self::active_search_idx(&self.section) {
+                        if !self.active_search[i].is_empty() {
+                            self.active_search[i] = String::new();
+                            self.row = 0;
+                            self.sync_table_state();
+                            return AppAction::None;
+                        }
+                    }
+                    return AppAction::Quit;
+                }
                 KeyCode::Char('/') => {
                     if self.section != Section::Sessions {
                         self.mode = AppMode::Search(String::new());
@@ -359,17 +373,21 @@ impl App {
                 let mut q = query.clone();
                 match key.code {
                     KeyCode::Esc => {
-                        // Cancel: clear the committed search, return to full list
-                        self.active_search = String::new();
+                        // Cancel: clear this section's committed search, return to full list
+                        if let Some(i) = Self::active_search_idx(&self.section) {
+                            self.active_search[i] = String::new();
+                        }
                         self.row = 0;
                         self.sync_table_state();
                         self.mode = AppMode::Browse;
                     }
                     KeyCode::Enter => {
-                        // Commit the current query: store it so Browse mode
-                        // continues to show filtered results. Cursor stays at
-                        // row 0 of the filtered list.
-                        self.active_search = q.clone();
+                        // Commit the current query into this section's slot so
+                        // Browse mode continues to show filtered results.
+                        // Cursor stays at row 0 of the filtered list.
+                        if let Some(i) = Self::active_search_idx(&self.section) {
+                            self.active_search[i] = q.clone();
+                        }
                         self.row = 0;
                         self.sync_table_state();
                         self.mode = AppMode::Browse;
@@ -448,7 +466,9 @@ impl App {
             let mode = self.mode.clone();
             match mode {
                 AppMode::Browse => {
-                    let q = self.active_search.clone();
+                    let q = Self::active_search_idx(&self.section)
+                        .map(|i| self.active_search[i].clone())
+                        .unwrap_or_default();
                     self.render_browse(frame, inner[1], &q);
                 }
                 AppMode::Search(ref q) => self.render_browse(frame, inner[1], q),
@@ -496,9 +516,11 @@ impl App {
     fn active_query(&self) -> &str {
         match &self.mode {
             AppMode::Search(q) => q.as_str(),
-            // In Browse mode, return the last committed search so the table
-            // stays filtered after the user presses Enter.
-            _ => self.active_search.as_str(),
+            // In Browse mode, return the current section's committed search so
+            // the table stays filtered after the user presses Enter.
+            _ => Self::active_search_idx(&self.section)
+                .map(|i| self.active_search[i].as_str())
+                .unwrap_or(""),
         }
     }
 
@@ -600,6 +622,20 @@ impl App {
             Section::Launchers => Some(2),
             Section::Capabilities => Some(3),
             _ => None,
+        }
+    }
+
+    /// Index into `self.active_search` for sections that support search,
+    /// or `None` for Sessions (search blocked) and Hardware (no rows).
+    /// Indices: 0=Models, 1=Providers, 2=Launchers, 3=Capabilities, 4=Recommend.
+    fn active_search_idx(section: &Section) -> Option<usize> {
+        match section {
+            Section::Models => Some(0),
+            Section::Providers => Some(1),
+            Section::Launchers => Some(2),
+            Section::Capabilities => Some(3),
+            Section::Recommend => Some(4),
+            Section::Sessions | Section::Hardware => None,
         }
     }
 
@@ -2120,6 +2156,8 @@ impl App {
                 None => "",
             }
         } else {
+            let filter_active = Self::active_search_idx(&self.section)
+                .is_some_and(|i| !self.active_search[i].is_empty());
             match &self.mode {
                 AppMode::Browse if self.section == Section::Sessions => {
                     if self.hide_inactive {
@@ -2130,6 +2168,9 @@ impl App {
                 }
                 AppMode::Browse if self.section == Section::Hardware => {
                     "[↑↓/jk] Scroll  [Tab/⇧Tab] Section  [q] Quit"
+                }
+                AppMode::Browse if filter_active => {
+                    "[↑↓/jk] Navigate  [Tab] Section  [/] Search  [Esc] Clear filter  [q] Quit"
                 }
                 AppMode::Browse if Self::configured_only_idx(&self.section).is_some() => {
                     if self.configured_only[Self::configured_only_idx(&self.section).unwrap()] {
@@ -2595,12 +2636,12 @@ mod tests {
     fn search_esc_returns_to_browse_and_resets_row() {
         let mut a = app();
         a.row = 3;
-        a.active_search = "prev".to_string();
+        a.active_search[0] = "prev".to_string(); // Models slot
         a.mode = AppMode::Search("gran".to_string());
         a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(a.mode, AppMode::Browse);
-        // Esc cancels the search: active_search cleared, row reset to 0
-        assert_eq!(a.active_search, "");
+        // Esc cancels the search: current section's slot cleared, row reset to 0
+        assert_eq!(a.active_search[0], "");
         assert_eq!(a.row, 0);
     }
 
@@ -2664,6 +2705,26 @@ mod tests {
         let a = app();
         let ids = a.filtered_ids("zzznomatch");
         assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn filtered_ids_respects_configured_only() {
+        // When configured_only[0] is true and config.models is empty,
+        // filtered_ids must return no rows regardless of query.
+        let mut a = app();
+        a.configured_only[0] = true;
+        // app() creates an empty config, so no configured models exist.
+        let ids = a.filtered_ids("");
+        assert!(
+            ids.is_empty(),
+            "configured_only=true with empty config should yield no rows, got: {ids:?}"
+        );
+        // Same with a non-empty query.
+        let ids_q = a.filtered_ids("granite");
+        assert!(
+            ids_q.is_empty(),
+            "configured_only=true with empty config should yield no rows for query, got: {ids_q:?}"
+        );
     }
 
     #[test]
@@ -3547,7 +3608,7 @@ mod tests {
     #[test]
     fn active_query_in_browse_returns_active_search() {
         let mut a = app();
-        a.active_search = "granite".to_string();
+        a.active_search[0] = "granite".to_string(); // Models section (default)
         a.mode = AppMode::Browse;
         assert_eq!(a.active_query(), "granite");
     }
@@ -3555,7 +3616,7 @@ mod tests {
     #[test]
     fn active_query_in_search_mode_returns_live_query() {
         let mut a = app();
-        a.active_search = "old".to_string();
+        a.active_search[0] = "old".to_string();
         a.mode = AppMode::Search("new".to_string());
         assert_eq!(a.active_query(), "new");
     }
@@ -3563,7 +3624,7 @@ mod tests {
     #[test]
     fn active_query_in_detail_returns_active_search() {
         let mut a = app();
-        a.active_search = "filter".to_string();
+        a.active_search[0] = "filter".to_string(); // Models section (default)
         a.mode = AppMode::Detail("some-id".to_string());
         assert_eq!(a.active_query(), "filter");
     }
@@ -4265,10 +4326,11 @@ mod tests {
     #[test]
     fn search_enter_commits_active_search() {
         let mut a = app();
+        // Default section is Models (index 0)
         a.mode = AppMode::Search("goose".to_string());
         a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(a.mode, AppMode::Browse);
-        assert_eq!(a.active_search, "goose");
+        assert_eq!(a.active_search[0], "goose");
     }
 
     #[test]
@@ -4283,11 +4345,11 @@ mod tests {
     #[test]
     fn search_esc_clears_active_search() {
         let mut a = app();
-        a.active_search = "prev-filter".to_string();
+        a.active_search[0] = "prev-filter".to_string(); // Models section (default)
         a.mode = AppMode::Search("typing".to_string());
         a.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(a.mode, AppMode::Browse);
-        assert_eq!(a.active_search, "");
+        assert_eq!(a.active_search[0], "");
         assert_eq!(a.active_query(), "");
     }
 }
