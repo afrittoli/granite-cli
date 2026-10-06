@@ -23,6 +23,9 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
+      - name: Check capability table is up to date
+        run: bash scripts/update-capability-table.sh --check
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
