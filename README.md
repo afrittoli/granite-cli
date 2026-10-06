@@ -149,14 +149,16 @@ The table below shows which capabilities each launcher supports.
 It is generated from the `supported_capabilities` declared in each launcher's source file.
 To regenerate it after adding a launcher or capability, run `scripts/update-capability-table.sh`.
 
-| Capability | Type | `bob` | `claude` | `goose` | `hermes` | `openclaw` | `opencode` | `pi` |
+<!-- capability-table-start -->
+
+| Capability | Type | `claude` | `bob` | `pi` | `opencode` | `hermes` | `goose` | `openclaw` |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| `agent-model` | Agent Model Binding | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `vision-mcp` | Vision MCP Server | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `sub-agent` | Sub-Agent | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| `sub-agent-code` | Code Sub-Agent | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| `sub-agent-explore` | Explore Sub-Agent | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| `sub-agent-plan` | Plan Sub-Agent | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| `agent-model` | Agent Model Binding | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `vision-mcp` | Vision MCP Server | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| `sub-agent` | Sub-Agent | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `sub-agent-code` | Code Sub-Agent | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `sub-agent-explore` | Explore Sub-Agent | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `sub-agent-plan` | Plan Sub-Agent | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
 
 **Capability descriptions:**
 
@@ -174,6 +176,7 @@ To regenerate it after adding a launcher or capability, run `scripts/update-capa
 - **Mcp** — exposes the capability as an MCP server the launcher can call
 - **SubAgent** — exposes the capability as a named sub-agent the launcher can delegate to
 
+<!-- capability-table-end -->
 
 ## Contributing
 
