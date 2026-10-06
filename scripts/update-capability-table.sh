@@ -36,6 +36,89 @@ extract_id() {
 }
 
 # ---------------------------------------------------------------------------
+# Parallel-array helpers (bash 3.x associative-array replacement)
+#
+# Each "map" is represented as two indexed arrays — one for keys, one for
+# values — plus a lookup function that iterates them.
+#
+# Usage:
+#   map_set  <keys_var> <vals_var> <key> <value>
+#   map_get  <keys_var> <vals_var> <key>   # prints value or empty string
+# ---------------------------------------------------------------------------
+map_set() {
+    local _keys_var="$1" _vals_var="$2" _key="$3" _val="$4"
+    local _i
+    # Overwrite if key already exists
+    eval "local _len=\${#${_keys_var}[@]}"
+    for (( _i=0; _i<_len; _i++ )); do
+        eval "local _k=\"\${${_keys_var}[${_i}]}\""
+        if [[ "$_k" == "$_key" ]]; then
+            eval "${_vals_var}[${_i}]=\"\${_val}\""
+            return
+        fi
+    done
+    # New entry
+    eval "${_keys_var}+=(\"${_key}\")"
+    eval "${_vals_var}+=(\"${_val}\")"
+}
+
+map_get() {
+    local _keys_var="$1" _vals_var="$2" _key="$3"
+    local _i
+    eval "local _len=\${#${_keys_var}[@]}"
+    for (( _i=0; _i<_len; _i++ )); do
+        eval "local _k=\"\${${_keys_var}[${_i}]}\""
+        if [[ "$_k" == "$_key" ]]; then
+            eval "printf '%s' \"\${${_vals_var}[${_i}]}\""
+            return
+        fi
+    done
+    # Key not found — return empty
+    printf '%s' ''
+}
+
+# ---------------------------------------------------------------------------
+# Static lookup functions (replaces declare -A with fixed keys)
+# ---------------------------------------------------------------------------
+
+# Returns the source file path for a capability id, or empty string.
+cap_src_file() {
+    case "$1" in
+        agent-model)       printf '%s' "${CAPABILITIES_DIR}/agent_model.rs" ;;
+        vision-mcp)        printf '%s' "${CAPABILITIES_DIR}/vision_mcp/mod.rs" ;;
+        sub-agent)         printf '%s' "${CAPABILITIES_DIR}/sub_agent.rs" ;;
+        sub-agent-code)    printf '%s' "${CAPABILITIES_DIR}/sub_agent_code.rs" ;;
+        sub-agent-explore) printf '%s' "${CAPABILITIES_DIR}/sub_agent_explore.rs" ;;
+        sub-agent-plan)    printf '%s' "${CAPABILITIES_DIR}/sub_agent_plan.rs" ;;
+        *)                 printf '%s' '' ;;
+    esac
+}
+
+# Returns the display name for a capability id, or the id itself as fallback.
+cap_display_name_map() {
+    case "$1" in
+        agent-model)       printf '%s' "Agent Model Binding" ;;
+        vision-mcp)        printf '%s' "Vision MCP Server" ;;
+        sub-agent)         printf '%s' "Sub-Agent" ;;
+        sub-agent-code)    printf '%s' "Code Sub-Agent" ;;
+        sub-agent-explore) printf '%s' "Explore Sub-Agent" ;;
+        sub-agent-plan)    printf '%s' "Plan Sub-Agent" ;;
+        *)                 printf '%s' "$1" ;;
+    esac
+}
+
+# Returns a description override for a capability id, or empty string.
+# Description overrides for capabilities whose source has macro definitions
+# that confuse the awk extractor (e.g. declare_sub_agent_full! in sub_agent.rs
+# contains template lines like `description: $description_cap.to_string()`).
+cap_description_override() {
+    case "$1" in
+        sub-agent) printf '%s' "Defines a named sub-agent (prompt, tool allow-list, and model) that a launched coding agent can delegate to." ;;
+        *)         printf '%s' '' ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # 1. Extract launcher ids (in registration order)
 # ---------------------------------------------------------------------------
 launcher_ids=()
@@ -58,7 +141,8 @@ done < <(grep 'factory\.register' "$CAPABILITIES_MOD")
 #    Source: supported_capabilities: HashSet::from([BindingType::X, ...])
 #    Bob launcher lives in a subdirectory — handle that.
 # ---------------------------------------------------------------------------
-declare -A launcher_types  # launcher_types["bob"]="Mcp SubAgent"
+launcher_type_keys=()   # parallel arrays: launcher_type_keys[i] / launcher_type_vals[i]
+launcher_type_vals=()
 
 for id in "${launcher_ids[@]}"; do
     if [[ -f "${LAUNCHERS_DIR}/${id}/mod.rs" ]]; then
@@ -67,7 +151,7 @@ for id in "${launcher_ids[@]}"; do
         src="${LAUNCHERS_DIR}/${id}.rs"
     else
         echo "WARNING: source file not found for launcher '${id}'" >&2
-        launcher_types["$id"]=""
+        map_set launcher_type_keys launcher_type_vals "$id" ""
         continue
     fi
 
@@ -78,54 +162,35 @@ for id in "${launcher_ids[@]}"; do
             | sed 's/BindingType:://' \
             | tr '\n' ' ' || true)
 
-    launcher_types["$id"]="${types% }"
+    map_set launcher_type_keys launcher_type_vals "$id" "${types% }"
 done
 
 # ---------------------------------------------------------------------------
 # 4. Capability metadata: binding type, display name, description
 # ---------------------------------------------------------------------------
-declare -A cap_binding_type
-declare -A cap_display_name
-declare -A cap_description
+cap_btype_keys=()   # parallel arrays for cap_binding_type
+cap_btype_vals=()
 
-# Source file per capability id
-declare -A cap_src_file
-cap_src_file["agent-model"]="${CAPABILITIES_DIR}/agent_model.rs"
-cap_src_file["vision-mcp"]="${CAPABILITIES_DIR}/vision_mcp/mod.rs"
-cap_src_file["sub-agent"]="${CAPABILITIES_DIR}/sub_agent.rs"
-cap_src_file["sub-agent-code"]="${CAPABILITIES_DIR}/sub_agent_code.rs"
-cap_src_file["sub-agent-explore"]="${CAPABILITIES_DIR}/sub_agent_explore.rs"
-cap_src_file["sub-agent-plan"]="${CAPABILITIES_DIR}/sub_agent_plan.rs"
+cap_dname_keys=()   # parallel arrays for cap_display_name
+cap_dname_vals=()
 
-# Display names from metadata() name: field
-declare -A cap_display_name_map
-cap_display_name_map["agent-model"]="Agent Model Binding"
-cap_display_name_map["vision-mcp"]="Vision MCP Server"
-cap_display_name_map["sub-agent"]="Sub-Agent"
-cap_display_name_map["sub-agent-code"]="Code Sub-Agent"
-cap_display_name_map["sub-agent-explore"]="Explore Sub-Agent"
-cap_display_name_map["sub-agent-plan"]="Plan Sub-Agent"
-
-# Description overrides for capabilities whose source has macro definitions
-# that confuse the awk extractor (e.g. declare_sub_agent_full! in sub_agent.rs
-# contains template lines like `description: $description_cap.to_string()`).
-declare -A cap_description_override
-cap_description_override["sub-agent"]="Defines a named sub-agent (prompt, tool allow-list, and model) that a launched coding agent can delegate to."
+cap_desc_keys=()    # parallel arrays for cap_description
+cap_desc_vals=()
 
 for id in "${capability_ids[@]}"; do
-    src="${cap_src_file[$id]:-}"
+    src=$(cap_src_file "$id")
     if [[ -z "$src" || ! -f "$src" ]]; then
         echo "WARNING: source file not found for capability '${id}'" >&2
-        cap_binding_type["$id"]=""
-        cap_description["$id"]=""
-        cap_display_name["$id"]="$id"
+        map_set cap_btype_keys cap_btype_vals "$id" ""
+        map_set cap_desc_keys  cap_desc_vals  "$id" ""
+        map_set cap_dname_keys cap_dname_vals "$id" "$id"
         continue
     fi
 
     # First BindingType token in the file
     btype=$(grep -o 'BindingType::[A-Za-z]*' "$src" | head -1 | sed 's/BindingType:://')
-    cap_binding_type["$id"]="${btype:-}"
-    cap_display_name["$id"]="${cap_display_name_map[$id]:-$id}"
+    map_set cap_btype_keys cap_btype_vals "$id" "${btype:-}"
+    map_set cap_dname_keys cap_dname_vals "$id" "$(cap_display_name_map "$id")"
 
     # Description extraction:
     #   - For declare_sub_agent_*! macro calls (sub_agent*.rs):
@@ -157,8 +222,8 @@ for id in "${capability_ids[@]}"; do
     ' "$src" || true)
 
     # Apply override if set (takes precedence over extracted value)
-    override="${cap_description_override[$id]:-}"
-    cap_description["$id"]="${override:-${desc:-}}"
+    override=$(cap_description_override "$id")
+    map_set cap_desc_keys cap_desc_vals "$id" "${override:-${desc:-}}"
 done
 
 # ---------------------------------------------------------------------------
@@ -180,11 +245,13 @@ generate_block() {
 
     # Data rows
     for cap_id in "${capability_ids[@]}"; do
-        btype="${cap_binding_type[$cap_id]:-}"
-        display="${cap_display_name[$cap_id]:-$cap_id}"
+        btype=$(map_get cap_btype_keys cap_btype_vals "$cap_id")
+        display=$(map_get cap_dname_keys cap_dname_vals "$cap_id")
+        [[ -z "$display" ]] && display="$cap_id"
         row="| \`${cap_id}\` | ${display}"
         for l_id in "${launcher_ids[@]}"; do
-            if echo " ${launcher_types[$l_id]:-} " | grep -qw "$btype"; then
+            ltypes=$(map_get launcher_type_keys launcher_type_vals "$l_id")
+            if echo " ${ltypes} " | grep -qw "$btype"; then
                 row+=" | ✅"
             else
                 row+=" | ❌"
@@ -199,7 +266,8 @@ generate_block() {
     echo "| Capability | Description |"
     echo "|---|---|"
     for cap_id in "${capability_ids[@]}"; do
-        echo "| \`${cap_id}\` | ${cap_description[$cap_id]:-} |"
+        desc=$(map_get cap_desc_keys cap_desc_vals "$cap_id")
+        echo "| \`${cap_id}\` | ${desc} |"
     done
 
     echo ""
