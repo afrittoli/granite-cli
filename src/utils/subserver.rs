@@ -86,7 +86,17 @@ mod tests {
 
         server.shutdown().await;
 
-        // The port should be free again -- rebinding it should succeed.
-        std::net::TcpListener::bind(addr).unwrap();
+        // The port should be free again. On macOS a child process that a
+        // parallel test starts at this moment can hold the port for a few
+        // milliseconds, so retry for up to a second.
+        let mut rebound = std::net::TcpListener::bind(addr);
+        for _ in 0..100 {
+            if rebound.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            rebound = std::net::TcpListener::bind(addr);
+        }
+        rebound.unwrap();
     }
 }
