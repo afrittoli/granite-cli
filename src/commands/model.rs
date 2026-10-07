@@ -168,21 +168,34 @@ impl ModelCommands {
     /// Rows for the model search table: [id, family, size, context, type].
     /// Shared by the CLI command and the TUI.
     pub(crate) fn search_rows(query: &str) -> Vec<Vec<String>> {
+        Self::search_rows_in(
+            MODEL_REGISTRY
+                .entries()
+                .into_iter()
+                .map(|(id, m)| (id.to_string(), m)),
+            query,
+        )
+    }
+
+    /// `search_rows` over a caller-supplied model set.
+    pub(crate) fn search_rows_in(
+        models: impl IntoIterator<Item = (String, ModelMetadata)>,
+        query: &str,
+    ) -> Vec<Vec<String>> {
         let q = query.to_lowercase();
-        let models = MODEL_REGISTRY.entries();
         let mut rows: Vec<(Vec<String>, ModelMetadata)> = models
-            .iter()
+            .into_iter()
             .filter_map(|(id, m)| {
-                let matched_on = search_match_reason(id, m, &q)?;
+                let matched_on = search_match_reason(&id, &m, &q)?;
                 let row = vec![
-                    id.to_string(),
+                    id,
                     m.family.clone(),
                     m.format_size(),
                     m.context_length.to_string(),
                     m.model_type.to_string(),
                     matched_on,
                 ];
-                Some((row, m.clone()))
+                Some((row, m))
             })
             .collect();
         // Sort by match priority first (tag > id > family > description),
@@ -538,7 +551,7 @@ impl ModelCommands {
     /// Key-value fields describing `model`'s data -- shared by the catalog
     /// path (`info_fields`, a static registry lookup) and `info`'s
     /// configured-instance path (a live constructed model's real values).
-    fn metadata_fields(model: &ModelMetadata) -> Vec<(&'static str, String)> {
+    pub(crate) fn metadata_fields(model: &ModelMetadata) -> Vec<(&'static str, String)> {
         let mut fields: Vec<(&'static str, String)> = vec![
             ("Family", model.family.clone()),
             ("Version", model.version.clone()),
