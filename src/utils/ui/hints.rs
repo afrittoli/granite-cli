@@ -1,12 +1,10 @@
-/// Footer hint tokens for the interactive TUI.
-///
-/// Each variant represents one key-binding hint shown in the footer bar.
-/// [`render_hints`] joins a slice of hints into the final footer string.
-
-/*-- public --*/
+//! Footer hint tokens for the interactive TUI.
+//!
+//! Each variant represents one key-binding hint shown in the footer bar.
+//! [`render_hints`] joins a slice of hints into the final footer string.
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Hint {
+pub(crate) enum Hint {
     /// `[↑↓/jk] Navigate` — browse-mode row movement.
     Navigate,
     /// `[↑↓/jk] Scroll` — detail/hardware pane scrolling.
@@ -76,7 +74,7 @@ impl std::fmt::Display for Hint {
 }
 
 /// Join a slice of [`Hint`]s into a single footer string, separated by two spaces.
-pub fn render_hints(hints: &[Hint]) -> String {
+pub(crate) fn render_hints(hints: &[Hint]) -> String {
     hints
         .iter()
         .map(|h| h.to_string())
