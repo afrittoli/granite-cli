@@ -2103,66 +2103,56 @@ impl App {
 
     /// Build the list of [`Hint`]s for the current application state.
     fn active_hints(&self) -> Vec<Hint> {
-        if let Some(pane) = &self.setup_pane {
+        if self.setup_pane.is_some() {
             // Setup pane owns its own hints; return empty here — render_footer
             // calls pane.hint() directly for this case.
-            let _ = pane;
             return vec![];
         }
-        let filter_active = Self::active_search_idx(&self.section)
-            .is_some_and(|i| !self.active_search[i].is_empty());
         match &self.mode {
-            AppMode::Browse if self.section == Section::Sessions => vec![
-                Hint::Navigate,
-                Hint::Section,
-                Hint::Open("Detail"),
-                Hint::ToggleInactive {
-                    hidden: self.hide_inactive,
-                },
-                Hint::Quit,
-            ],
-            AppMode::Browse if self.section == Section::Hardware => {
-                vec![Hint::Scroll, Hint::Section, Hint::Quit]
-            }
-            AppMode::Browse if Self::configured_only_idx(&self.section).is_some() => {
-                let catalog_hidden =
-                    self.configured_only[Self::configured_only_idx(&self.section).unwrap()];
-                let mut hints = vec![
-                    Hint::Navigate,
-                    Hint::Section,
-                    Hint::Open("Detail/Setup"),
-                    Hint::Search,
-                ];
+            AppMode::Browse => {
+                let mut hints = Vec::new();
+                if self.section == Section::Hardware {
+                    hints.push(Hint::Scroll);
+                } else {
+                    hints.push(Hint::Navigate);
+                }
+                hints.push(Hint::Section);
+                if self.section == Section::Sessions {
+                    hints.push(Hint::Open("Detail"));
+                } else if self.section != Section::Hardware {
+                    hints.push(Hint::Open("Detail/Setup"));
+                }
+                if Self::active_search_idx(&self.section).is_some() {
+                    hints.push(Hint::Search);
+                }
+                let filter_active = Self::active_search_idx(&self.section)
+                    .is_some_and(|i| !self.active_search[i].is_empty());
                 if filter_active {
                     hints.push(Hint::ClearFilter);
                 }
-                hints.push(Hint::ToggleCatalog {
-                    hidden: catalog_hidden,
-                });
+                if let Some(idx) = Self::configured_only_idx(&self.section) {
+                    hints.push(Hint::ToggleCatalog {
+                        hidden: self.configured_only[idx],
+                    });
+                }
+                if self.section == Section::Sessions {
+                    hints.push(Hint::ToggleInactive {
+                        hidden: self.hide_inactive,
+                    });
+                }
                 hints.push(Hint::Quit);
-                hints.push(Hint::ConfiguredLegend);
+                if matches!(
+                    self.section,
+                    Section::Models
+                        | Section::Providers
+                        | Section::Launchers
+                        | Section::Capabilities
+                        | Section::Recommend
+                ) {
+                    hints.push(Hint::ConfiguredLegend);
+                }
                 hints
             }
-            AppMode::Browse if filter_active => {
-                // Recommend section: no catalog toggle but an active filter.
-                vec![
-                    Hint::Navigate,
-                    Hint::Section,
-                    Hint::Open("Detail/Setup"),
-                    Hint::Search,
-                    Hint::ClearFilter,
-                    Hint::Quit,
-                    Hint::ConfiguredLegend,
-                ]
-            }
-            AppMode::Browse => vec![
-                Hint::Navigate,
-                Hint::Section,
-                Hint::Open("Detail/Setup"),
-                Hint::Search,
-                Hint::Quit,
-                Hint::ConfiguredLegend,
-            ],
             AppMode::Search(_) => {
                 vec![Hint::Typing("Filter"), Hint::Confirm, Hint::Cancel]
             }
