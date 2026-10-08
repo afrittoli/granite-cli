@@ -42,7 +42,7 @@ impl CapabilityCommands {
     pub fn list(ctx: &crate::AppContext) -> Result<()> {
         let notes = crate::commands::shared::remediation::dangling_notes(ctx, RefKind::Capability);
         let mut rows: Vec<Vec<String>> = ctx
-            .config
+            .config()
             .capabilities
             .iter()
             .map(|(id, cfg)| {
@@ -72,7 +72,7 @@ impl CapabilityCommands {
     pub async fn info(ctx: &mut crate::AppContext, capability_id: &str) -> Result<()> {
         // Only a configured instance can have a broken reference. An id that
         // names a catalog type is being browsed, not diagnosed.
-        if ctx.config.get_capability(capability_id).is_some() {
+        if ctx.config().get_capability(capability_id).is_some() {
             crate::commands::shared::remediation::remediate(
                 ctx,
                 RefKind::Capability,
@@ -84,12 +84,12 @@ impl CapabilityCommands {
 
             // Removing it is one of the choices offered above, and leaves
             // nothing to show.
-            if ctx.config.get_capability(capability_id).is_none() {
+            if ctx.config().get_capability(capability_id).is_none() {
                 return Ok(());
             }
         }
 
-        let configured = ctx.config.get_capability(capability_id);
+        let configured = ctx.config().get_capability(capability_id);
 
         let catalog_entry = configured
             .and_then(|c| CAPABILITY_REGISTRY.get(&c.capability_type))
@@ -185,7 +185,7 @@ impl CapabilityCommands {
             None => ctx.ui.text("Instance name: ", capability_type)?,
         };
 
-        let existing_config = ctx.config.get_capability(&instance_id);
+        let existing_config = ctx.config().get_capability(&instance_id);
         if existing_config.is_some() && !force_overwrite {
             let overwrite = ctx.ui.confirm(
                 &format!("Capability '{instance_id}' is already configured. Overwrite?"),
@@ -290,7 +290,7 @@ impl CapabilityCommands {
             config,
         };
 
-        ctx.config
+        ctx.config_mut()
             .insert_capability(&instance_id, capability_config)
             .map_err(|e| anyhow::anyhow!("failed to save capability config: {e}"))?;
 
@@ -372,19 +372,26 @@ impl CapabilityCommands {
             configurable_types[index]
         };
 
-        let before: std::collections::HashSet<String> = ctx.config.models.keys().cloned().collect();
+        let before: std::collections::HashSet<String> =
+            ctx.config().models.keys().cloned().collect();
         ModelCommands::setup(ctx, model_type, None, false).await?;
 
         // Setup reports success even when it configured nothing, so take the
         // ids it actually left behind rather than its return value. A new
         // model that does not itself resolve is no use as a dependency.
         let added: Vec<String> = ctx
-            .config
+            .config()
             .models
             .keys()
             .filter(|id| !before.contains(*id))
             .filter(|id| {
-                crate::config::validation::validate_ref(RefKind::Model, id, &ctx.config).is_ok()
+                crate::config::validation::validate_ref(
+                    RefKind::Model,
+                    id,
+                    ctx.config(),
+                    &ctx.sources(),
+                )
+                .is_ok()
             })
             .cloned()
             .collect();
@@ -432,8 +439,8 @@ impl CapabilityCommands {
         ctx: &crate::AppContext,
         requirement: &ModelRequirement,
     ) -> (Vec<String>, Vec<&'static str>) {
-        let source = crate::models::ModelSource::from_config(&ctx.config);
-        let resolution = dependency::resolve(requirement, &source);
+        let source = ctx.sources().models();
+        let resolution = dependency::resolve(requirement, &*source);
         let instances = source.instances();
         let mut usable: Vec<String> = resolution
             .existing_instances
@@ -557,8 +564,8 @@ impl CapabilityCommands {
         ctx: &crate::AppContext,
         requirement: &ProviderRequirement,
     ) -> (Vec<String>, Vec<&'static str>) {
-        let source = crate::providers::ProviderSource::from_config(&ctx.config);
-        let resolution = dependency::resolve(requirement, &source);
+        let source = ctx.sources().providers();
+        let resolution = dependency::resolve(requirement, &*source);
         let mut existing = resolution.existing_instances;
         existing.sort();
         let mut configurable_types = resolution.configurable_types;
@@ -572,7 +579,7 @@ impl CapabilityCommands {
     /// in-memory config. After this call `capability list` will no longer
     /// show the entry.
     pub fn remove(ctx: &mut crate::AppContext, capability_id: &str) -> Result<()> {
-        if ctx.config.get_capability(capability_id).is_none() {
+        if ctx.config().get_capability(capability_id).is_none() {
             anyhow::bail!("No capability configured with id '{capability_id}'. Nothing to remove.");
         }
 
@@ -592,7 +599,7 @@ impl CapabilityCommands {
             }
         }
 
-        if let Err(e) = ctx.config.remove_capability(capability_id) {
+        if let Err(e) = ctx.config_mut().remove_capability(capability_id) {
             ctx.ui
                 .warn(&format!("failed to persist capability removal: {e}"));
         }
@@ -612,15 +619,12 @@ mod tests {
     use std::sync::Arc;
 
     fn test_ctx() -> crate::AppContext {
-        crate::AppContext {
-            config: Config::default(),
-            ui: Arc::new(CaptureUi::default()),
-        }
+        crate::AppContext::new(Config::default(), Arc::new(CaptureUi::default()))
     }
 
     fn ctx_with_capability(id: &str, capability_type: &str) -> crate::AppContext {
         let mut ctx = test_ctx();
-        ctx.config.capabilities.insert(
+        ctx.config_mut().capabilities.insert(
             id.to_string(),
             CapabilityConfig {
                 capability_id: id.to_string(),
@@ -715,7 +719,7 @@ mod tests {
     /// Capability `chat` points at a model that is not configured.
     fn ctx_with_a_dangling_model_ref() -> crate::AppContext {
         let mut ctx = ctx_with_chat_capable_model();
-        ctx.config.capabilities.insert(
+        ctx.config_mut().capabilities.insert(
             "chat".to_string(),
             CapabilityConfig {
                 capability_id: "chat".to_string(),
@@ -739,6 +743,34 @@ mod tests {
         assert!(row[notes].contains("is not configured"), "{row:?}");
         // A list reports that a problem exists. Acting on it is left to a
         // command the user chooses to run next.
+        assert!(capture(&ctx).select_prompts.borrow().is_empty());
+    }
+
+    #[test]
+    fn list_annotates_a_capability_whose_model_does_not_meet_its_requirement() {
+        // `granite-3.1-8b-instruct` is a text model, and `vision-mcp` asks
+        // for one that understands images.
+        let mut ctx = ctx_with_chat_capable_model();
+        ctx.config_mut().capabilities.insert(
+            "vision".to_string(),
+            CapabilityConfig {
+                capability_id: "vision".to_string(),
+                capability_type: "vision-mcp".to_string(),
+                config: serde_json::json!({ "model_id": "granite-3.1-8b-instruct" }),
+            },
+        );
+
+        CapabilityCommands::list(&ctx).unwrap();
+
+        let tables = tables!(ctx);
+        let (_, headers, rows) = &tables[0];
+        let notes = headers.iter().position(|h| h == "NOTES").unwrap();
+        let row = rows.iter().find(|r| r[0] == "vision").unwrap();
+        assert!(
+            row[notes].contains("does not meet its requirement")
+                && row[notes].contains("Image Understanding"),
+            "{row:?}"
+        );
         assert!(capture(&ctx).select_prompts.borrow().is_empty());
     }
 
@@ -775,7 +807,7 @@ mod tests {
 
         CapabilityCommands::info(&mut ctx, "chat").await.unwrap();
 
-        assert!(ctx.config.get_capability("chat").is_none());
+        assert!(ctx.config().get_capability("chat").is_none());
     }
 
     #[tokio::test]
@@ -788,7 +820,7 @@ mod tests {
         CapabilityCommands::info(&mut ctx, "chat").await.unwrap();
 
         assert_eq!(
-            ctx.config
+            ctx.config()
                 .get_capability("chat")
                 .and_then(|c| c.config.get("model_id"))
                 .and_then(|v| v.as_str()),
@@ -870,7 +902,7 @@ mod tests {
         use crate::config::{ModelConfig, ProviderConfig};
 
         let mut ctx = test_ctx();
-        ctx.config.providers.insert(
+        ctx.config_mut().providers.insert(
             "ollama".to_string(),
             ProviderConfig {
                 provider_id: "ollama".to_string(),
@@ -878,7 +910,7 @@ mod tests {
                 config: serde_json::json!({}),
             },
         );
-        ctx.config.models.insert(
+        ctx.config_mut().models.insert(
             "granite-3.1-8b-instruct".to_string(),
             ModelConfig {
                 model_id: "granite-3.1-8b-instruct".to_string(),
@@ -901,7 +933,7 @@ mod tests {
         // automatically without a select prompt.
         let result = CapabilityCommands::setup(&mut ctx, "agent-model", Some("chat"), false).await;
         assert!(result.is_ok());
-        let configured = ctx.config.get_capability("chat").unwrap();
+        let configured = ctx.config().get_capability("chat").unwrap();
         assert_eq!(
             configured.config.get("model_id").and_then(|v| v.as_str()),
             Some("granite-3.1-8b-instruct")
@@ -1102,11 +1134,11 @@ mod tests {
     fn remove_existing_capability_succeeds_and_disappears_from_list() {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_capability("my-cap", "agent-model");
-        assert!(ctx.config.get_capability("my-cap").is_some());
+        assert!(ctx.config().get_capability("my-cap").is_some());
 
         CapabilityCommands::remove(&mut ctx, "my-cap").unwrap();
 
-        assert!(ctx.config.get_capability("my-cap").is_none());
+        assert!(ctx.config().get_capability("my-cap").is_none());
         let infos = infos!(ctx);
         assert!(
             infos

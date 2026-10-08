@@ -208,7 +208,7 @@ impl App {
         let mut table_state = TableState::default();
         table_state.select(Some(0));
         let recommend_rows_cache = {
-            let source = crate::providers::ProviderSource::from_config(&ctx.config);
+            let source = ctx.sources().providers();
             let instances = source.instances();
             let providers: Vec<&dyn crate::providers::Provider> =
                 instances.iter().map(|(_, p)| &**p).collect();
@@ -222,10 +222,10 @@ impl App {
             )
         };
         let configured_only = [
-            !ctx.config.models.is_empty(),       // Models
-            !ctx.config.providers.is_empty(),    // Providers
-            !ctx.config.launchers.is_empty(),    // Launchers
-            !ctx.config.capabilities.is_empty(), // Capabilities
+            !ctx.config().models.is_empty(),       // Models
+            !ctx.config().providers.is_empty(),    // Providers
+            !ctx.config().launchers.is_empty(),    // Launchers
+            !ctx.config().capabilities.is_empty(), // Capabilities
         ];
         let sessions = Self::load_sessions();
         let hide_inactive = true;
@@ -628,8 +628,13 @@ impl App {
     /// `selected_id` always index the same list as the rendered table.
     fn model_search_rows(&self, query: &str) -> Vec<Vec<String>> {
         let only = self.configured_only[0];
-        let configured_ids: std::collections::HashSet<&str> =
-            self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+        let configured_ids: std::collections::HashSet<&str> = self
+            .ctx
+            .config()
+            .models
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
         ModelCommands::search_rows(query)
             .into_iter()
             .filter(|r| !only || configured_ids.contains(r[0].as_str()))
@@ -658,8 +663,13 @@ impl App {
         let ids: Vec<String> = match self.section {
             Section::Models => {
                 let only = self.configured_only[0];
-                let configured_ids: std::collections::HashSet<&str> =
-                    self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+                let configured_ids: std::collections::HashSet<&str> = self
+                    .ctx
+                    .config()
+                    .models
+                    .keys()
+                    .map(|k| k.as_str())
+                    .collect();
                 ModelCommands::catalog_rows(None)
                     .into_iter()
                     .filter(|r| !only || configured_ids.contains(r[0].as_str()))
@@ -670,7 +680,7 @@ impl App {
                 let only = self.configured_only[1];
                 let configured_types: std::collections::HashSet<String> = self
                     .ctx
-                    .config
+                    .config()
                     .providers
                     .values()
                     .map(|c| c.provider_type.clone())
@@ -688,7 +698,7 @@ impl App {
                 let only = self.configured_only[2];
                 let configured_types: std::collections::HashSet<String> = self
                     .ctx
-                    .config
+                    .config()
                     .launchers
                     .values()
                     .map(|c| c.launcher_type.clone())
@@ -706,7 +716,7 @@ impl App {
                 let only = self.configured_only[3];
                 let configured_types: std::collections::HashSet<String> = self
                     .ctx
-                    .config
+                    .config()
                     .capabilities
                     .values()
                     .map(|c| c.capability_type.clone())
@@ -836,7 +846,7 @@ impl App {
                     Section::Models => {
                         let only = self.configured_only[0];
                         if only {
-                            self.ctx.config.models.len()
+                            self.ctx.config().models.len()
                         } else {
                             MODEL_REGISTRY.entries().len()
                         }
@@ -846,7 +856,7 @@ impl App {
                         if only {
                             let configured_types: std::collections::HashSet<String> = self
                                 .ctx
-                                .config
+                                .config()
                                 .providers
                                 .values()
                                 .map(|c| c.provider_type.clone())
@@ -865,7 +875,7 @@ impl App {
                         if only {
                             let configured_types: std::collections::HashSet<String> = self
                                 .ctx
-                                .config
+                                .config()
                                 .launchers
                                 .values()
                                 .map(|c| c.launcher_type.clone())
@@ -884,7 +894,7 @@ impl App {
                         if only {
                             let configured_types: std::collections::HashSet<String> = self
                                 .ctx
-                                .config
+                                .config()
                                 .capabilities
                                 .values()
                                 .map(|c| c.capability_type.clone())
@@ -949,8 +959,13 @@ impl App {
 
         match self.section {
             Section::Models => {
-                let configured_ids: std::collections::HashSet<&str> =
-                    self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+                let configured_ids: std::collections::HashSet<&str> = self
+                    .ctx
+                    .config()
+                    .models
+                    .keys()
+                    .map(|k| k.as_str())
+                    .collect();
 
                 // When a search is active, use search_rows (shows MATCHED ON,
                 // sorted by match priority).  Without a query, use catalog_rows
@@ -1063,7 +1078,7 @@ impl App {
                 // Collect configured types for marker column
                 let configured_types: std::collections::HashSet<String> = self
                     .ctx
-                    .config
+                    .config()
                     .providers
                     .values()
                     .map(|c| c.provider_type.clone())
@@ -1161,7 +1176,7 @@ impl App {
                 // Collect configured types for marker column
                 let configured_types: std::collections::HashSet<String> = self
                     .ctx
-                    .config
+                    .config()
                     .launchers
                     .values()
                     .map(|c| c.launcher_type.clone())
@@ -1261,7 +1276,7 @@ impl App {
                 // Collect configured types for marker column
                 let configured_types: std::collections::HashSet<String> = self
                     .ctx
-                    .config
+                    .config()
                     .capabilities
                     .values()
                     .map(|c| c.capability_type.clone())
@@ -1343,8 +1358,13 @@ impl App {
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
             }
             Section::Recommend => {
-                let configured_ids: std::collections::HashSet<&str> =
-                    self.ctx.config.models.keys().map(|k| k.as_str()).collect();
+                let configured_ids: std::collections::HashSet<&str> = self
+                    .ctx
+                    .config()
+                    .models
+                    .keys()
+                    .map(|k| k.as_str())
+                    .collect();
 
                 // Use filtered_ids so that search_fields (tags, size, variant,
                 // type, providers) are honoured here too, just as in Models/Providers/etc.
@@ -1822,8 +1842,8 @@ impl App {
                         })
                         .collect();
                     lines.push(Line::from(""));
-                    if let Some(mc) = self.ctx.config.get_model(id) {
-                        let provider_val = match self.ctx.config.get_provider(&mc.provider_id) {
+                    if let Some(mc) = self.ctx.config().get_model(id) {
+                        let provider_val = match self.ctx.config().get_provider(&mc.provider_id) {
                             None => mc.provider_id.clone(),
                             Some(pc) => format!("{} ({})", mc.provider_id, pc.provider_type),
                         };
@@ -1875,7 +1895,7 @@ impl App {
                     endpoints_lines.sort_by(|a, b| a.0.cmp(&b.0));
                     let mut instances: Vec<String> = self
                         .ctx
-                        .config
+                        .config()
                         .providers
                         .iter()
                         .filter(|(_, c)| c.provider_type == id)
@@ -1942,7 +1962,7 @@ impl App {
                 if let Some(l) = crate::launchers::LAUNCHER_REGISTRY.get(id) {
                     let mut configured: Vec<&crate::config::LauncherConfig> = self
                         .ctx
-                        .config
+                        .config()
                         .launchers
                         .values()
                         .filter(|c| c.launcher_type == id)
@@ -2035,7 +2055,7 @@ impl App {
                     };
                     let mut instances: Vec<String> = self
                         .ctx
-                        .config
+                        .config()
                         .capabilities
                         .iter()
                         .filter(|(_, cfg)| cfg.capability_type == id)
@@ -2180,7 +2200,7 @@ impl App {
         let mut instances: Vec<String> = match self.section {
             Section::Providers => self
                 .ctx
-                .config
+                .config()
                 .providers
                 .values()
                 .filter(|c| c.provider_type == type_id)
@@ -2188,7 +2208,7 @@ impl App {
                 .collect(),
             Section::Launchers => self
                 .ctx
-                .config
+                .config()
                 .launchers
                 .values()
                 .filter(|c| c.launcher_type == type_id)
@@ -2196,7 +2216,7 @@ impl App {
                 .collect(),
             Section::Capabilities => self
                 .ctx
-                .config
+                .config()
                 .capabilities
                 .values()
                 .filter(|c| c.capability_type == type_id)
@@ -2271,7 +2291,7 @@ pub async fn run_interactive_tui(ctx: crate::AppContext) -> anyhow::Result<()> {
             pane.poll();
             if pane.finished {
                 if let Ok(fresh) = crate::config::Config::new() {
-                    app.ctx.config = fresh;
+                    app.ctx.set_config(fresh);
                 }
                 app.setup_pane = None;
             }
@@ -2309,7 +2329,7 @@ pub async fn run_interactive_tui(ctx: crate::AppContext) -> anyhow::Result<()> {
                 pane.handle_key(key);
                 if pane.finished {
                     if let Ok(fresh) = crate::config::Config::new() {
-                        app.ctx.config = fresh;
+                        app.ctx.set_config(fresh);
                     }
                     app.setup_pane = None;
                 }
@@ -2368,10 +2388,7 @@ fn spawn_setup(
         None => format!("{} — {id}", section.label().to_lowercase()),
     };
 
-    let mut task_ctx = crate::AppContext {
-        config: ctx.config.clone(),
-        ui: tui_ui,
-    };
+    let mut task_ctx = crate::AppContext::new(ctx.config().clone(), tui_ui);
 
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
@@ -2394,7 +2411,7 @@ fn spawn_setup(
             }
             // Write config back from the task context so changes persist.
             // (The task_ctx.config was cloned before the task started; the
-            // setup commands call ctx.config.insert_* which already persist
+            // setup commands call ctx.config().insert_* which already persist
             // each entry to disk, so the main ctx just needs a reload.)
         });
     });
@@ -2412,10 +2429,10 @@ mod tests {
     use std::sync::Arc;
 
     fn app() -> App {
-        App::new(crate::AppContext {
-            config: Config::default(),
-            ui: Arc::new(CaptureUi::default()),
-        })
+        App::new(crate::AppContext::new(
+            Config::default(),
+            Arc::new(CaptureUi::default()),
+        ))
     }
 
     // -- existing Browse tests ------------------------------------------------
@@ -2991,10 +3008,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mut a = App::new(crate::AppContext {
-            config: cfg,
-            ui: Arc::new(CaptureUi::default()),
-        });
+        let mut a = App::new(crate::AppContext::new(cfg, Arc::new(CaptureUi::default())));
         a.section = Section::Providers;
         let ids = a.filtered_ids("");
         a.row = ids.iter().position(|id| id == "ollama").unwrap_or(0);
