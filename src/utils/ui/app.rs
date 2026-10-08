@@ -18,6 +18,7 @@ use crate::dependency::Configured;
 use crate::models::MODEL_REGISTRY;
 use crate::providers::PROVIDER_REGISTRY;
 use crate::utils::Searchable;
+use crate::utils::ui::hints::{Hint, render_hints};
 use crate::utils::ui::setup_pane::SetupPane;
 use crate::utils::ui::tui::{restore_terminal, setup_terminal};
 use crate::utils::ui::tui_ui::{Answer, OutputLine, TuiUi};
@@ -333,35 +334,17 @@ impl App {
                         self.mode = AppMode::Detail(id);
                     }
                 }
-                KeyCode::Char('s') => {
-                    if self.section == Section::Sessions {
-                        if self.hide_inactive {
-                            self.hide_inactive = false;
-                            let max = self.row_count().saturating_sub(1);
-                            self.row = self.row.min(max);
-                            self.sync_table_state();
-                        }
-                    } else if let Some(idx) = Self::configured_only_idx(&self.section)
-                        && self.configured_only[idx]
-                    {
-                        self.configured_only[idx] = false;
+                KeyCode::Char('c') => {
+                    if let Some(idx) = Self::configured_only_idx(&self.section) {
+                        self.configured_only[idx] = !self.configured_only[idx];
                         let max = self.row_count().saturating_sub(1);
                         self.row = self.row.min(max);
                         self.sync_table_state();
                     }
                 }
-                KeyCode::Char('h') => {
+                KeyCode::Char('i') => {
                     if self.section == Section::Sessions {
-                        if !self.hide_inactive {
-                            self.hide_inactive = true;
-                            let max = self.row_count().saturating_sub(1);
-                            self.row = self.row.min(max);
-                            self.sync_table_state();
-                        }
-                    } else if let Some(idx) = Self::configured_only_idx(&self.section)
-                        && !self.configured_only[idx]
-                    {
-                        self.configured_only[idx] = true;
+                        self.hide_inactive = !self.hide_inactive;
                         let max = self.row_count().saturating_sub(1);
                         self.row = self.row.min(max);
                         self.sync_table_state();
@@ -1058,15 +1041,9 @@ impl App {
                     ]
                 };
 
-                let table = Table::new(rows, widths.to_vec()).header(header).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(if self.configured_only[0] {
-                            " Models [s: show catalog] "
-                        } else {
-                            " Models [h: hide catalog] "
-                        }),
-                );
+                let table = Table::new(rows, widths.to_vec())
+                    .header(header)
+                    .block(Block::default().borders(Borders::ALL).title(" Models "));
 
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
             }
@@ -1159,15 +1136,9 @@ impl App {
                     ]
                 };
 
-                let table = Table::new(rows, widths.to_vec()).header(header).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(if self.configured_only[1] {
-                            " Providers [s: show catalog] "
-                        } else {
-                            " Providers [h: hide catalog] "
-                        }),
-                );
+                let table = Table::new(rows, widths.to_vec())
+                    .header(header)
+                    .block(Block::default().borders(Borders::ALL).title(" Providers "));
 
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
             }
@@ -1265,15 +1236,9 @@ impl App {
                     ]
                 };
 
-                let table = Table::new(rows, widths.to_vec()).header(header).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(if self.configured_only[2] {
-                            " Launchers [s: show catalog] "
-                        } else {
-                            " Launchers [h: hide catalog] "
-                        }),
-                );
+                let table = Table::new(rows, widths.to_vec())
+                    .header(header)
+                    .block(Block::default().borders(Borders::ALL).title(" Launchers "));
 
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
             }
@@ -1372,11 +1337,7 @@ impl App {
                 let table = Table::new(rows, widths.to_vec()).header(header).block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(if self.configured_only[3] {
-                            " Capabilities [s: show catalog] "
-                        } else {
-                            " Capabilities [h: hide catalog] "
-                        }),
+                        .title(" Capabilities "),
                 );
 
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
@@ -1577,15 +1538,7 @@ impl App {
                     ],
                 )
                 .header(header)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(if self.hide_inactive {
-                            " Sessions [s: show inactive] "
-                        } else {
-                            " Sessions [h: hide inactive] "
-                        }),
-                );
+                .block(Block::default().borders(Borders::ALL).title(" Sessions "));
 
                 frame.render_stateful_widget(table, table_area, &mut self.table_state);
             }
@@ -2148,58 +2101,85 @@ impl App {
         frame.render_widget(para, area);
     }
 
+    /// Build the list of [`Hint`]s for the current application state.
+    fn active_hints(&self) -> Vec<Hint> {
+        if let Some(pane) = &self.setup_pane {
+            // Setup pane owns its own hints; return empty here — render_footer
+            // calls pane.hint() directly for this case.
+            let _ = pane;
+            return vec![];
+        }
+        let filter_active = Self::active_search_idx(&self.section)
+            .is_some_and(|i| !self.active_search[i].is_empty());
+        match &self.mode {
+            AppMode::Browse if self.section == Section::Sessions => vec![
+                Hint::Navigate,
+                Hint::Section,
+                Hint::Open("Detail"),
+                Hint::ToggleInactive {
+                    hidden: self.hide_inactive,
+                },
+                Hint::Quit,
+            ],
+            AppMode::Browse if self.section == Section::Hardware => {
+                vec![Hint::Scroll, Hint::Section, Hint::Quit]
+            }
+            AppMode::Browse if Self::configured_only_idx(&self.section).is_some() => {
+                let catalog_hidden =
+                    self.configured_only[Self::configured_only_idx(&self.section).unwrap()];
+                let mut hints = vec![
+                    Hint::Navigate,
+                    Hint::Section,
+                    Hint::Open("Detail/Setup"),
+                    Hint::Search,
+                ];
+                if filter_active {
+                    hints.push(Hint::ClearFilter);
+                }
+                hints.push(Hint::ToggleCatalog {
+                    hidden: catalog_hidden,
+                });
+                hints.push(Hint::Quit);
+                hints.push(Hint::ConfiguredLegend);
+                hints
+            }
+            AppMode::Browse if filter_active => {
+                // Recommend section: no catalog toggle but an active filter.
+                vec![
+                    Hint::Navigate,
+                    Hint::Section,
+                    Hint::Open("Detail/Setup"),
+                    Hint::Search,
+                    Hint::ClearFilter,
+                    Hint::Quit,
+                    Hint::ConfiguredLegend,
+                ]
+            }
+            AppMode::Browse => vec![
+                Hint::Navigate,
+                Hint::Section,
+                Hint::Open("Detail/Setup"),
+                Hint::Search,
+                Hint::Quit,
+                Hint::ConfiguredLegend,
+            ],
+            AppMode::Search(_) => {
+                vec![Hint::Typing("Filter"), Hint::Confirm, Hint::Cancel]
+            }
+            AppMode::Detail(_) => vec![Hint::Scroll, Hint::Open("Setup"), Hint::Back],
+            AppMode::InstancePick { .. } => {
+                vec![Hint::Move, Hint::Open("Select"), Hint::Cancel]
+            }
+        }
+    }
+
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        let hints = if self.setup_pane.is_some() {
-            // Delegate hint rendering to the setup pane.
-            match &self.setup_pane {
-                Some(pane) => pane.hint(),
-                None => "",
-            }
+        let text = if let Some(pane) = &self.setup_pane {
+            pane.hint()
         } else {
-            let filter_active = Self::active_search_idx(&self.section)
-                .is_some_and(|i| !self.active_search[i].is_empty());
-            match &self.mode {
-                AppMode::Browse if self.section == Section::Sessions => {
-                    if self.hide_inactive {
-                        "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail  [s] Show inactive  [q] Quit"
-                    } else {
-                        "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail  [h] Hide inactive  [q] Quit"
-                    }
-                }
-                AppMode::Browse if self.section == Section::Hardware => {
-                    "[↑↓/jk] Scroll  [Tab/⇧Tab] Section  [q] Quit"
-                }
-                AppMode::Browse if Self::configured_only_idx(&self.section).is_some() => {
-                    let catalog_hidden =
-                        self.configured_only[Self::configured_only_idx(&self.section).unwrap()];
-                    match (catalog_hidden, filter_active) {
-                        (true, false) => {
-                            "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [s] Show catalog  [q] Quit  ✓ = configured"
-                        }
-                        (true, true) => {
-                            "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [Esc] Clear filter  [s] Show catalog  [q] Quit  ✓ = configured"
-                        }
-                        (false, false) => {
-                            "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [h] Hide catalog  [q] Quit  ✓ = configured"
-                        }
-                        (false, true) => {
-                            "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [Esc] Clear filter  [h] Hide catalog  [q] Quit  ✓ = configured"
-                        }
-                    }
-                }
-                AppMode::Browse if filter_active => {
-                    // Recommend section: has no catalog toggle but may have an active filter.
-                    "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [Esc] Clear filter  [q] Quit  ✓ = configured"
-                }
-                AppMode::Browse => {
-                    "[↑↓/jk] Navigate  [Tab/⇧Tab] Section  [Enter] Detail/Setup  [/] Search  [q] Quit  ✓ = configured"
-                }
-                AppMode::Search(_) => "[typing] Filter  [Enter] Confirm  [Esc] Cancel",
-                AppMode::Detail(_) => "[↑↓/jk] Scroll  [Enter] Setup  [Backspace/Esc/q] Back",
-                AppMode::InstancePick { .. } => "[↑↓/jk] Move  [Enter] Select  [Esc] Cancel",
-            }
+            render_hints(&self.active_hints())
         };
-        let para = Paragraph::new(Span::styled(hints, Style::default().fg(Color::DarkGray)));
+        let para = Paragraph::new(Span::styled(text, Style::default().fg(Color::DarkGray)));
         frame.render_widget(para, area);
     }
 
@@ -3153,14 +3133,14 @@ mod tests {
     }
 
     #[test]
-    fn sessions_hide_inactive_toggle_s_key() {
+    fn sessions_hide_inactive_toggle_i_key() {
         let mut a = app();
         a.section = Section::Sessions;
         assert!(a.hide_inactive, "default is hide_inactive = true");
-        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
-        assert!(!a.hide_inactive, "s key shows inactive");
-        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
-        assert!(a.hide_inactive, "h key hides inactive");
+        a.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(!a.hide_inactive, "i key shows inactive");
+        a.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(a.hide_inactive, "i key hides inactive");
     }
 
     #[test]
@@ -3863,78 +3843,72 @@ mod tests {
         assert_eq!(action, AppAction::Quit);
     }
 
-    // -- handle_key: Browse s/h toggles ---------------------------------------
+    // -- handle_key: Browse c/i toggles ---------------------------------------
 
     #[test]
-    fn s_key_shows_catalog_when_configured_only_true() {
+    fn c_key_toggles_catalog_on() {
         let mut a = app();
         a.section = Section::Models;
         a.configured_only[0] = true;
-        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
         assert!(!a.configured_only[0]);
     }
 
     #[test]
-    fn s_key_noop_when_configured_only_already_false() {
+    fn c_key_toggles_catalog_off() {
         let mut a = app();
         a.section = Section::Providers;
         a.configured_only[1] = false;
-        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
-        assert!(!a.configured_only[1]);
+        a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(a.configured_only[1]);
     }
 
     #[test]
-    fn h_key_hides_catalog_when_configured_only_false() {
+    fn c_key_toggles_catalog_launchers() {
         let mut a = app();
         a.section = Section::Launchers;
         a.configured_only[2] = false;
-        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
         assert!(a.configured_only[2]);
+        a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(!a.configured_only[2]);
     }
 
     #[test]
-    fn h_key_noop_when_configured_only_already_true() {
+    fn c_key_toggles_catalog_capabilities() {
         let mut a = app();
         a.section = Section::Capabilities;
         a.configured_only[3] = true;
-        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
-        assert!(a.configured_only[3]);
+        a.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(!a.configured_only[3]);
     }
 
     #[test]
-    fn s_key_shows_inactive_sessions() {
+    fn i_key_shows_inactive_sessions() {
         let mut a = app();
         a.section = Section::Sessions;
         a.hide_inactive = true;
-        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        a.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         assert!(!a.hide_inactive);
     }
 
     #[test]
-    fn s_key_sessions_noop_when_already_showing() {
+    fn i_key_hides_inactive_sessions() {
         let mut a = app();
         a.section = Section::Sessions;
         a.hide_inactive = false;
-        a.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
-        assert!(!a.hide_inactive);
-    }
-
-    #[test]
-    fn h_key_hides_inactive_sessions() {
-        let mut a = app();
-        a.section = Section::Sessions;
-        a.hide_inactive = false;
-        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        a.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         assert!(a.hide_inactive);
     }
 
     #[test]
-    fn h_key_sessions_noop_when_already_hiding() {
+    fn i_key_noop_outside_sessions() {
         let mut a = app();
-        a.section = Section::Sessions;
-        a.hide_inactive = true;
-        a.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
-        assert!(a.hide_inactive);
+        a.section = Section::Models;
+        a.configured_only[0] = true;
+        a.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        // i key has no effect outside Sessions
+        assert!(a.configured_only[0]);
     }
 
     // -- handle_key: Search Backspace / Char ----------------------------------
@@ -4508,5 +4482,140 @@ mod tests {
         assert_eq!(a.mode, AppMode::Browse);
         assert_eq!(a.active_search[0], "");
         assert_eq!(a.active_query(), "");
+    }
+
+    // -- active_hints() -------------------------------------------------------
+
+    #[test]
+    fn active_hints_browse_models_no_filter() {
+        let mut a = app();
+        a.section = Section::Models;
+        a.configured_only[0] = false; // catalog visible → hide hint
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::Navigate));
+        assert!(hints.contains(&Hint::Section));
+        assert!(hints.contains(&Hint::Open("Detail/Setup")));
+        assert!(hints.contains(&Hint::Search));
+        assert!(hints.contains(&Hint::ToggleCatalog { hidden: false }));
+        assert!(hints.contains(&Hint::Quit));
+        assert!(hints.contains(&Hint::ConfiguredLegend));
+        assert!(!hints.contains(&Hint::ClearFilter));
+    }
+
+    #[test]
+    fn active_hints_browse_catalog_section_hidden_with_filter() {
+        let mut a = app();
+        a.section = Section::Providers;
+        a.configured_only[1] = true; // catalog hidden → show hint
+        a.active_search[1] = "llama".to_string(); // filter active
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::ToggleCatalog { hidden: true }));
+        assert!(hints.contains(&Hint::ClearFilter));
+    }
+
+    #[test]
+    fn active_hints_browse_sessions_hide_inactive_true() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = true;
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::Navigate));
+        assert!(hints.contains(&Hint::Open("Detail")));
+        assert!(hints.contains(&Hint::ToggleInactive { hidden: true }));
+        assert!(hints.contains(&Hint::Quit));
+        assert!(!hints.contains(&Hint::Search));
+    }
+
+    #[test]
+    fn active_hints_browse_sessions_hide_inactive_false() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = false;
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::ToggleInactive { hidden: false }));
+    }
+
+    #[test]
+    fn active_hints_browse_hardware() {
+        let mut a = app();
+        a.section = Section::Hardware;
+        let hints = a.active_hints();
+        assert_eq!(hints, vec![Hint::Scroll, Hint::Section, Hint::Quit]);
+    }
+
+    #[test]
+    fn active_hints_browse_recommend_no_filter() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::Navigate));
+        assert!(hints.contains(&Hint::Search));
+        assert!(hints.contains(&Hint::Quit));
+        assert!(!hints.contains(&Hint::ClearFilter));
+        // No catalog toggle for Recommend
+        assert!(
+            !hints
+                .iter()
+                .any(|h| matches!(h, Hint::ToggleCatalog { .. }))
+        );
+    }
+
+    #[test]
+    fn active_hints_browse_recommend_with_filter() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        a.active_search[4] = "granite".to_string();
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::ClearFilter));
+    }
+
+    #[test]
+    fn active_hints_search_mode() {
+        let mut a = app();
+        a.mode = AppMode::Search("x".to_string());
+        let hints = a.active_hints();
+        assert_eq!(
+            hints,
+            vec![Hint::Typing("Filter"), Hint::Confirm, Hint::Cancel]
+        );
+    }
+
+    #[test]
+    fn active_hints_detail_mode() {
+        let mut a = app();
+        a.mode = AppMode::Detail("granite-3.3-8b-instruct".to_string());
+        let hints = a.active_hints();
+        assert_eq!(hints, vec![Hint::Scroll, Hint::Open("Setup"), Hint::Back]);
+    }
+
+    #[test]
+    fn active_hints_instance_pick_mode() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["my-ollama".to_string()],
+            cursor: 0,
+        };
+        let hints = a.active_hints();
+        assert_eq!(hints, vec![Hint::Move, Hint::Open("Select"), Hint::Cancel]);
+    }
+
+    #[test]
+    fn active_hints_returns_empty_when_setup_pane_active() {
+        let mut a = app();
+        // Simulate setup pane by wiring up a real SetupPane
+        use crate::utils::ui::tui_ui::OutputLine;
+        let (_tx, prompt_rx) = std::sync::mpsc::sync_channel(1);
+        let (_answer_tx, _) = std::sync::mpsc::sync_channel::<crate::utils::ui::tui_ui::Answer>(1);
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<OutputLine>::new()));
+        let pulls = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        a.setup_pane = Some(crate::utils::ui::setup_pane::SetupPane::new(
+            "test".to_string(),
+            output,
+            pulls,
+            prompt_rx,
+            _answer_tx,
+        ));
+        assert!(a.active_hints().is_empty());
     }
 }
