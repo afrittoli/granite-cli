@@ -710,17 +710,20 @@ what says the field was only ever read for its own kind.
 
 ---
 
-### Sub-Task 11 — Settings that cannot be read can be reset to defaults
+### Sub-Task 11 — Settings that are not valid can be reset to defaults
 
 **Intent**
-Offer a repair for settings that cannot be read that keeps what the instance
-was configured with, for the case where reconfiguring cannot show the current
-settings back.
+Offer a repair for settings that are not valid that writes the type's default
+into the fields that are not valid and keeps what the instance was configured
+with. Reconfiguring runs setup, which offers the instance's current values,
+and for a field whose value is not valid it offers a zero value: a provider
+whose `timeout_secs` reads `"ten"` is offered `0`, where the type's default is
+`10`.
 
 **Expected Outcomes**
 
-The prompt gains a second repair for settings it cannot read: replace the
-fields that cannot be read with the type's defaults, and keep everything else
+The prompt gains a second repair for settings that are not valid: replace the
+fields that are not valid with the type's defaults, and keep everything else
 the instance was configured with. The settings blob is valid JSON and it is
 reading it as the type's config that failed, usually over one field, so each
 field that differs from its default is tried on its own before any are
@@ -749,4 +752,4 @@ replacing that field while leaving a deliberately configured endpoint alone.
 - `src/commands/shared/remediation.rs` (`Fix::for_error`, `Choice`, `choose`)
 - the registries' `default_config` and `construct`
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
