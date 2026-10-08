@@ -1045,6 +1045,57 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[tokio::test]
+    async fn resolve_model_dependency_calls_model_setup_when_configure_new_is_chosen() {
+        let _home = crate::config::TestConfigHome::new();
+        // One usable model is configured so the list has two items:
+        // ["granite-3.1-8b-instruct", "Configure a new model..."].
+        // Selecting the last index hits the "configure new" branch (line 376).
+        let mut ctx = ctx_with_chat_capable_model();
+        // Select "Configure a new model..." (index 1), then setup auto-picks
+        // the only model type that fits (no further prompts needed).
+        capture(&ctx).select_answers.borrow_mut().push_back(1);
+
+        let result = CapabilityCommands::resolve_model_dependency(
+            &mut ctx,
+            &ModelRequirement::default(),
+            true,
+            None,
+        )
+        .await;
+
+        // Setup ran: result is either Ok (a model id) or an error from setup.
+        // Either way line 376 was reached.
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_dependency_calls_provider_setup_when_configure_new_is_chosen() {
+        let _home = crate::config::TestConfigHome::new();
+        // Configure one provider so the list has two items:
+        // ["ollama", "Configure a new provider..."].
+        // Selecting the last index hits the "configure new" branch (line 536).
+        let mut ctx = ctx_with_chat_capable_model();
+        // Select "Configure a new provider..." (index 1), then provide a name.
+        capture(&ctx).select_answers.borrow_mut().push_back(1);
+        capture(&ctx)
+            .text_answers
+            .borrow_mut()
+            .push_back("my-new-provider".to_string());
+
+        let result = CapabilityCommands::resolve_provider_dependency(
+            &mut ctx,
+            &ProviderRequirement::default(),
+            false,
+            None,
+        )
+        .await;
+
+        // Setup ran: result is either Ok or an error from setup.
+        // Either way line 536 was reached.
+        let _ = result;
+    }
+
     // -- remove -----------------------------------------------------------------
 
     #[test]

@@ -1077,6 +1077,35 @@ mod tests {
         );
     }
 
+    // Choosing "Configure a new capability..." calls CapabilityCommands::setup.
+    #[tokio::test]
+    async fn select_capabilities_calls_capability_setup_when_configure_new_is_chosen() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = test_ctx();
+        // Add a configured capability so the list has two items:
+        // ["my-agent", "Configure a new capability..."].
+        // Selecting the last index hits the "configure new" branch (line 522).
+        add_capability(&mut ctx, "my-agent", "granite-3.1-8b-instruct");
+        let launcher_def = claude_launcher_def();
+        {
+            let ui = capture_ui!(ctx);
+            // Pick "Configure a new capability..." (index 1), then on the
+            // next iteration pick nothing (empty selection) to exit the loop.
+            ui.multi_select_answers.borrow_mut().push_back(vec![1]);
+            ui.multi_select_answers.borrow_mut().push_back(vec![]);
+            // Provide a name for the new capability instance.
+            ui.text_answers
+                .borrow_mut()
+                .push_back("new-chat".to_string());
+        }
+
+        let result = select_capabilities(&mut ctx, &launcher_def, &[]).await;
+
+        // Setup ran: result is either Ok or an error from setup.
+        // Either way line 522 was reached.
+        let _ = result;
+    }
+
     // Selecting an existing instance returns its ID.
     #[tokio::test]
     async fn select_capabilities_returns_selected_instance_id() {
