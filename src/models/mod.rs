@@ -36,17 +36,6 @@ pub struct ModelSource {
 }
 
 impl ModelSource {
-    /// Models over a provider source of their own, for a test that needs no
-    /// other kind. Commands ask the application context, whose sources share
-    /// one provider per configured id.
-    #[cfg(test)]
-    pub(crate) fn from_config(config: &crate::config::Config) -> Self {
-        Self::with_providers(
-            config,
-            Arc::new(crate::providers::ProviderSource::from_config(config)),
-        )
-    }
-
     /// Models resolved against a provider source somebody else built, so
     /// one snapshot has one provider per configured id however it is reached.
     pub(crate) fn with_providers(
@@ -295,6 +284,18 @@ mod tests {
         let mut ids: Vec<String> = source.cache.lock().unwrap().keys().cloned().collect();
         ids.sort();
         ids
+    }
+
+    impl ModelSource {
+        /// Models over a provider source of their own, for a test that needs no
+        /// other kind. Commands ask the application context, whose sources share
+        /// one provider per configured id.
+        pub(crate) fn from_config(config: &crate::config::Config) -> Self {
+            Self::with_providers(
+                config,
+                Arc::new(crate::providers::ProviderSource::from_config(config)),
+            )
+        }
     }
 
     #[test]

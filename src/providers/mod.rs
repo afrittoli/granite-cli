@@ -44,13 +44,6 @@ pub struct ProviderSource {
 }
 
 impl ProviderSource {
-    /// Providers carrying their real connection details, for a test that
-    /// needs no other kind. Commands ask the application context.
-    #[cfg(test)]
-    pub(crate) fn from_config(config: &crate::config::Config) -> Self {
-        Self::with_proxy(config, None)
-    }
-
     /// Providers pointed at `model_proxy` when a launch started one.
     pub fn with_proxy(
         config: &crate::config::Config,
@@ -189,6 +182,14 @@ mod tests {
             provider_id: id.to_string(),
             provider_type: "openai-compatible".to_string(),
             config: serde_json::json!({ "base_url": base_url }),
+        }
+    }
+
+    impl ProviderSource {
+        /// Providers carrying their real connection details, for a test that
+        /// needs no other kind. Commands ask the application context.
+        pub(crate) fn from_config(config: &crate::config::Config) -> Self {
+            Self::with_proxy(config, None)
         }
     }
 
