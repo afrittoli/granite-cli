@@ -754,7 +754,7 @@ async fn run_model_command(ctx: &mut AppContext, subcmd: ModelSubcommands) -> an
         ModelSubcommands::Setup {
             model_type,
             instance_id,
-        } => ModelCommands::setup(ctx, &model_type, instance_id.as_deref()).await,
+        } => ModelCommands::setup(ctx, &model_type, instance_id.as_deref(), false).await,
         ModelSubcommands::Pull { model_id } => ModelCommands::pull(ctx, &model_id).await,
         ModelSubcommands::Remove { model_id } => ModelCommands::remove(ctx, &model_id),
     }
@@ -773,7 +773,7 @@ async fn run_capability_command(
         CapabilitySubcommands::Setup {
             capability_type,
             instance_id,
-        } => CapabilityCommands::setup(ctx, &capability_type, instance_id.as_deref()).await,
+        } => CapabilityCommands::setup(ctx, &capability_type, instance_id.as_deref(), false).await,
         CapabilitySubcommands::Remove { capability_id } => {
             CapabilityCommands::remove(ctx, &capability_id)
         }
@@ -791,7 +791,7 @@ async fn run_provider_command(
         ProviderSubcommands::Setup {
             provider_type,
             instance_id,
-        } => ProviderCommands::setup(ctx, &provider_type, instance_id.as_deref()).await,
+        } => ProviderCommands::setup(ctx, &provider_type, instance_id.as_deref(), false).await,
         ProviderSubcommands::Health { provider_id } => {
             ProviderCommands::health(ctx, provider_id.as_deref()).await
         }
@@ -810,7 +810,7 @@ async fn run_launcher_command(
         LauncherSubcommands::Setup {
             launcher_type,
             instance_id,
-        } => LauncherCommands::setup(ctx, &launcher_type, instance_id.as_deref()).await,
+        } => LauncherCommands::setup(ctx, &launcher_type, instance_id.as_deref(), false).await,
         LauncherSubcommands::Remove { launcher_id } => LauncherCommands::remove(ctx, &launcher_id),
     }
 }

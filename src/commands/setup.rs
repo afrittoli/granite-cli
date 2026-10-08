@@ -1649,7 +1649,7 @@ impl SetupCommands {
 
             let before: HashMap<String, crate::config::CapabilityConfig> =
                 ctx.config().capabilities.clone();
-            CapabilityCommands::setup(ctx, &chosen_type, None).await?;
+            CapabilityCommands::setup(ctx, &chosen_type, None, false).await?;
             if let Some(new_id) = changed_capability_id(&before, ctx)
                 && !manual.contains(&new_id)
                 && !caps.iter().any(|(id, ..)| id == &new_id)
@@ -1753,7 +1753,7 @@ impl SetupCommands {
 
             let before: HashMap<String, crate::config::LauncherConfig> =
                 ctx.config().launchers.clone();
-            LauncherCommands::setup(ctx, &chosen_type, None).await?;
+            LauncherCommands::setup(ctx, &chosen_type, None, false).await?;
             if let Some(new_id) = changed_launcher_id(&before, ctx)
                 && !manual.contains(&new_id)
                 && !filtered.iter().any(|(id, ..)| id == &new_id)
@@ -1860,7 +1860,7 @@ impl SetupCommands {
 
             let before: HashMap<String, crate::config::ProviderConfig> =
                 ctx.config().providers.clone();
-            ProviderCommands::setup(ctx, &chosen_type, None).await?;
+            ProviderCommands::setup(ctx, &chosen_type, None, false).await?;
             if let Some(new_id) = changed_provider_id(&before, ctx)
                 && !manual.contains(&new_id)
                 && !filtered.iter().any(|(id, ..)| id == &new_id)

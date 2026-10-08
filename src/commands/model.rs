@@ -664,10 +664,13 @@ impl ModelCommands {
     /// to configure multiple named instances of one type (e.g. the same
     /// catalog model against two different providers, or several custom
     /// models).
+    /// `force_overwrite` skips the "already configured, overwrite?" prompt,
+    /// for callers that have already obtained confirmation (e.g. remediation).
     pub async fn setup(
         ctx: &mut crate::AppContext,
         model_type: &str,
         instance_id: Option<&str>,
+        force_overwrite: bool,
     ) -> Result<()> {
         let Some(placeholder) = MODEL_REGISTRY.get(model_type) else {
             ctx.ui
@@ -704,7 +707,7 @@ impl ModelCommands {
         };
 
         let existing_config = ctx.config().get_model(&instance_id).cloned();
-        if existing_config.is_some() {
+        if existing_config.is_some() && !force_overwrite {
             let overwrite = ctx.ui.confirm(
                 &format!("Model '{instance_id}' is already configured. Overwrite?"),
                 false,
@@ -997,7 +1000,7 @@ impl ModelCommands {
 
         let nickname = ctx.ui.text("Name this provider instance", provider_type)?;
 
-        ProviderCommands::setup(ctx, provider_type, Some(&nickname)).await?;
+        ProviderCommands::setup(ctx, provider_type, Some(&nickname), false).await?;
 
         // Setup reports success even when it configured nothing: a name that
         // collides with an existing provider, and an overwrite the user then
@@ -2084,7 +2087,7 @@ mod tests {
             serde_json::json!({ "base_url": "http://localhost:8080" }),
         ));
 
-        ModelCommands::setup(&mut ctx, "custom", Some("my-custom"))
+        ModelCommands::setup(&mut ctx, "custom", Some("my-custom"), false)
             .await
             .unwrap();
 
@@ -2126,7 +2129,7 @@ mod tests {
         ));
 
         home.make_unwritable();
-        let result = ModelCommands::setup(&mut ctx, "custom", Some("my-custom")).await;
+        let result = ModelCommands::setup(&mut ctx, "custom", Some("my-custom"), false).await;
         home.make_writable();
 
         assert!(result.is_err());

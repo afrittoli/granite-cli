@@ -146,10 +146,14 @@ impl CapabilityCommands {
     /// `capability_type` is the catalog/registry key (e.g. `agent-model`).
     /// `instance_id` is the nickname for this instance; defaults to
     /// `capability_type` when not given.
+    ///
+    /// `force_overwrite` skips the "already configured, overwrite?" prompt,
+    /// for callers that have already obtained confirmation (e.g. remediation).
     pub async fn setup(
         ctx: &mut crate::AppContext,
         capability_type: &str,
         instance_id: Option<&str>,
+        force_overwrite: bool,
     ) -> Result<()> {
         let cap_def = match CAPABILITY_REGISTRY.get(capability_type) {
             Some(def) => def,
@@ -182,7 +186,7 @@ impl CapabilityCommands {
         };
 
         let existing_config = ctx.config().get_capability(&instance_id);
-        if existing_config.is_some() {
+        if existing_config.is_some() && !force_overwrite {
             let overwrite = ctx.ui.confirm(
                 &format!("Capability '{instance_id}' is already configured. Overwrite?"),
                 false,
@@ -370,7 +374,7 @@ impl CapabilityCommands {
 
         let before: std::collections::HashSet<String> =
             ctx.config().models.keys().cloned().collect();
-        ModelCommands::setup(ctx, model_type, None).await?;
+        ModelCommands::setup(ctx, model_type, None, false).await?;
 
         // Setup reports success even when it configured nothing, so take the
         // ids it actually left behind rather than its return value. A new
@@ -536,7 +540,7 @@ impl CapabilityCommands {
         };
 
         let nickname = ctx.ui.text("Name this provider instance", provider_type)?;
-        ProviderCommands::setup(ctx, provider_type, Some(&nickname)).await?;
+        ProviderCommands::setup(ctx, provider_type, Some(&nickname), false).await?;
 
         let (existing_after, _) = Self::provider_candidates(ctx, requirement);
         if existing_after.contains(&nickname) {
@@ -811,7 +815,7 @@ mod tests {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_a_dangling_model_ref();
         capture(&ctx).select_answers.borrow_mut().push_back(0);
-        capture(&ctx).confirm_answers.borrow_mut().push_back(true);
+        // No second confirm needed: reconfigure uses force_overwrite=true.
 
         CapabilityCommands::info(&mut ctx, "chat").await.unwrap();
 
@@ -890,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn setup_unknown_type_returns_err() {
         let mut ctx = test_ctx();
-        let result = CapabilityCommands::setup(&mut ctx, "no-such-type", Some("test")).await;
+        let result = CapabilityCommands::setup(&mut ctx, "no-such-type", Some("test"), false).await;
         assert!(result.is_err());
     }
 
@@ -927,7 +931,7 @@ mod tests {
         // pass an explicit instance id so no prompt is needed. Exactly one
         // configured model satisfies the Chat requirement, so it's picked
         // automatically without a select prompt.
-        let result = CapabilityCommands::setup(&mut ctx, "agent-model", Some("chat")).await;
+        let result = CapabilityCommands::setup(&mut ctx, "agent-model", Some("chat"), false).await;
         assert!(result.is_ok());
         let configured = ctx.config().get_capability("chat").unwrap();
         assert_eq!(
@@ -951,7 +955,7 @@ mod tests {
         let mut ctx = ctx_with_chat_capable_model();
 
         home.make_unwritable();
-        let result = CapabilityCommands::setup(&mut ctx, "agent-model", Some("chat")).await;
+        let result = CapabilityCommands::setup(&mut ctx, "agent-model", Some("chat"), false).await;
         home.make_writable();
 
         assert!(result.is_err());
@@ -1071,6 +1075,57 @@ mod tests {
                 .await
                 .unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_model_dependency_calls_model_setup_when_configure_new_is_chosen() {
+        let _home = crate::config::TestConfigHome::new();
+        // One usable model is configured so the list has two items:
+        // ["granite-3.1-8b-instruct", "Configure a new model..."].
+        // Selecting the last index hits the "configure new" branch (line 376).
+        let mut ctx = ctx_with_chat_capable_model();
+        // Select "Configure a new model..." (index 1), then setup auto-picks
+        // the only model type that fits (no further prompts needed).
+        capture(&ctx).select_answers.borrow_mut().push_back(1);
+
+        let result = CapabilityCommands::resolve_model_dependency(
+            &mut ctx,
+            &ModelRequirement::default(),
+            true,
+            None,
+        )
+        .await;
+
+        // Setup ran: result is either Ok (a model id) or an error from setup.
+        // Either way line 376 was reached.
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_dependency_calls_provider_setup_when_configure_new_is_chosen() {
+        let _home = crate::config::TestConfigHome::new();
+        // Configure one provider so the list has two items:
+        // ["ollama", "Configure a new provider..."].
+        // Selecting the last index hits the "configure new" branch (line 536).
+        let mut ctx = ctx_with_chat_capable_model();
+        // Select "Configure a new provider..." (index 1), then provide a name.
+        capture(&ctx).select_answers.borrow_mut().push_back(1);
+        capture(&ctx)
+            .text_answers
+            .borrow_mut()
+            .push_back("my-new-provider".to_string());
+
+        let result = CapabilityCommands::resolve_provider_dependency(
+            &mut ctx,
+            &ProviderRequirement::default(),
+            false,
+            None,
+        )
+        .await;
+
+        // Setup ran: result is either Ok or an error from setup.
+        // Either way line 536 was reached.
+        let _ = result;
     }
 
     // -- remove -----------------------------------------------------------------

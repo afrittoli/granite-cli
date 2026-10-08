@@ -382,13 +382,17 @@ fn choose(
 
 /// Runs the instance's own setup command against the instance, which is what
 /// the user would run by hand to change what it points at.
+///
+/// Passes `force_overwrite: true` so the wizard does not ask a second
+/// "already configured, overwrite?" question — the choice made at the
+/// remediation prompt was already that confirmation.
 async fn reconfigure(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
     let (kind, type_name, id) = (fix.kind, fix.type_name.as_str(), Some(fix.id.as_str()));
     match kind {
-        RefKind::Launcher => LauncherCommands::setup(ctx, type_name, id).await,
-        RefKind::Capability => CapabilityCommands::setup(ctx, type_name, id).await,
-        RefKind::Model => ModelCommands::setup(ctx, type_name, id).await,
-        RefKind::Provider => ProviderCommands::setup(ctx, type_name, id).await,
+        RefKind::Launcher => LauncherCommands::setup(ctx, type_name, id, true).await,
+        RefKind::Capability => CapabilityCommands::setup(ctx, type_name, id, true).await,
+        RefKind::Model => ModelCommands::setup(ctx, type_name, id, true).await,
+        RefKind::Provider => ProviderCommands::setup(ctx, type_name, id, true).await,
     }
 }
 
@@ -604,10 +608,9 @@ mod tests {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_a_dangling_model_ref();
         answer(&ctx, &[0]);
-        // Setup asks its own "already configured, overwrite?" confirmation
-        // on top of the choice made here. Declining it leaves the reference
-        // broken, which the loop then reports rather than asking again.
-        capture(&ctx).confirm_answers.borrow_mut().push_back(true);
+        // Remediation passes force_overwrite=true to setup, so no
+        // "already configured, overwrite?" confirm appears — the choice made
+        // at the remediation prompt is the only confirmation needed.
 
         let outcome = remediate(&mut ctx, RefKind::Capability, "chat", OnDecline::Skip, true)
             .await
@@ -630,6 +633,11 @@ mod tests {
         assert!(
             items[0].contains("Reconfigure capability 'chat'"),
             "{items:?}"
+        );
+        // No overwrite confirm was issued.
+        assert!(
+            capture(&ctx).confirm_answers.borrow().is_empty(),
+            "no canned confirms were consumed, so no confirm was issued"
         );
     }
 
@@ -770,52 +778,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_fix_that_changes_nothing_is_not_offered_again() {
+    async fn reconfigure_proceeds_without_an_overwrite_confirm() {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_a_dangling_model_ref();
         answer(&ctx, &[0]);
-        // Setup asks its own "already configured, overwrite?" confirmation.
-        // Declining it returns having changed nothing, which is the repair
-        // that leaves the same problem behind.
-        capture(&ctx).confirm_answers.borrow_mut().push_back(false);
 
         let outcome = remediate(&mut ctx, RefKind::Capability, "chat", OnDecline::Skip, true)
             .await
             .unwrap();
 
-        // The same problem comes back, without the repair that just changed
-        // nothing. The answer queue is empty by then, so the second prompt
-        // takes its default, which declines.
+        assert_eq!(outcome, Outcome::Clean);
         let prompts = prompts(&ctx);
-        assert_eq!(prompts.len(), 2, "{prompts:?}");
         assert!(prompts[0].1[0].starts_with("Reconfigure"), "{prompts:?}");
-        assert!(
-            !prompts[1].1.iter().any(|i| i.starts_with("Reconfigure")),
-            "the repair that changed nothing is gone: {prompts:?}"
-        );
-        assert!(
-            prompts[1].1[0].starts_with("Remove"),
-            "the other repair is still reachable: {prompts:?}"
-        );
-        assert_eq!(outcome, Outcome::Unresolved);
+        // No overwrite confirm — force_overwrite skips the second prompt.
+        assert!(capture(&ctx).confirm_answers.borrow().is_empty());
         assert_eq!(
             ctx.config()
                 .get_capability("chat")
                 .and_then(|c| c.config.get("model_id"))
                 .and_then(|v| v.as_str()),
-            Some("gone"),
-            "a declined overwrite leaves the configuration alone"
+            Some("granite-3.1-8b-instruct"),
         );
     }
 
     #[tokio::test]
-    async fn a_launch_can_still_un_enable_after_a_reconfiguration_changed_nothing() {
+    async fn a_launch_reconfigure_fixes_the_reference_without_an_overwrite_confirm() {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_a_dangling_model_ref();
-        // Reconfigure, walk out of the overwrite, then take the repair that
-        // is still on offer rather than having to re-run the command.
-        answer(&ctx, &[0, 0]);
-        capture(&ctx).confirm_answers.borrow_mut().push_back(false);
+        answer(&ctx, &[0]);
 
         let outcome = remediate(
             &mut ctx,
@@ -827,20 +817,69 @@ mod tests {
         .await
         .unwrap();
 
-        let prompts = prompts(&ctx);
-        assert_eq!(prompts.len(), 2, "{prompts:?}");
-        assert_eq!(
-            prompts[1].1[0], "Remove capability 'chat' from launcher 'claude'",
-            "{prompts:?}"
-        );
         assert_eq!(outcome, Outcome::Clean);
-        assert!(
+
+        // No overwrite confirm — force_overwrite skips the second prompt.
+        assert!(capture(&ctx).confirm_answers.borrow().is_empty());
+        assert_eq!(
             ctx.config()
-                .get_launcher("claude")
-                .unwrap()
-                .enabled_capabilities
-                .is_empty()
+                .get_capability("chat")
+                .and_then(|c| c.config.get("model_id"))
+                .and_then(|v| v.as_str()),
+            Some("granite-3.1-8b-instruct"),
         );
+    }
+
+    fn ctx_with_a_dangling_provider_ref() -> crate::AppContext {
+        let mut ctx = crate::AppContext::new(
+            Config::default(),
+            Arc::new(crate::utils::ui::base::tests::CaptureUi::default()),
+        );
+        ctx.config_mut().providers.insert(
+            "ollama".to_string(),
+            ProviderConfig {
+                provider_id: "ollama".to_string(),
+                provider_type: "ollama".to_string(),
+                config: serde_json::json!({}),
+            },
+        );
+        ctx.config_mut().models.insert(
+            "granite-3.1-8b-instruct".to_string(),
+            ModelConfig {
+                model_id: "granite-3.1-8b-instruct".to_string(),
+                model_type: "granite-3.1-8b-instruct".to_string(),
+                provider_id: "gone-provider".to_string(),
+                variant: None,
+                config: serde_json::json!({}),
+            },
+        );
+        ctx
+    }
+
+    #[tokio::test]
+    async fn reconfigure_model_arm_fixes_a_broken_provider_ref() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_a_dangling_provider_ref();
+        answer(&ctx, &[0]);
+
+        let outcome = remediate(
+            &mut ctx,
+            RefKind::Model,
+            "granite-3.1-8b-instruct",
+            OnDecline::Skip,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, Outcome::Clean);
+        assert_ne!(
+            ctx.config()
+                .get_model("granite-3.1-8b-instruct")
+                .map(|m| m.provider_id.as_str()),
+            Some("gone-provider"),
+        );
+        assert!(capture(&ctx).confirm_answers.borrow().is_empty());
     }
 
     #[tokio::test]
@@ -946,7 +985,8 @@ mod tests {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_a_dangling_model_ref();
         answer(&ctx, &[0]);
-        capture(&ctx).confirm_answers.borrow_mut().push_back(true);
+        // No second confirm needed: force_overwrite bypasses the overwrite
+        // prompt, so the remediation choice is the only confirmation.
 
         crate::commands::LauncherCommands::prelaunch(&mut ctx, "claude")
             .await
@@ -978,5 +1018,38 @@ mod tests {
 
         let (_, items) = &prompts(&ctx)[0];
         assert_eq!(items[2], "Cancel", "{items:?}");
+    }
+
+    // The Launcher and Provider arms of reconfigure() are unreachable via
+    // the normal validation flow, so Fix is constructed directly here.
+    #[tokio::test]
+    async fn reconfigure_launcher_arm_calls_launcher_setup() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_a_dangling_model_ref();
+        let fix = Fix {
+            kind: RefKind::Launcher,
+            id: "claude".to_string(),
+            type_name: "claude".to_string(),
+            can_reconfigure: true,
+            disable: None,
+        };
+        // Binary not found in CI is fine — the arm is covered regardless.
+        let _ = reconfigure(&mut ctx, &fix).await;
+    }
+
+    #[tokio::test]
+    async fn reconfigure_provider_arm_calls_provider_setup() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = ctx_with_a_dangling_model_ref();
+        let fix = Fix {
+            kind: RefKind::Provider,
+            id: "ollama".to_string(),
+            type_name: "ollama".to_string(),
+            can_reconfigure: true,
+            disable: None,
+        };
+        reconfigure(&mut ctx, &fix).await.unwrap();
+        assert!(ctx.config().get_provider("ollama").is_some());
+        assert!(capture(&ctx).confirm_answers.borrow().is_empty());
     }
 }
