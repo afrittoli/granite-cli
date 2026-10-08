@@ -203,10 +203,13 @@ impl ProviderCommands {
     /// defaults to `provider_type` when not given, but a caller may pass a
     /// different value to configure multiple named instances of one type
     /// (e.g. `openai-compatible` backing `llama-cpp`, `ollama`, `lm-studio`).
+    /// `force_overwrite` skips the "already configured, overwrite?" prompt,
+    /// for callers that have already obtained confirmation (e.g. remediation).
     pub async fn setup(
         ctx: &mut crate::AppContext,
         provider_type: &str,
         instance_id: Option<&str>,
+        force_overwrite: bool,
     ) -> Result<()> {
         let provider_def = match PROVIDER_REGISTRY.get(provider_type) {
             Some(def) => def,
@@ -252,7 +255,7 @@ impl ProviderCommands {
 
         // Check if this instance is already configured
         let existing_config = ctx.config.get_provider(&instance_id);
-        if existing_config.is_some() {
+        if existing_config.is_some() && !force_overwrite {
             let overwrite = ctx.ui.confirm(
                 &format!("Provider instance '{instance_id}' is already configured. Overwrite?"),
                 false,
@@ -676,7 +679,7 @@ mod tests {
         let mut ctx = test_ctx();
 
         home.make_unwritable();
-        let result = ProviderCommands::setup(&mut ctx, "ollama", Some("test-ollama")).await;
+        let result = ProviderCommands::setup(&mut ctx, "ollama", Some("test-ollama"), false).await;
         home.make_writable();
 
         assert!(result.is_err());

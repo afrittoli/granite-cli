@@ -2389,11 +2389,13 @@ fn spawn_setup(
             let iid = instance_id.as_deref();
             let result = match &section {
                 Section::Models | Section::Recommend => {
-                    ModelCommands::setup(&mut task_ctx, &id, iid).await
+                    ModelCommands::setup(&mut task_ctx, &id, iid, false).await
                 }
-                Section::Providers => ProviderCommands::setup(&mut task_ctx, &id, iid).await,
-                Section::Launchers => LauncherCommands::setup(&mut task_ctx, &id, iid).await,
-                Section::Capabilities => CapabilityCommands::setup(&mut task_ctx, &id, iid).await,
+                Section::Providers => ProviderCommands::setup(&mut task_ctx, &id, iid, false).await,
+                Section::Launchers => LauncherCommands::setup(&mut task_ctx, &id, iid, false).await,
+                Section::Capabilities => {
+                    CapabilityCommands::setup(&mut task_ctx, &id, iid, false).await
+                }
                 Section::Hardware => Ok(()),
                 Section::Sessions => Ok(()),
             };

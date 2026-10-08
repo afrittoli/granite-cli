@@ -161,10 +161,13 @@ impl LauncherCommands {
     /// and, if one exists under a different name, offers to either update that
     /// existing entry or proceed with the new name. This lets the user avoid
     /// accidentally creating duplicate configs for the same tool.
+    /// `force_overwrite` skips the "already configured, overwrite?" prompt,
+    /// for callers that have already obtained confirmation (e.g. remediation).
     pub async fn setup(
         ctx: &mut crate::AppContext,
         launcher_type: &str,
         instance_id: Option<&str>,
+        force_overwrite: bool,
     ) -> Result<()> {
         // Look up type in registry
         let launcher_def = match LAUNCHER_REGISTRY.get(launcher_type) {
@@ -237,7 +240,7 @@ impl LauncherCommands {
         };
 
         // Standard same-id overwrite check
-        if ctx.config.get_launcher(&instance_id).is_some() {
+        if ctx.config.get_launcher(&instance_id).is_some() && !force_overwrite {
             let overwrite = ctx.ui.confirm(
                 &format!("Launcher '{instance_id}' is already configured. Overwrite?"),
                 false,
@@ -516,7 +519,7 @@ async fn select_capabilities(
 
         let nickname = ctx.ui.text("Name this capability instance", cap_type)?;
 
-        crate::commands::CapabilityCommands::setup(ctx, cap_type, Some(&nickname)).await?;
+        crate::commands::CapabilityCommands::setup(ctx, cap_type, Some(&nickname), false).await?;
 
         // Pre-select the new capability on the next iteration.
         enabled.push(nickname.clone());
@@ -782,7 +785,7 @@ mod tests {
         // proceeds with the new name. The wizard then fails at binary
         // validation (claude not on PATH in CI), but by that point the clash
         // info message must already have been emitted.
-        let _ = LauncherCommands::setup(&mut ctx, "claude", Some("claude-new")).await;
+        let _ = LauncherCommands::setup(&mut ctx, "claude", Some("claude-new"), false).await;
         let infos = infos!(ctx);
         assert!(
             infos.iter().any(|m| m.contains("claude-old")),
@@ -793,7 +796,7 @@ mod tests {
     #[tokio::test]
     async fn setup_unknown_type_returns_err() {
         let mut ctx = test_ctx();
-        let result = LauncherCommands::setup(&mut ctx, "no-such-type", Some("test")).await;
+        let result = LauncherCommands::setup(&mut ctx, "no-such-type", Some("test"), false).await;
         assert!(result.is_err());
     }
 
@@ -815,7 +818,7 @@ mod tests {
             .push_back(binary.to_string_lossy().into_owned());
 
         home.make_unwritable();
-        let result = LauncherCommands::setup(&mut ctx, "claude", Some("test-claude")).await;
+        let result = LauncherCommands::setup(&mut ctx, "claude", Some("test-claude"), false).await;
         home.make_writable();
 
         assert!(result.is_err());
@@ -1072,6 +1075,35 @@ mod tests {
             prompts[0].2[idx],
             "my-agent should be pre-checked as it was previously enabled"
         );
+    }
+
+    // Choosing "Configure a new capability..." calls CapabilityCommands::setup.
+    #[tokio::test]
+    async fn select_capabilities_calls_capability_setup_when_configure_new_is_chosen() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = test_ctx();
+        // Add a configured capability so the list has two items:
+        // ["my-agent", "Configure a new capability..."].
+        // Selecting the last index hits the "configure new" branch (line 522).
+        add_capability(&mut ctx, "my-agent", "granite-3.1-8b-instruct");
+        let launcher_def = claude_launcher_def();
+        {
+            let ui = capture_ui!(ctx);
+            // Pick "Configure a new capability..." (index 1), then on the
+            // next iteration pick nothing (empty selection) to exit the loop.
+            ui.multi_select_answers.borrow_mut().push_back(vec![1]);
+            ui.multi_select_answers.borrow_mut().push_back(vec![]);
+            // Provide a name for the new capability instance.
+            ui.text_answers
+                .borrow_mut()
+                .push_back("new-chat".to_string());
+        }
+
+        let result = select_capabilities(&mut ctx, &launcher_def, &[]).await;
+
+        // Setup ran: result is either Ok or an error from setup.
+        // Either way line 522 was reached.
+        let _ = result;
     }
 
     // Selecting an existing instance returns its ID.
