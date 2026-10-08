@@ -15,6 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
+use crate::utils::ui::hints::{Hint, render_hints};
 use crate::utils::ui::tui_ui::{Answer, OutputLevel, OutputLine, Prompt, PullState};
 
 /*-- public --*/
@@ -106,14 +107,18 @@ impl PromptState {
     }
 
     /// Footer hint string for this prompt type.
-    fn hint(&self) -> &'static str {
+    fn hint(&self) -> String {
         match self {
-            PromptState::Select { .. } => "[↑↓/jk] Move  [Enter] Confirm  [Esc] Cancel",
+            PromptState::Select { .. } => render_hints(&[Hint::Move, Hint::Confirm, Hint::Cancel]),
             PromptState::MultiSelect { .. } => {
-                "[↑↓/jk] Move  [Space] Toggle  [Enter] Confirm  [Esc] Cancel"
+                render_hints(&[Hint::Move, Hint::Toggle, Hint::Confirm, Hint::Cancel])
             }
-            PromptState::Confirm { .. } => "[y/n/←→/hl] Select  [Enter] Confirm  [Esc] Cancel",
-            PromptState::Text { .. } => "[typing] Edit  [Enter] Confirm  [Esc] Cancel",
+            PromptState::Confirm { .. } => {
+                render_hints(&[Hint::ConfirmYN, Hint::Confirm, Hint::Cancel])
+            }
+            PromptState::Text { .. } => {
+                render_hints(&[Hint::Typing("Edit"), Hint::Confirm, Hint::Cancel])
+            }
         }
     }
 }
@@ -176,11 +181,11 @@ impl SetupPane {
     }
 
     /// Current footer hint.
-    pub fn hint(&self) -> &'static str {
+    pub fn hint(&self) -> String {
         match &self.active {
             Some(p) => p.hint(),
-            None if self.finished => "[Enter/Esc] Close",
-            None => "[↑↓/jk] Scroll output  [Esc] Cancel",
+            None if self.finished => render_hints(&[Hint::Close]),
+            None => render_hints(&[Hint::ScrollOutput, Hint::Cancel]),
         }
     }
 
