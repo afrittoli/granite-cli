@@ -4483,4 +4483,144 @@ mod tests {
         assert_eq!(a.active_search[0], "");
         assert_eq!(a.active_query(), "");
     }
+
+    // -- active_hints() -------------------------------------------------------
+
+    #[test]
+    fn active_hints_browse_models_no_filter() {
+        let mut a = app();
+        a.section = Section::Models;
+        a.configured_only[0] = false; // catalog visible → hide hint
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::Navigate));
+        assert!(hints.contains(&Hint::Section));
+        assert!(hints.contains(&Hint::Open("Detail/Setup")));
+        assert!(hints.contains(&Hint::Search));
+        assert!(hints.contains(&Hint::ToggleCatalog { hidden: false }));
+        assert!(hints.contains(&Hint::Quit));
+        assert!(hints.contains(&Hint::ConfiguredLegend));
+        assert!(!hints.contains(&Hint::ClearFilter));
+    }
+
+    #[test]
+    fn active_hints_browse_catalog_section_hidden_with_filter() {
+        let mut a = app();
+        a.section = Section::Providers;
+        a.configured_only[1] = true; // catalog hidden → show hint
+        a.active_search[1] = "llama".to_string(); // filter active
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::ToggleCatalog { hidden: true }));
+        assert!(hints.contains(&Hint::ClearFilter));
+    }
+
+    #[test]
+    fn active_hints_browse_sessions_hide_inactive_true() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = true;
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::Navigate));
+        assert!(hints.contains(&Hint::Open("Detail")));
+        assert!(hints.contains(&Hint::ToggleInactive { hidden: true }));
+        assert!(hints.contains(&Hint::Quit));
+        assert!(!hints.contains(&Hint::Search));
+    }
+
+    #[test]
+    fn active_hints_browse_sessions_hide_inactive_false() {
+        let mut a = app();
+        a.section = Section::Sessions;
+        a.hide_inactive = false;
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::ToggleInactive { hidden: false }));
+    }
+
+    #[test]
+    fn active_hints_browse_hardware() {
+        let mut a = app();
+        a.section = Section::Hardware;
+        let hints = a.active_hints();
+        assert_eq!(hints, vec![Hint::Scroll, Hint::Section, Hint::Quit]);
+    }
+
+    #[test]
+    fn active_hints_browse_recommend_no_filter() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::Navigate));
+        assert!(hints.contains(&Hint::Search));
+        assert!(hints.contains(&Hint::Quit));
+        assert!(!hints.contains(&Hint::ClearFilter));
+        // No catalog toggle for Recommend
+        assert!(!hints.iter().any(|h| matches!(h, Hint::ToggleCatalog { .. })));
+    }
+
+    #[test]
+    fn active_hints_browse_recommend_with_filter() {
+        let mut a = app();
+        a.section = Section::Recommend;
+        a.active_search[4] = "granite".to_string();
+        let hints = a.active_hints();
+        assert!(hints.contains(&Hint::ClearFilter));
+    }
+
+    #[test]
+    fn active_hints_search_mode() {
+        let mut a = app();
+        a.mode = AppMode::Search("x".to_string());
+        let hints = a.active_hints();
+        assert_eq!(
+            hints,
+            vec![Hint::Typing("Filter"), Hint::Confirm, Hint::Cancel]
+        );
+    }
+
+    #[test]
+    fn active_hints_detail_mode() {
+        let mut a = app();
+        a.mode = AppMode::Detail("granite-3.3-8b-instruct".to_string());
+        let hints = a.active_hints();
+        assert_eq!(
+            hints,
+            vec![Hint::Scroll, Hint::Open("Setup"), Hint::Back]
+        );
+    }
+
+    #[test]
+    fn active_hints_instance_pick_mode() {
+        let mut a = app();
+        a.mode = AppMode::InstancePick {
+            type_id: "ollama".to_string(),
+            instances: vec!["my-ollama".to_string()],
+            cursor: 0,
+        };
+        let hints = a.active_hints();
+        assert_eq!(
+            hints,
+            vec![Hint::Move, Hint::Open("Select"), Hint::Cancel]
+        );
+    }
+
+    #[test]
+    fn active_hints_returns_empty_when_setup_pane_active() {
+        let mut a = app();
+        // Simulate setup pane by wiring up a real SetupPane
+        use crate::utils::ui::tui_ui::OutputLine;
+        let (_tx, prompt_rx) = std::sync::mpsc::sync_channel(1);
+        let (_answer_tx, _) = std::sync::mpsc::sync_channel::<crate::utils::ui::tui_ui::Answer>(1);
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<OutputLine>::new()));
+        let pulls = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
+        a.setup_pane = Some(crate::utils::ui::setup_pane::SetupPane::new(
+            "test".to_string(),
+            output,
+            pulls,
+            prompt_rx,
+            _answer_tx,
+        ));
+        assert!(a.active_hints().is_empty());
+    }
+
 }

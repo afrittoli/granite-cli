@@ -96,6 +96,76 @@ mod tests {
     }
 
     #[test]
+    fn scroll_display() {
+        assert_eq!(Hint::Scroll.to_string(), "[↑↓/jk] Scroll");
+    }
+
+    #[test]
+    fn move_display() {
+        assert_eq!(Hint::Move.to_string(), "[↑↓/jk] Move");
+    }
+
+    #[test]
+    fn scroll_output_display() {
+        assert_eq!(Hint::ScrollOutput.to_string(), "[↑↓/jk] Scroll output");
+    }
+
+    #[test]
+    fn section_display() {
+        assert_eq!(Hint::Section.to_string(), "[Tab/⇧Tab] Section");
+    }
+
+    #[test]
+    fn search_display() {
+        assert_eq!(Hint::Search.to_string(), "[/] Search");
+    }
+
+    #[test]
+    fn clear_filter_display() {
+        assert_eq!(Hint::ClearFilter.to_string(), "[Esc] Clear filter");
+    }
+
+    #[test]
+    fn toggle_display() {
+        assert_eq!(Hint::Toggle.to_string(), "[Space] Toggle");
+    }
+
+    #[test]
+    fn confirm_yn_display() {
+        assert_eq!(Hint::ConfirmYN.to_string(), "[y/n/←→/hl] Select");
+    }
+
+    #[test]
+    fn confirm_display() {
+        assert_eq!(Hint::Confirm.to_string(), "[Enter] Confirm");
+    }
+
+    #[test]
+    fn cancel_display() {
+        assert_eq!(Hint::Cancel.to_string(), "[Esc] Cancel");
+    }
+
+    #[test]
+    fn back_display() {
+        assert_eq!(Hint::Back.to_string(), "[Backspace/Esc/q] Back");
+    }
+
+    #[test]
+    fn quit_display() {
+        assert_eq!(Hint::Quit.to_string(), "[q] Quit");
+    }
+
+    #[test]
+    fn configured_legend_display() {
+        assert_eq!(Hint::ConfiguredLegend.to_string(), "✓ = configured");
+    }
+
+    #[test]
+    fn close_display() {
+        assert_eq!(Hint::Close.to_string(), "[Enter/Esc] Close");
+    }
+
+    #[test]
     fn toggle_catalog_hidden_true() {
         assert_eq!(
             Hint::ToggleCatalog { hidden: true }.to_string(),
