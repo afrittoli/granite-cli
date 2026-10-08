@@ -4553,7 +4553,11 @@ mod tests {
         assert!(hints.contains(&Hint::Quit));
         assert!(!hints.contains(&Hint::ClearFilter));
         // No catalog toggle for Recommend
-        assert!(!hints.iter().any(|h| matches!(h, Hint::ToggleCatalog { .. })));
+        assert!(
+            !hints
+                .iter()
+                .any(|h| matches!(h, Hint::ToggleCatalog { .. }))
+        );
     }
 
     #[test]
@@ -4581,10 +4585,7 @@ mod tests {
         let mut a = app();
         a.mode = AppMode::Detail("granite-3.3-8b-instruct".to_string());
         let hints = a.active_hints();
-        assert_eq!(
-            hints,
-            vec![Hint::Scroll, Hint::Open("Setup"), Hint::Back]
-        );
+        assert_eq!(hints, vec![Hint::Scroll, Hint::Open("Setup"), Hint::Back]);
     }
 
     #[test]
@@ -4596,10 +4597,7 @@ mod tests {
             cursor: 0,
         };
         let hints = a.active_hints();
-        assert_eq!(
-            hints,
-            vec![Hint::Move, Hint::Open("Select"), Hint::Cancel]
-        );
+        assert_eq!(hints, vec![Hint::Move, Hint::Open("Select"), Hint::Cancel]);
     }
 
     #[test]
@@ -4610,9 +4608,7 @@ mod tests {
         let (_tx, prompt_rx) = std::sync::mpsc::sync_channel(1);
         let (_answer_tx, _) = std::sync::mpsc::sync_channel::<crate::utils::ui::tui_ui::Answer>(1);
         let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<OutputLine>::new()));
-        let pulls = std::sync::Arc::new(std::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        ));
+        let pulls = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         a.setup_pane = Some(crate::utils::ui::setup_pane::SetupPane::new(
             "test".to_string(),
             output,
@@ -4622,5 +4618,4 @@ mod tests {
         ));
         assert!(a.active_hints().is_empty());
     }
-
 }

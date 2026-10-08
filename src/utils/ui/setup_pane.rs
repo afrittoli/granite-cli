@@ -639,10 +639,7 @@ mod tests {
         })
         .unwrap();
         pane.poll();
-        assert_eq!(
-            pane.hint(),
-            "[↑↓/jk] Move  [Enter] Confirm  [Esc] Cancel"
-        );
+        assert_eq!(pane.hint(), "[↑↓/jk] Move  [Enter] Confirm  [Esc] Cancel");
     }
 
     #[test]
@@ -687,10 +684,7 @@ mod tests {
         })
         .unwrap();
         pane.poll();
-        assert_eq!(
-            pane.hint(),
-            "[typing] Edit  [Enter] Confirm  [Esc] Cancel"
-        );
+        assert_eq!(pane.hint(), "[typing] Edit  [Enter] Confirm  [Esc] Cancel");
     }
 
     // -- SetupPane::hint() ----------------------------------------------------
@@ -699,10 +693,7 @@ mod tests {
     fn setup_pane_hint_waiting_for_prompt() {
         let (pane, _tx) = make_pane();
         // No prompt sent yet → waiting state
-        assert_eq!(
-            pane.hint(),
-            "[↑↓/jk] Scroll output  [Esc] Cancel"
-        );
+        assert_eq!(pane.hint(), "[↑↓/jk] Scroll output  [Esc] Cancel");
     }
 
     #[test]
