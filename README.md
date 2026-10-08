@@ -143,6 +143,41 @@ Granite CLI is aiming to become:
 
 This repository is still under active construction. The architecture is taking shape, but some areas are intentionally incomplete while core foundations are being built.
 
+## Capability Support
+
+The table below shows which capabilities each launcher supports.
+It is generated from the `supported_capabilities` declared in each launcher's source file.
+To regenerate it after adding a launcher or capability, run `scripts/update-capability-table.sh`.
+
+<!-- capability-table-start -->
+
+| Capability | Type | `claude` | `bob` | `pi` | `opencode` | `hermes` | `goose` | `openclaw` |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `agent-model` | Agent Model Binding | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `vision-mcp` | Vision MCP Server | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| `sub-agent` | Sub-Agent | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `sub-agent-code` | Code Sub-Agent | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `sub-agent-explore` | Explore Sub-Agent | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `sub-agent-plan` | Plan Sub-Agent | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+
+**Capability descriptions:**
+
+| Capability | Description |
+|---|---|
+| `agent-model` | Surfaces a configured model's connection details (base URL, model name, auth, TLS) to a launched agent. |
+| `vision-mcp` | Exposes a vision-language model as an MCP server (compare/analyze images) for a launched coding agent to call. |
+| `sub-agent` | Defines a named sub-agent (prompt, tool allow-list, and model) that a launched coding agent can delegate to. |
+| `sub-agent-code` | Defines a named coding sub-agent (static prompt, fixed tools, and model) that a launched coding agent can delegate to. |
+| `sub-agent-explore` | Defines a named exploration sub-agent (static prompt, fixed tools, and model) that a launched coding agent can delegate to. |
+| `sub-agent-plan` | Defines a named planning sub-agent (static prompt, fixed read-only tools, and model) that a launched coding agent can delegate implementation-plan design to. |
+
+**Binding types** used to determine compatibility:
+- **AgentModel** — passes a model's connection details directly to the launcher
+- **Mcp** — exposes the capability as an MCP server the launcher can call
+- **SubAgent** — exposes the capability as a named sub-agent the launcher can delegate to
+
+<!-- capability-table-end -->
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full details. We follow a fork-and-PR workflow with [DCO](https://developercertificate.org/) sign-off, and ask that all participants follow our [Code of Conduct](CODE_OF_CONDUCT.md).
