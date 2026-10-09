@@ -15,7 +15,7 @@ use crate::commands::{
     CapabilityCommands, HardwareCommands, LauncherCommands, ModelCommands, ProviderCommands,
 };
 use crate::dependency::Configured;
-use crate::models::MODEL_REGISTRY;
+use crate::models::{MODEL_REGISTRY, ModelMetadata};
 use crate::providers::PROVIDER_REGISTRY;
 use crate::utils::Searchable;
 use crate::utils::ui::hints::{Hint, render_hints};
@@ -88,6 +88,28 @@ fn strip_ansi(input: &str) -> String {
         }
     }
     result
+}
+
+/// A Models-section row: a catalog type or a configured instance.
+struct ModelEntry {
+    id: String,
+    /// Registry key setup needs (e.g. `custom`).
+    model_type: String,
+    instance_id: Option<String>,
+    metadata: ModelMetadata,
+}
+
+impl ModelEntry {
+    /// Table row: [id, family, size, context, type].
+    fn row(&self) -> Vec<String> {
+        vec![
+            self.id.clone(),
+            self.metadata.family.clone(),
+            self.metadata.format_size(),
+            self.metadata.context_length.to_string(),
+            self.metadata.model_type.to_string(),
+        ]
+    }
 }
 
 /*-- public --*/
@@ -412,6 +434,14 @@ impl App {
                             instances,
                             cursor: 0,
                         };
+                    } else if matches!(self.section, Section::Models | Section::Recommend)
+                        && let Some(entry) = self.model_entry(&id)
+                    {
+                        return AppAction::StartSetup(
+                            self.section.clone(),
+                            entry.model_type,
+                            entry.instance_id,
+                        );
                     } else {
                         return AppAction::StartSetup(self.section.clone(), id, None);
                     }
@@ -635,10 +665,58 @@ impl App {
             .keys()
             .map(|k| k.as_str())
             .collect();
-        ModelCommands::search_rows(query)
+        let entries = self
+            .model_entries()
+            .into_iter()
+            .map(|entry| (entry.id, entry.metadata));
+        ModelCommands::search_rows_in(entries, query)
             .into_iter()
             .filter(|r| !only || configured_ids.contains(r[0].as_str()))
             .collect()
+    }
+
+    /// The catalog plus configured model instances that have no catalog row.
+    fn model_entries(&self) -> Vec<ModelEntry> {
+        let config = self.ctx.config();
+        let mut entries: Vec<ModelEntry> = MODEL_REGISTRY
+            .entries()
+            .into_iter()
+            .map(|(id, metadata)| ModelEntry {
+                id: id.to_string(),
+                model_type: config
+                    .get_model(id)
+                    .map_or_else(|| id.to_string(), |mc| mc.model_type.clone()),
+                instance_id: config.get_model(id).map(|_| id.to_string()),
+                metadata,
+            })
+            .collect();
+        let catalog_ids: std::collections::HashSet<String> =
+            entries.iter().map(|entry| entry.id.clone()).collect();
+        entries.extend(
+            self.ctx
+                .sources()
+                .models()
+                .instances()
+                .into_iter()
+                .filter(|(id, _)| !catalog_ids.contains(id))
+                .filter_map(|(id, model)| {
+                    let mc = config.get_model(&id)?;
+                    Some(ModelEntry {
+                        model_type: mc.model_type.clone(),
+                        instance_id: Some(id.clone()),
+                        id,
+                        metadata: model.to_metadata(),
+                    })
+                }),
+        );
+        entries.sort_by(|left, right| left.id.cmp(&right.id));
+        entries
+    }
+
+    fn model_entry(&self, id: &str) -> Option<ModelEntry> {
+        self.model_entries()
+            .into_iter()
+            .find(|entry| entry.id == id)
     }
 
     fn filtered_ids(&self, query: &str) -> Vec<String> {
@@ -670,10 +748,10 @@ impl App {
                     .keys()
                     .map(|k| k.as_str())
                     .collect();
-                ModelCommands::catalog_rows(None)
+                self.model_entries()
                     .into_iter()
-                    .filter(|r| !only || configured_ids.contains(r[0].as_str()))
-                    .map(|r| r[0].clone())
+                    .filter(|entry| !only || configured_ids.contains(entry.id.as_str()))
+                    .map(|entry| entry.id)
                     .collect()
             }
             Section::Providers => {
@@ -848,7 +926,7 @@ impl App {
                         if only {
                             self.ctx.config().models.len()
                         } else {
-                            MODEL_REGISTRY.entries().len()
+                            self.model_entries().len()
                         }
                     }
                     Section::Providers => {
@@ -984,8 +1062,10 @@ impl App {
                     (rows, h)
                 } else {
                     let filtered_ids = self.filtered_ids(query);
-                    let rows = ModelCommands::catalog_rows(None)
-                        .into_iter()
+                    let rows = self
+                        .model_entries()
+                        .iter()
+                        .map(ModelEntry::row)
                         .filter(|r| filtered_ids.contains(&r[0]))
                         .collect();
                     let h = Row::new(vec!["", "ID", "FAMILY", "SIZE", "TYPE"]).style(
@@ -1829,10 +1909,10 @@ impl App {
         }
 
         let mut lines: Vec<Line> = match self.section {
-            Section::Models | Section::Recommend => match ModelCommands::info_fields(id) {
+            Section::Models | Section::Recommend => match self.model_entry(id) {
                 None => vec![Line::from(format!("Model '{id}' not found."))],
-                Some(fields) => {
-                    let mut lines: Vec<Line> = fields
+                Some(entry) => {
+                    let mut lines: Vec<Line> = ModelCommands::metadata_fields(&entry.metadata)
                         .iter()
                         .map(|(k, v)| {
                             Line::from(vec![
@@ -2433,6 +2513,70 @@ mod tests {
             Config::default(),
             Arc::new(CaptureUi::default()),
         ))
+    }
+
+    fn app_with_custom_model() -> App {
+        let mut config = Config::default();
+        config.models.insert(
+            "my-local-model".to_string(),
+            crate::config::ModelConfig {
+                model_id: "my-local-model".to_string(),
+                model_type: "custom".to_string(),
+                provider_id: "local-openai".to_string(),
+                variant: None,
+                config: serde_json::json!({ "family": "My Local Model" }),
+            },
+        );
+        App::new(crate::AppContext::new(
+            config,
+            Arc::new(CaptureUi::default()),
+        ))
+    }
+
+    #[test]
+    fn model_entries_merge_catalog_and_custom_instances() {
+        let entries = app_with_custom_model().model_entries();
+        let custom = entries.iter().find(|e| e.id == "my-local-model").unwrap();
+        assert_eq!(custom.model_type, "custom");
+        assert_eq!(custom.instance_id.as_deref(), Some("my-local-model"));
+        assert_eq!(custom.metadata.family, "My Local Model");
+        let catalog = entries
+            .iter()
+            .find(|e| e.id == "granite-3.1-8b-instruct")
+            .unwrap();
+        assert_eq!(catalog.model_type, "granite-3.1-8b-instruct");
+        assert_eq!(catalog.instance_id, None);
+    }
+
+    #[test]
+    fn models_search_finds_a_configured_custom_instance() {
+        let rows = app_with_custom_model().model_search_rows("my-local");
+        assert!(rows.iter().any(|row| row[0] == "my-local-model"));
+    }
+
+    #[test]
+    fn models_count_includes_custom_instances() {
+        let mut app = app_with_custom_model();
+        app.configured_only[0] = false;
+        assert_eq!(
+            app.filtered_ids("").len(),
+            MODEL_REGISTRY.entries().len() + 1
+        );
+    }
+
+    #[test]
+    fn detail_enter_on_custom_instance_starts_setup_with_registry_type() {
+        let mut app = app_with_custom_model();
+        app.mode = AppMode::Detail("my-local-model".to_string());
+        let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            action,
+            AppAction::StartSetup(
+                Section::Models,
+                "custom".to_string(),
+                Some("my-local-model".to_string())
+            )
+        );
     }
 
     // -- existing Browse tests ------------------------------------------------
