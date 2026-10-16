@@ -148,6 +148,23 @@ impl HardwareProfile {
     pub fn usable_memory_gb(&self) -> f64 {
         self.memory.model_memory_gb() / self.headroom()
     }
+
+    /// Why this profile cannot give an estimate, if it cannot: a memory
+    /// figure that is not a positive, finite number.
+    pub(crate) fn check_figures(&self) -> Result<(), String> {
+        let figures = [
+            ("vram_gb", self.memory.vram_gb()),
+            ("ram_gb", self.memory.ram_gb()),
+        ];
+        for (name, figure) in figures {
+            if let Some(gb) = figure
+                && (!gb.is_finite() || gb <= 0.0)
+            {
+                return Err(format!("{name} must be positive, got {gb}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn detect_hardware() -> HardwareProfile {
@@ -581,6 +598,32 @@ mod tests {
                 "loaded: {yaml}"
             );
         }
+    }
+
+    // -- checking that the figures are positive ------------------------------
+
+    #[test]
+    fn check_figures_accepts_positive_figures() {
+        assert!(discrete(24.0).check_figures().is_ok());
+        let system = HardwareProfile::with_memory(Memory::System { ram_gb: 64.0 });
+        assert!(system.check_figures().is_ok());
+    }
+
+    #[test]
+    fn check_figures_rejects_a_figure_that_is_not_positive() {
+        let zero = HardwareProfile::with_memory(Memory::System { ram_gb: 0.0 });
+        assert_eq!(
+            zero.check_figures().unwrap_err(),
+            "ram_gb must be positive, got 0"
+        );
+        let negative = HardwareProfile::with_memory(Memory::Discrete {
+            vram_gb: 24.0,
+            ram_gb: Some(-1.0),
+        });
+        assert_eq!(
+            negative.check_figures().unwrap_err(),
+            "ram_gb must be positive, got -1"
+        );
     }
 
     // -- mapping findings to a profile, one case per platform -----------------
