@@ -839,7 +839,7 @@ set.
 - `build.rs` (how `resources/recommended_configs` is embedded)
 - `src/config/recommended_config.rs` (`BUILTIN_RECOMMENDED_CONFIGS`)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
