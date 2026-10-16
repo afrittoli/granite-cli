@@ -962,8 +962,10 @@ Let `model recommend` answer for a hardware profile other than the local one.
 
 `model recommend` takes `--hardware`, `local` by default, and estimates fit
 against that hardware profile. The title names it and the PROVIDERS column
-lists the providers linked to it. Models with no fit available are listed with
-the reason. An id with no hardware profile offers to create one when the run
+lists the providers linked to it: `none` when no configured provider can run
+the variant, and `none linked` when no provider runs on that profile. Models
+with no fit available are listed with the reason, under a title that counts
+them, such as "Fit not available (1 model)". An id with no hardware profile offers to create one when the run
 is interactive, from the catalog entry with that id or as a custom profile.
 Otherwise it is an error that lists the configured ids, `local` among them,
 and names the `hardware setup` command with the flags a script needs. An id
@@ -979,7 +981,7 @@ id refused.
 **Relevant Context**
 - `src/commands/model.rs` (`recommend`, `recommend_rows`)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 

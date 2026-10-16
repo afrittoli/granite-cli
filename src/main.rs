@@ -304,6 +304,10 @@ enum ModelSubcommands {
         /// Show all columns, including family and full context length
         #[arg(long)]
         wide: bool,
+
+        /// Hardware profile to estimate fit against (see `hardware list`)
+        #[arg(long, default_value = "local")]
+        hardware: String,
     },
 
     /// Show detailed model information
@@ -914,10 +918,12 @@ async fn run_model_command(ctx: &mut AppContext, subcmd: ModelSubcommands) -> an
             r#type,
             providers,
             wide,
+            hardware,
         } => {
             let can_prompt = HardwareCommands::can_prompt(ctx);
-            let hardware = HardwareCommands::local_for_fit(ctx, can_prompt)?;
-            ModelCommands::recommend(ctx, r#type, &providers, wide, &hardware)
+            let (hardware, profile) =
+                HardwareCommands::profile_for_fit(ctx, &hardware, can_prompt)?;
+            ModelCommands::recommend(ctx, r#type, &providers, wide, &hardware, &profile)
         }
         ModelSubcommands::Info { model_id } => ModelCommands::info(ctx, &model_id).await,
         ModelSubcommands::Setup {

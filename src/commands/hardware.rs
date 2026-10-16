@@ -144,6 +144,27 @@ impl HardwareCommands {
             .map_err(|e| anyhow!("hardware profile '{LOCAL_HARDWARE_ID}': {e}"))
     }
 
+    /// The id and figures of hardware profile `id`, for a command that
+    /// estimates fit against it. The id differs from `id` only when the user
+    /// creates the profile under another name. `local` is checked against
+    /// detection first. An id with no profile is offered for creation when
+    /// the run can ask, from the catalog entry with that id or as a custom
+    /// profile, and is an error listing the configured ids otherwise.
+    pub(crate) fn profile_for_fit(
+        ctx: &mut AppContext,
+        id: &str,
+        can_prompt: bool,
+    ) -> Result<(String, HardwareProfile)> {
+        Self::profile_for_fit_with(ctx, id, can_prompt, detect_hardware)
+    }
+
+    /// The providers that run on hardware profile `id`, sorted. Until
+    /// providers are linked to hardware, every provider runs on `local`,
+    /// which is how existing configuration is read.
+    pub(crate) fn providers_on(ctx: &AppContext, id: &str) -> Vec<String> {
+        providers_on(ctx, id)
+    }
+
     /// Whether this run can ask the user something: the output backend is
     /// interactive, which for terminal and plain output means stdin and
     /// stderr are terminals (see [`crate::utils::ui::base::Ui::is_interactive`]).
@@ -269,6 +290,62 @@ impl HardwareCommands {
         ctx.config_mut()
             .insert_hardware(LOCAL_HARDWARE_ID, config)?;
         Ok(None)
+    }
+
+    fn profile_for_fit_with(
+        ctx: &mut AppContext,
+        id: &str,
+        can_prompt: bool,
+        detect: impl FnOnce() -> HardwareProfile,
+    ) -> Result<(String, HardwareProfile)> {
+        let mut id = id.to_string();
+        if id == LOCAL_HARDWARE_ID {
+            Self::check_local(ctx, detect, can_prompt)?;
+        } else if ctx.config().get_hardware(&id).is_none() {
+            let entry = hardware_catalog::find(&id);
+            if entry.is_none() {
+                check_profile_id(&id)
+                    .map_err(|e| anyhow!("no hardware profile '{id}', and {e}"))?;
+            }
+            let missing = || {
+                anyhow!(
+                    "no hardware profile '{id}'. Configured: {}.\n  Create it with `{}`.",
+                    configured_ids(ctx).join(", "),
+                    setup_command(&id)
+                )
+            };
+            if !can_prompt {
+                return Err(missing());
+            }
+            let question = match entry {
+                Some(entry) => format!(
+                    "No hardware profile '{id}'. Create one from catalog entry '{id}' ({})?",
+                    entry.name
+                ),
+                None => format!("No hardware profile '{id}'. Create it as a custom profile?"),
+            };
+            if !ctx.ui.confirm(&question, true)? {
+                return Err(missing());
+            }
+            // A catalog profile asks for its id, defaulting to the catalog id;
+            // a custom one is saved under the id asked for.
+            let args = match entry {
+                Some(_) => HardwareSetupArgs {
+                    target: Some(id.clone()),
+                    ..Default::default()
+                },
+                None => HardwareSetupArgs {
+                    target: Some(CUSTOM_HARDWARE_TYPE.to_string()),
+                    id: Some(id.clone()),
+                    ..Default::default()
+                },
+            };
+            id = Self::setup_with(ctx, args, true, || unreachable!("only `local` detects"))?;
+        }
+        let profile = ctx
+            .hardware_profile(&id)
+            .map_err(|e| anyhow!("hardware profile '{id}': {e}"))?;
+        Ok((id, profile))
     }
 
     fn show_with(
@@ -488,9 +565,38 @@ fn not_configured(ctx: &AppContext, id: &str) -> anyhow::Error {
     )
 }
 
-/// The providers that run on hardware profile `id`. Until providers are
-/// linked to hardware, every provider runs on `local`, which is how existing
-/// configuration is read.
+/// The ids of the configured hardware profiles, sorted, with `local` listed
+/// even before it is written, since every command that uses it writes it.
+fn configured_ids(ctx: &AppContext) -> Vec<String> {
+    let mut ids: Vec<String> = ctx.config().hardware.keys().cloned().collect();
+    if !ids.iter().any(|id| id == LOCAL_HARDWARE_ID) {
+        ids.push(LOCAL_HARDWARE_ID.to_string());
+    }
+    ids.sort();
+    ids
+}
+
+/// The `hardware setup` command that creates profile `id`, with the flags a
+/// run without a terminal needs: the size for a catalog entry sold in
+/// several sizes, and the kind and figure for a custom profile.
+fn setup_command(id: &str) -> String {
+    match hardware_catalog::find(id) {
+        Some(entry) if entry.sizes.len() > 1 => {
+            let sizes: Vec<String> = entry.sizes.iter().map(|s| format_gb(s.memory_gb)).collect();
+            format!(
+                "granite-cli hardware setup {id} --memory <{}>",
+                sizes.join("|")
+            )
+        }
+        Some(_) => format!("granite-cli hardware setup {id}"),
+        None => format!(
+            "granite-cli hardware setup custom --id {id} --kind <discrete|unified|system> \
+             --memory <GB>"
+        ),
+    }
+}
+
+/// See [`HardwareCommands::providers_on`].
 fn providers_on(ctx: &AppContext, id: &str) -> Vec<String> {
     if id != LOCAL_HARDWARE_ID {
         return Vec::new();
@@ -1890,5 +1996,156 @@ mod tests {
             let err = setup(&mut ctx(&ui), args, false).unwrap_err();
             assert_eq!(err.to_string(), expected);
         }
+    }
+
+    // -- choosing a hardware profile to estimate fit against ----------------------
+
+    fn no_detection() -> HardwareProfile {
+        panic!("detection must not run")
+    }
+
+    #[test]
+    fn an_unknown_id_in_a_run_that_cannot_ask_lists_the_configured_ids() {
+        let _home = TestConfigHome::new();
+        let ui = Arc::new(CaptureUi::default());
+        let mut ctx = ctx_with_local(&ui, mac_36());
+
+        let err = HardwareCommands::profile_for_fit_with(&mut ctx, "spark", false, no_detection)
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "no hardware profile 'spark'. Configured: local.\n  Create it with `granite-cli \
+             hardware setup custom --id spark --kind <discrete|unified|system> --memory <GB>`."
+        );
+    }
+
+    #[test]
+    fn an_unknown_id_that_cannot_be_a_profile_id_is_refused_without_a_suggestion() {
+        let _home = TestConfigHome::new();
+        let ui = Arc::new(CaptureUi::default());
+        let mut ctx = ctx_with_local(&ui, mac_36());
+
+        for (id, can_prompt) in [("custom", false), ("../evil", true)] {
+            let err =
+                HardwareCommands::profile_for_fit_with(&mut ctx, id, can_prompt, no_detection)
+                    .unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .starts_with(&format!("no hardware profile '{id}', and '{id}'")),
+                "{err}"
+            );
+        }
+        assert!(ui.confirm_prompts.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_catalog_id_sold_in_several_sizes_is_suggested_with_its_sizes() {
+        let _home = TestConfigHome::new();
+        let ui = Arc::new(CaptureUi::default());
+        let mut ctx = ctx_with_local(&ui, mac_36());
+        let entry = HARDWARE_CATALOG.iter().find(|e| e.sizes.len() > 1).unwrap();
+        let sizes: Vec<String> = entry.sizes.iter().map(|s| format_gb(s.memory_gb)).collect();
+
+        let err = HardwareCommands::profile_for_fit_with(&mut ctx, &entry.id, false, no_detection)
+            .unwrap_err();
+
+        assert!(
+            err.to_string().ends_with(&format!(
+                "`granite-cli hardware setup {} --memory <{}>`.",
+                entry.id,
+                sizes.join("|")
+            )),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_catalog_id_in_a_run_that_cannot_ask_names_its_setup_command_and_local() {
+        let _home = TestConfigHome::new();
+        let ui = Arc::new(CaptureUi::default());
+        let mut ctx = ctx(&ui);
+
+        let err =
+            HardwareCommands::profile_for_fit_with(&mut ctx, "dgx-spark", false, no_detection)
+                .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "no hardware profile 'dgx-spark'. Configured: local.\n  Create it with `granite-cli \
+             hardware setup dgx-spark`."
+        );
+    }
+
+    #[test]
+    fn local_gives_the_saved_local_figures() {
+        let _home = TestConfigHome::new();
+        let ui = Arc::new(CaptureUi::default());
+        let mut ctx = ctx_with_local(&ui, mac_36());
+
+        let (id, p) =
+            HardwareCommands::profile_for_fit_with(&mut ctx, LOCAL_HARDWARE_ID, false, mac_36)
+                .unwrap();
+
+        assert_eq!(id, LOCAL_HARDWARE_ID);
+        assert_eq!(p.memory, mac_36().memory);
+    }
+
+    #[test]
+    fn an_unknown_catalog_id_is_created_from_the_catalog_with_scripted_answers() {
+        let _home = TestConfigHome::new();
+        let ui = Arc::new(CaptureUi::default());
+        let mut ctx = ctx_with_local(&ui, mac_36());
+        ui.confirm_answers.borrow_mut().push_back(true);
+        // The 80 GB size, second of two, and the default id.
+        ui.select_answers.borrow_mut().push_back(1);
+
+        let (id, p) =
+            HardwareCommands::profile_for_fit_with(&mut ctx, "nvidia-a100", true, no_detection)
+                .unwrap();
+
+        assert_eq!(id, "nvidia-a100");
+        assert_eq!(p.memory.vram_gb(), Some(80.0));
+        assert_eq!(
+            ctx.config().get_hardware("nvidia-a100"),
+            Some(&HardwareConfig::catalog("nvidia-a100", "nvidia-a100", 80.0))
+        );
+        assert!(
+            ui.confirm_prompts.borrow()[0]
+                .0
+                .contains("catalog entry 'nvidia-a100'")
+        );
+    }
+
+    #[test]
+    fn an_unknown_other_id_is_offered_as_a_custom_profile() {
+        let _home = TestConfigHome::new();
+        let ui = Arc::new(CaptureUi::default());
+        let mut ctx = ctx_with_local(&ui, mac_36());
+        ui.confirm_answers.borrow_mut().push_back(true);
+        ui.select_answers.borrow_mut().push_back(0); // discrete
+        ui.text_answers.borrow_mut().push_back("48".to_string());
+
+        let (_, p) =
+            HardwareCommands::profile_for_fit_with(&mut ctx, "lab-box", true, no_detection)
+                .unwrap();
+
+        assert_eq!(p.memory_kind(), MemoryKind::Discrete);
+        assert_eq!(p.memory.vram_gb(), Some(48.0));
+    }
+
+    #[test]
+    fn declining_to_create_is_an_error() {
+        let _home = TestConfigHome::new();
+        let ui = Arc::new(CaptureUi::default());
+        let mut ctx = ctx_with_local(&ui, mac_36());
+        ui.confirm_answers.borrow_mut().push_back(false);
+
+        assert!(
+            HardwareCommands::profile_for_fit_with(&mut ctx, "dgx-spark", true, no_detection)
+                .is_err()
+        );
+        assert!(ctx.config().get_hardware("dgx-spark").is_none());
     }
 }
