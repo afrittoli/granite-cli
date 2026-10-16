@@ -451,6 +451,7 @@ mod tests {
         config.providers.insert(
             "ollama".to_string(),
             ProviderConfig {
+                hardware: Default::default(),
                 provider_id: "ollama".to_string(),
                 provider_type: "ollama".to_string(),
                 config: serde_json::json!({}),
@@ -495,6 +496,7 @@ mod tests {
         config.providers.insert(
             "ollama".to_string(),
             ProviderConfig {
+                hardware: Default::default(),
                 provider_id: "ollama".to_string(),
                 provider_type: "ollama".to_string(),
                 config: serde_json::json!({}),

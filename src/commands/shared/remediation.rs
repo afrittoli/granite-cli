@@ -15,7 +15,9 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-use crate::commands::{CapabilityCommands, LauncherCommands, ModelCommands, ProviderCommands};
+use crate::commands::{
+    CapabilityCommands, HardwareCommands, LauncherCommands, ModelCommands, ProviderCommands,
+};
 use crate::config::Config;
 use crate::config::validation::{
     Problem, RefKind, ValidationError, dependents, find_dangling, type_name, validate_ref,
@@ -390,6 +392,7 @@ fn settings<'a>(kind: RefKind, id: &str, config: &'a Config) -> Option<&'a serde
         RefKind::Capability => config.get_capability(id).map(|c| &c.config),
         RefKind::Model => config.get_model(id).map(|c| &c.config),
         RefKind::Provider => config.get_provider(id).map(|c| &c.config),
+        RefKind::Hardware => config.get_hardware(id).map(|c| &c.config),
     }
 }
 
@@ -495,6 +498,8 @@ fn constructs(kind: RefKind, type_name: &str, settings: &serde_json::Value) -> b
         RefKind::Provider => crate::providers::PROVIDER_REGISTRY
             .construct(type_name, type_name, settings)
             .is_ok(),
+        // A hardware profile is not built from settings; it has no reset.
+        RefKind::Hardware => false,
     }
 }
 
@@ -505,6 +510,7 @@ fn default_settings(kind: RefKind, type_name: &str) -> Option<serde_json::Value>
         RefKind::Capability => crate::capabilities::CAPABILITY_REGISTRY.default_config(type_name),
         RefKind::Model => crate::models::MODEL_REGISTRY.default_config(type_name),
         RefKind::Provider => crate::providers::PROVIDER_REGISTRY.default_config(type_name),
+        RefKind::Hardware => None,
     }
 }
 
@@ -624,6 +630,15 @@ async fn reconfigure(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
         RefKind::Capability => CapabilityCommands::setup(ctx, type_name, id, true).await,
         RefKind::Model => ModelCommands::setup(ctx, type_name, id, true).await,
         RefKind::Provider => ProviderCommands::setup(ctx, type_name, id, true).await,
+        RefKind::Hardware => {
+            use crate::config::hardware::LOCAL_HARDWARE_ID;
+            let args = crate::commands::hardware::HardwareSetupArgs {
+                target: Some(type_name.to_string()),
+                id: id.filter(|id| *id != LOCAL_HARDWARE_ID).map(str::to_string),
+                ..Default::default()
+            };
+            HardwareCommands::setup(ctx, args).map(|_| ())
+        }
     }
 }
 
@@ -655,6 +670,9 @@ fn reset(ctx: &mut crate::AppContext, fix: &Fix) -> Result<()> {
         RefKind::Provider => ctx
             .config_mut()
             .update_provider(&id, |provider| provider.config = defaults),
+        // `default_settings` gives a hardware profile no defaults, so no reset
+        // plan is ever made for one.
+        RefKind::Hardware => Ok(()),
     };
     if let Err(e) = saved {
         ctx.ui
@@ -708,6 +726,7 @@ fn remove(
         RefKind::Capability => CapabilityCommands::remove(ctx, id, policy),
         RefKind::Model => ModelCommands::remove(ctx, id, policy),
         RefKind::Provider => ProviderCommands::remove(ctx, id, policy),
+        RefKind::Hardware => HardwareCommands::remove(ctx, id, policy),
     }
 }
 
@@ -751,6 +770,7 @@ mod tests {
         ctx.config_mut().providers.insert(
             "ollama".to_string(),
             ProviderConfig {
+                hardware: Default::default(),
                 provider_id: "ollama".to_string(),
                 provider_type: "ollama".to_string(),
                 // A deliberately chosen endpoint beside a field that cannot
@@ -859,6 +879,7 @@ mod tests {
         ctx.config_mut().providers.insert(
             "ollama".to_string(),
             ProviderConfig {
+                hardware: Default::default(),
                 provider_id: "ollama".to_string(),
                 provider_type: "ollama".to_string(),
                 config: serde_json::json!({}),
@@ -1346,6 +1367,7 @@ mod tests {
         ctx.config_mut().providers.insert(
             "ollama".to_string(),
             ProviderConfig {
+                hardware: Default::default(),
                 provider_id: "ollama".to_string(),
                 provider_type: "ollama".to_string(),
                 config: serde_json::json!({}),
