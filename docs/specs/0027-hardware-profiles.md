@@ -821,7 +821,7 @@ rules.
   `test_hardware_profile_detects`)
 - `src/models/context_fit.rs` (`estimate`)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
