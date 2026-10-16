@@ -300,7 +300,7 @@ a custom profile, and a mode: `auto` or `manual`.
   new machine.
 - **Detection.** In both modes, granite-cli detects the hardware again on
   the commands that use fit (`model recommend`, `setup`), on the `hardware`
-  commands, and when the TUI starts. Other commands, such as `launch`, do
+  commands other than `catalog`, and when the TUI starts. Other commands, such as `launch`, do
   not detect: detection calls NVML, Metal or DXGI, and a launch should not
   change configuration.
 - **When detection differs.** granite-cli never overwrites the saved figures
@@ -388,7 +388,8 @@ headroom: 1.2
 
 Interactive `hardware setup`, and the setup pane in the TUI, which runs the
 same steps, ask for the factor last. The answer starts as the default for the
-memory kind, and keeping it stores nothing.
+memory kind, and keeping it stores nothing. A run that cannot ask saves the
+default unless `--headroom` is given.
 
 ```
 ? Headroom factor: 1.5
@@ -551,8 +552,11 @@ this machine today.
 them. `setup local` takes `--auto` or `--manual`. A profile id starts with a
 letter or digit and uses only letters, digits, `-`, `_` and `.`; `local` and
 `custom` are reserved. A `local` profile that cannot be read stops the
-commands that use its figures; `hardware catalog` and `hardware setup` of
-another profile warn about it and go on.
+commands that use its figures; `hardware setup` of another profile warns
+about it and goes on, and `hardware catalog` does not read it. `setup` with
+the id of an existing profile asks before replacing it, as the other `setup`
+commands do, and a run that cannot ask is refused. `setup local` changes
+`local` without this question.
 
 ### TUI
 
@@ -902,22 +906,24 @@ by family and takes `--family`. `setup` takes a catalog id, `custom` or
 `local`, and `--memory` and `--headroom` in scripts; `setup local` takes
 `--auto` or `--manual`. Interactive `setup` asks for the family and then the
 device, skips the second question for a family with one entry, and asks for
-the headroom factor last, starting from the default for the memory kind.
-`hardware info` shows the headroom factor in use and whether it is the
+the headroom factor last, starting from the default for the memory kind; a
+run that cannot ask takes the default. `setup` with the id of an existing
+profile other than `local` asks before replacing it and is refused when the
+run cannot ask. `hardware info` shows the headroom factor in use and whether it is the
 default, and `hardware list` names a set factor in NOTES. Updating `local` to
 the detected figures keeps its factor. `setup` refuses a profile id that is
 not a plain name.
 
-The commands that use fit and the `hardware` commands compare detection
-with the saved local figures, and in manual mode with the recorded
-detection. A `local` profile whose recorded detection cannot be read fails
+The commands that use fit and the `hardware` commands other than `catalog`
+compare detection with the saved local figures, and in manual mode with the
+recorded detection. A `local` profile whose recorded detection cannot be read fails
 to load with an error that names `detected`. A difference prompts when the
 run is interactive and warns when it is not, naming `hardware setup local
 --auto`; `hardware list` and `info` then show the detection as not used. The
 warning is printed as a warning, so `--quiet` silences it once that flag
 exists. With `--output json` or `markdown`, the warning and the first-use
-notice go to stderr. `hardware catalog` and `hardware setup` of another
-profile warn about a `local` profile that cannot be read and go on.
+notice go to stderr. `hardware setup` of another profile warns about a
+`local` profile that cannot be read and goes on.
 
 Tests cover: each subcommand's output through the test UI; the catalog
 ordered by family; `--family` matching regardless of case, and an unknown
@@ -930,18 +936,20 @@ subcommand showing `local` and its mode; each of the three prompt choices;
 "for this session" saving nothing and asking again; manual mode skipping the
 recorded detection but not a different one; a malformed `detected` block
 failing to load with an error that names it, and only a warning for
-`hardware catalog`; the non-interactive warning keeping the saved figures,
+`hardware setup` of another profile; the non-interactive warning keeping the saved figures,
 on stderr with `--output json` together with the first-use notice; the
 recorded detection, a detection kept for the session, and the factor in
-`hardware info local` and the NOTES column; and ids that are not plain names
-refused.
+`hardware info local` and the NOTES column; ids that are not plain names
+refused; an existing id asking before it is replaced, refused when the run
+cannot ask, and replaced without asking when forced; and the default factor
+saved by a run that cannot ask.
 
 **Relevant Context**
 - `src/commands/hardware.rs`, `src/main.rs` (`Commands::Hardware`)
 - `src/commands/model.rs` (`catalog` and `list`, as the pattern)
 - `src/commands/shared/remediation.rs`
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
