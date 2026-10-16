@@ -971,7 +971,7 @@ id refused.
 **Relevant Context**
 - `src/commands/model.rs` (`recommend`, `recommend_rows`)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
