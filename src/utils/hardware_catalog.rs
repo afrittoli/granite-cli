@@ -38,11 +38,8 @@ pub(crate) struct CatalogSize {
     pub(crate) addressable_gb: Option<f64>,
 }
 
-// Nothing outside the tests reads the catalog until configured hardware
-// profiles and the hardware commands (spec 0027) use it.
 impl CatalogEntry {
     /// The size this entry is sold in with `memory_gb` of memory, if any.
-    #[allow(dead_code)]
     pub(crate) fn size(&self, memory_gb: f64) -> Option<&CatalogSize> {
         self.sizes.iter().find(|s| s.memory_gb == memory_gb)
     }
@@ -50,7 +47,6 @@ impl CatalogEntry {
     /// This device's memory figures at `size`. For unified memory the GPU
     /// figure is the addressable part of the pool, or the whole pool when the
     /// entry states no addressable figure.
-    #[allow(dead_code)]
     pub(crate) fn memory(&self, size: &CatalogSize) -> Memory {
         match self.memory_kind {
             MemoryKind::Discrete => Memory::Discrete {
@@ -67,16 +63,23 @@ impl CatalogEntry {
         }
     }
 
+    /// The hardware profile of this device at `size`: its memory figures and
+    /// vendor. The OS and CPU are not known for a catalog device.
+    pub(crate) fn profile(&self, size: &CatalogSize) -> HardwareProfile {
+        let mut profile = HardwareProfile::with_memory(self.memory(size));
+        profile.gpu_vendor = self.vendor.clone();
+        profile
+    }
+
     /// Memory available for a model on this device at `size`, with the
     /// default headroom for its memory kind.
     #[allow(dead_code)]
     pub(crate) fn usable_memory_gb(&self, size: &CatalogSize) -> f64 {
-        HardwareProfile::with_memory(self.memory(size)).usable_memory_gb()
+        self.profile(size).usable_memory_gb()
     }
 }
 
 /// The catalog entry with this id.
-#[allow(dead_code)]
 pub(crate) fn find(id: &str) -> Option<&'static CatalogEntry> {
     HARDWARE_CATALOG.iter().find(|e| e.id == id)
 }
@@ -165,6 +168,20 @@ mod tests {
     }
 
     #[test]
+    fn no_id_is_a_reserved_hardware_type() {
+        // A configured profile's type is a catalog id, `custom` or `local`, so
+        // an entry with one of those ids would be read as the other type.
+        for e in HARDWARE_CATALOG.iter() {
+            assert!(
+                e.id != crate::config::hardware::CUSTOM_HARDWARE_TYPE
+                    && e.id != crate::config::hardware::LOCAL_HARDWARE_ID,
+                "catalog id '{}' is reserved",
+                e.id
+            );
+        }
+    }
+
+    #[test]
     fn ids_are_unique() {
         let mut seen = HashSet::new();
         for e in HARDWARE_CATALOG.iter() {
@@ -200,7 +217,7 @@ mod tests {
     fn discrete_entry_uses_vram_with_gpu_headroom() {
         let e = entry("nvidia-rtx-4090");
         assert_eq!(e.memory_kind, MemoryKind::Discrete);
-        assert_eq!(e.usable_memory_gb(e.size(24.0).unwrap()), 16.0);
+        assert_eq!(e.profile(e.size(24.0).unwrap()).usable_memory_gb(), 16.0);
     }
 
     #[test]
@@ -208,14 +225,17 @@ mod tests {
         // The addressable figure, 51.84, not the 64 GiB pool.
         let e = entry("apple-m4-pro");
         assert_eq!(e.memory_kind, MemoryKind::Unified);
-        assert_eq!(e.usable_memory_gb(e.size(64.0).unwrap()), 51.84 / 1.5);
+        assert_eq!(
+            e.profile(e.size(64.0).unwrap()).usable_memory_gb(),
+            51.84 / 1.5
+        );
     }
 
     #[test]
     fn system_entry_uses_ram_with_system_headroom() {
         let e = entry("cpu-only");
         assert_eq!(e.memory_kind, MemoryKind::System);
-        assert_eq!(e.usable_memory_gb(e.size(64.0).unwrap()), 32.0);
+        assert_eq!(e.profile(e.size(64.0).unwrap()).usable_memory_gb(), 32.0);
     }
 
     #[test]
@@ -227,7 +247,7 @@ mod tests {
         });
         let e = entry("apple-m4-max");
         assert_eq!(
-            e.usable_memory_gb(e.size(64.0).unwrap()),
+            e.profile(e.size(64.0).unwrap()).usable_memory_gb(),
             detected.usable_memory_gb()
         );
     }

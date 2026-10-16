@@ -873,7 +873,7 @@ configuration write discarding the looked-up figures.
 - `src/main.rs` (`AppContext`)
 - `docs/specs/0026-instance-identity-and-reference-resolution.md`
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
