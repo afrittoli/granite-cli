@@ -941,7 +941,7 @@ refused.
 - `src/commands/model.rs` (`catalog` and `list`, as the pattern)
 - `src/commands/shared/remediation.rs`
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 

@@ -7,7 +7,7 @@ use crate::config::validation::RefKind;
 use crate::dependency::{self, Configured, DependsOn, Requirement};
 use crate::models::{ContextFit, MODEL_REGISTRY, ModelMetadata, ModelType, ModelVariant};
 use crate::providers::{PROVIDER_REGISTRY, Provider, ProviderMetadata, ProviderType, PullResult};
-use crate::utils::hardware::{HardwareProfile, detect_hardware};
+use crate::utils::hardware::HardwareProfile;
 use crate::utils::prompt_from_schema;
 use crate::utils::ui::Ui;
 
@@ -350,6 +350,7 @@ impl ModelCommands {
         filter_type: Option<ModelType>,
         providers_arg: &[String],
         wide: bool,
+        hardware: &HardwareProfile,
     ) -> Result<()> {
         let source = ctx.sources().providers();
         let instances = source.instances();
@@ -400,7 +401,7 @@ impl ModelCommands {
             &instances,
             wide,
             ctx.ui.as_ref(),
-            &detect_hardware(),
+            hardware,
         );
         if table_rows.is_empty() {
             let msg = if matches!(&providers, Some(list) if list.is_empty()) {
@@ -1631,7 +1632,14 @@ mod tests {
     #[test]
     fn recommend_returns_table_or_info() {
         let ctx = empty_ctx();
-        ModelCommands::recommend(&ctx, None, &all_providers(), false).unwrap();
+        ModelCommands::recommend(
+            &ctx,
+            None,
+            &all_providers(),
+            false,
+            &generous_hardware_profile(),
+        )
+        .unwrap();
         let has_table = !tables!(ctx).is_empty();
         let has_info = !infos!(ctx).is_empty();
         assert!(has_table || has_info, "expected a table or an info message");
@@ -1640,7 +1648,14 @@ mod tests {
     #[test]
     fn recommend_all_rows_have_six_columns() {
         let ctx = empty_ctx();
-        ModelCommands::recommend(&ctx, None, &all_providers(), false).unwrap();
+        ModelCommands::recommend(
+            &ctx,
+            None,
+            &all_providers(),
+            false,
+            &generous_hardware_profile(),
+        )
+        .unwrap();
         for (_, _, rows) in tables!(ctx).iter() {
             for row in rows {
                 assert_eq!(row.len(), 6, "each row must have 6 columns");
@@ -1651,7 +1666,14 @@ mod tests {
     #[test]
     fn recommend_wide_rows_have_eight_columns() {
         let ctx = empty_ctx();
-        ModelCommands::recommend(&ctx, None, &all_providers(), true).unwrap();
+        ModelCommands::recommend(
+            &ctx,
+            None,
+            &all_providers(),
+            true,
+            &generous_hardware_profile(),
+        )
+        .unwrap();
         for (_, _, rows) in tables!(ctx).iter() {
             for row in rows {
                 assert_eq!(row.len(), 8, "each wide row must have 8 columns");
@@ -1662,7 +1684,14 @@ mod tests {
     #[test]
     fn recommend_fit_column_is_full_or_partial() {
         let ctx = empty_ctx();
-        ModelCommands::recommend(&ctx, None, &all_providers(), false).unwrap();
+        ModelCommands::recommend(
+            &ctx,
+            None,
+            &all_providers(),
+            false,
+            &generous_hardware_profile(),
+        )
+        .unwrap();
         for (_, _, rows) in tables!(ctx).iter() {
             for row in rows {
                 assert!(
@@ -1677,7 +1706,14 @@ mod tests {
     #[test]
     fn recommend_type_filter_limits_results() {
         let ctx = empty_ctx();
-        ModelCommands::recommend(&ctx, Some(ModelType::Text), &all_providers(), false).unwrap();
+        ModelCommands::recommend(
+            &ctx,
+            Some(ModelType::Text),
+            &all_providers(),
+            false,
+            &generous_hardware_profile(),
+        )
+        .unwrap();
         for (_, _, rows) in tables!(ctx).iter() {
             for row in rows {
                 assert_eq!(row[3], "Text", "filtered rows must all be Text type");
@@ -1688,7 +1724,14 @@ mod tests {
     #[test]
     fn recommend_rows_sorted_descending_by_variant_size() {
         let ctx = empty_ctx();
-        ModelCommands::recommend(&ctx, None, &all_providers(), false).unwrap();
+        ModelCommands::recommend(
+            &ctx,
+            None,
+            &all_providers(),
+            false,
+            &generous_hardware_profile(),
+        )
+        .unwrap();
         for (_, _, rows) in tables!(ctx).iter() {
             // Extract the GB value from the VARIANT column "format / precision (N.N GB)"
             let sizes: Vec<f64> = rows
@@ -1712,7 +1755,7 @@ mod tests {
     #[test]
     fn recommend_default_with_no_configured_providers_shows_no_providers_info() {
         let ctx = empty_ctx();
-        ModelCommands::recommend(&ctx, None, &[], false).unwrap();
+        ModelCommands::recommend(&ctx, None, &[], false, &generous_hardware_profile()).unwrap();
         assert!(tables!(ctx).is_empty());
         let infos = infos!(ctx);
         assert!(
@@ -1749,7 +1792,14 @@ mod tests {
     #[test]
     fn recommend_default_with_gguf_only_provider_excludes_non_gguf_models() {
         let with_all = ctx_with_config(Config::default());
-        ModelCommands::recommend(&with_all, None, &all_providers(), false).unwrap();
+        ModelCommands::recommend(
+            &with_all,
+            None,
+            &all_providers(),
+            false,
+            &generous_hardware_profile(),
+        )
+        .unwrap();
         let all_count: usize = tables!(with_all)
             .iter()
             .map(|(_, _, rows)| rows.len())
@@ -1760,7 +1810,8 @@ mod tests {
             "llama-cpp",
             serde_json::json!({}),
         ));
-        ModelCommands::recommend(&gguf_only, None, &[], false).unwrap();
+        ModelCommands::recommend(&gguf_only, None, &[], false, &generous_hardware_profile())
+            .unwrap();
         let gguf_rows: Vec<Vec<String>> = tables!(gguf_only)
             .iter()
             .flat_map(|(_, _, rows)| rows.clone())
@@ -1792,7 +1843,14 @@ mod tests {
         );
         let ctx = ctx_with_config(config);
 
-        ModelCommands::recommend(&ctx, None, &["llama-cpp".to_string()], false).unwrap();
+        ModelCommands::recommend(
+            &ctx,
+            None,
+            &["llama-cpp".to_string()],
+            false,
+            &generous_hardware_profile(),
+        )
+        .unwrap();
         let narrowed_rows: Vec<Vec<String>> = tables!(ctx)
             .iter()
             .flat_map(|(_, _, rows)| rows.clone())
@@ -1809,7 +1867,13 @@ mod tests {
     #[test]
     fn recommend_unknown_provider_id_errors() {
         let ctx = empty_ctx();
-        let result = ModelCommands::recommend(&ctx, None, &["does-not-exist".to_string()], false);
+        let result = ModelCommands::recommend(
+            &ctx,
+            None,
+            &["does-not-exist".to_string()],
+            false,
+            &generous_hardware_profile(),
+        );
         assert!(result.is_err());
     }
 
@@ -1821,6 +1885,7 @@ mod tests {
             None,
             &["all".to_string(), "llama-cpp".to_string()],
             false,
+            &generous_hardware_profile(),
         );
         assert!(result.is_err());
     }
@@ -1832,7 +1897,7 @@ mod tests {
             "llama-cpp",
             serde_json::json!({}),
         ));
-        ModelCommands::recommend(&ctx, None, &[], false).unwrap();
+        ModelCommands::recommend(&ctx, None, &[], false, &generous_hardware_profile()).unwrap();
         for (_, _, rows) in tables!(ctx).iter() {
             for row in rows {
                 assert_eq!(
