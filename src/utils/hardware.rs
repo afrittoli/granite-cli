@@ -660,6 +660,24 @@ mod tests {
     }
 
     #[test]
+    fn a_detected_64_gib_mac_matches_its_catalog_entry() {
+        // The measured working set on a 64 GiB Mac, 51.84 GiB, as Metal
+        // reports it in bytes.
+        let working_set = (51.84 * GIB as f64) as u64;
+        let detected = HardwareProfile::from_findings(findings(
+            64,
+            gpu("Apple", GpuMemory::WorkingSet(working_set)),
+        ));
+        let entry = crate::utils::hardware_catalog::find("apple-m4-max").unwrap();
+        let catalog = entry.usable_memory_gb(entry.size(64.0).unwrap());
+        assert!(
+            (detected.usable_memory_gb() - catalog).abs() < 1e-6,
+            "detected {} vs catalog {catalog}",
+            detected.usable_memory_gb()
+        );
+    }
+
+    #[test]
     fn amd_card_on_linux_maps_to_discrete_vram() {
         let p = HardwareProfile::from_findings(findings(
             64,
