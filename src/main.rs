@@ -175,6 +175,12 @@ enum Commands {
         /// Mutually exclusive with --pull.
         #[arg(long, conflicts_with = "pull")]
         skip_pull: bool,
+
+        /// Install a launcher or provider type before configuring, without
+        /// asking. Repeatable. Requires --auto. A provider is installed but
+        /// not started.
+        #[arg(long = "install", value_name = "TYPE", requires = "auto")]
+        install: Vec<String>,
     },
 
     /// Show hardware profile and recommended precision
@@ -681,6 +687,7 @@ async fn main() {
             auto,
             pull,
             skip_pull,
+            install,
         }) => {
             let pull_opt = if pull {
                 Some(true)
@@ -696,7 +703,7 @@ async fn main() {
                 log_json,
                 log_thread_id,
             );
-            SetupCommands::run(&mut ctx, auto, pull_opt)
+            SetupCommands::run(&mut ctx, auto, pull_opt, &install)
                 .await
                 .map_err(|e| ctx.ui.error(&e.to_string()))
         }
@@ -1369,6 +1376,25 @@ mod completions_tests {
             Cli::try_parse_from(["granite-cli", "model", "--output", "json", "list"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Model(w)) if w.output == "json"));
         assert!(Cli::try_parse_from(["granite-cli", "model", "--output", "yaml", "list"]).is_err());
+    }
+
+    #[test]
+    fn setup_install_requires_auto_and_repeats() {
+        assert!(Cli::try_parse_from(["granite-cli", "setup", "--install", "ollama"]).is_err());
+        let cli = Cli::try_parse_from([
+            "granite-cli",
+            "setup",
+            "--auto",
+            "--install",
+            "ollama",
+            "--install",
+            "opencode",
+        ])
+        .unwrap();
+        let Some(Commands::Setup { install, .. }) = cli.command else {
+            panic!("expected setup command");
+        };
+        assert_eq!(install, vec!["ollama", "opencode"]);
     }
 
     #[test]

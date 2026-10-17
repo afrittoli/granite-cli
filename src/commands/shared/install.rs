@@ -165,16 +165,17 @@ pub(crate) async fn install_with(
     run_method(&*ctx.ui, &*ctx.install_env(), name, info, method, mode).await
 }
 
-/// The first method of `info` that can run here, offering attended methods
-/// only when the UI can lend the terminal; or, when none can, the reason the
-/// first method for this operating system cannot.
+/// The first method of `info` that can run here, with attended methods only
+/// when `allow_attended`; or, when none can, the reason the first method for
+/// this operating system cannot.
 pub(crate) fn first_method(
     ctx: &crate::AppContext,
     info: &InstallInfo,
+    allow_attended: bool,
 ) -> Result<InstallMethod, Option<Unavailable>> {
     let env = ctx.install_env();
     let platform = Platform::detect(&*env, &[info]);
-    let statuses = assess(info, &platform, ctx.ui.can_lend_terminal());
+    let statuses = assess(info, &platform, allow_attended);
     if let Some(ok) = statuses.iter().find(|s| s.unavailable.is_none()) {
         return Ok(ok.method.clone());
     }
@@ -186,7 +187,6 @@ pub(crate) fn first_method(
 
 /// Install a type with its first method that can run here without input,
 /// asking nothing. Used by `setup --auto --install`. The output is captured.
-#[allow(dead_code)] // called from spec 0028 sub-task 8
 pub(crate) async fn install_unattended(
     ctx: &crate::AppContext,
     name: &str,
