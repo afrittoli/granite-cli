@@ -963,7 +963,7 @@ environment that has Homebrew and one that does not.
 - `src/commands/provider.rs:116` (`info`)
 - `docs/data-model.md`
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
