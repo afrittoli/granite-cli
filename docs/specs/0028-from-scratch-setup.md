@@ -1110,7 +1110,7 @@ a remote endpoint leading to neither; a hosted type showing its note; and
   `:395` (`check_provider_health`)
 - `src/commands/setup.rs` (`select_providers`)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 

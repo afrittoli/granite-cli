@@ -171,10 +171,11 @@ pub(crate) async fn install_unattended(
 /// "Continue without it", running the health check of `provider_type` with
 /// `config` through the install environment on each "Check again". Returns
 /// whether the provider ended healthy. granite-cli runs nothing else: it
-/// does not start the server.
+/// does not start the server. "Continue without it" is the default, so
+/// pressing Enter, or a caller that answers every prompt with its default,
+/// ends the loop.
 ///
 /// When the UI is not interactive, only the instructions are shown.
-#[allow(dead_code)] // called from spec 0028 sub-task 6
 pub(crate) async fn wait_for_provider(
     ctx: &crate::AppContext,
     name: &str,
@@ -195,7 +196,7 @@ pub(crate) async fn wait_for_provider(
         let choice = ui.select(
             &format!("{name} is not answering at {endpoint}."),
             &items,
-            0,
+            1,
         )?;
         if choice != 0 {
             return Ok(false);
@@ -213,7 +214,6 @@ pub(crate) async fn wait_for_provider(
 
 /// Print how to start a provider's server: the run command and the start
 /// notes for this operating system. granite-cli runs neither.
-#[allow(dead_code)] // called from spec 0028 sub-task 6
 pub(crate) fn show_start_instructions(
     ui: &dyn Ui,
     env: &dyn InstallEnv,
@@ -271,9 +271,7 @@ pub(crate) fn show_manual_instructions(
 /*-- private --*/
 
 const DONT_INSTALL: &str = "Don't install (show manual instructions)";
-#[allow(dead_code)] // called from spec 0028 sub-task 6
 const CHECK_AGAIN: &str = "Check again";
-#[allow(dead_code)] // called from spec 0028 sub-task 6
 const CONTINUE_WITHOUT: &str = "Continue without it";
 
 /// Run `method`, report the result, and look for the program afterwards:
@@ -855,6 +853,29 @@ mod tests {
             ui.select_prompts.borrow()[0].0,
             "Tool is not answering at http://localhost:1."
         );
+    }
+
+    /// A caller that answers every prompt with its default must leave the
+    /// loop, or it would check again forever.
+    #[tokio::test]
+    async fn the_wait_prompt_defaults_to_continue_without_it() {
+        let (ctx, env, ui) = flow_ctx(FakeInstallEnv::new(Os::Linux), CaptureUi::default());
+
+        let healthy = wait_for_provider(
+            &ctx,
+            "Tool",
+            "tool",
+            &serde_json::json!({}),
+            "http://localhost:1",
+            &tool_info(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!healthy);
+        let (_, items, default) = ui.select_prompts.borrow()[0].clone();
+        assert_eq!(items[default], CONTINUE_WITHOUT);
+        assert!(env.health_checks().is_empty());
     }
 
     #[tokio::test]
