@@ -1753,7 +1753,14 @@ impl SetupCommands {
 
             let before: HashMap<String, crate::config::LauncherConfig> =
                 ctx.config().launchers.clone();
-            LauncherCommands::setup(ctx, &chosen_type, None, false).await?;
+            // A launcher that could not be set up, for example because its
+            // tool is not installed, leaves the rest of the wizard intact.
+            // Every error is reported this way, including a TUI pane closed
+            // with Esc; the next prompt then fails and ends the wizard.
+            if let Err(e) = LauncherCommands::setup(ctx, &chosen_type, None, false).await {
+                ui.error(&format!("Launcher setup failed: {e}"));
+                continue;
+            }
             if let Some(new_id) = changed_launcher_id(&before, ctx)
                 && !manual.contains(&new_id)
                 && !filtered.iter().any(|(id, ..)| id == &new_id)
@@ -2784,6 +2791,53 @@ mod tests {
             },
         );
         ctx
+    }
+
+    fn empty_discovery() -> DiscoveryResult {
+        DiscoveryResult {
+            recommendations: vec![],
+            all_model_candidates: vec![],
+            configured_provider_ids: vec![],
+            configured_model_ids: vec![],
+            configured_launcher_ids: vec![],
+            configured_capability_ids: vec![],
+        }
+    }
+
+    fn capture_ui(ctx: &crate::AppContext) -> &CaptureUi {
+        (&*ctx.ui as &dyn std::any::Any)
+            .downcast_ref::<CaptureUi>()
+            .expect("test contexts are built with a CaptureUi")
+    }
+
+    // -- select_launchers --------------------------------------------------------
+
+    /// A launcher whose tool cannot be installed fails `launcher setup`; the
+    /// wizard reports it and shows the launcher list again.
+    #[tokio::test]
+    async fn select_launchers_shows_the_list_again_after_a_failed_launcher_setup() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = test_ctx();
+        let ui = capture_ui(&ctx);
+        // The list has only "Configure a different launcher…" at index 0.
+        ui.multi_select_answers.borrow_mut().push_back(vec![0]);
+        // The default FakeInstallEnv finds nothing, so setup of any type fails.
+        ui.select_answers.borrow_mut().push_back(0);
+
+        let selected = SetupCommands::select_launchers(&mut ctx, &empty_discovery())
+            .await
+            .unwrap();
+
+        assert!(selected.is_empty());
+        let ui = capture_ui(&ctx);
+        assert_eq!(ui.multi_select_prompts.borrow().len(), 2);
+        assert!(
+            ui.errors
+                .borrow()
+                .iter()
+                .any(|e| e.starts_with("Launcher setup failed:"))
+        );
+        assert!(ctx.config().launchers.is_empty());
     }
 
     // -- discover_providers ----------------------------------------------------

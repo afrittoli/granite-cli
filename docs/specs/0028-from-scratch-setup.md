@@ -1074,7 +1074,7 @@ failed launcher setup.
 - `src/commands/setup.rs` (`select_launchers`, the
   `LauncherCommands::setup` call whose error ends the wizard)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
