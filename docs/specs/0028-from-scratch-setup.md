@@ -1041,7 +1041,7 @@ applicable method going straight to manual instructions.
 - `src/commands/shared/remediation.rs` (how a prompt is skipped when the UI
   is not interactive)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
