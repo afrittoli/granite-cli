@@ -30,6 +30,7 @@ use crate::capabilities::{
 use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command};
 use crate::launchers::shared::mcp_cli::mcp_binding_request;
 use crate::registry::{ConfigConstructable, ConstructError};
+use crate::utils::install::{InstallInfo, InstallMethod, MethodKind, Os};
 use crate::utils::resolve_shell_command;
 use crate::utils::ui::Ui;
 
@@ -247,6 +248,7 @@ impl HasHermesLauncherMetadata for HermesLauncher {
                 BindingType::VoiceInput,
             ]),
             tags: vec!["hermes".to_string(), "agent".to_string()],
+            install: install_info(),
         }
     }
 }
@@ -755,6 +757,26 @@ fn recover_stale_swap(config_path: &Path, state_copy: &Path, ui: &dyn Ui) {
             config_path.display()
         ));
     }
+}
+
+/// Install instructions for Hermes Agent.
+///
+/// Source, checked 2026-10-17: https://hermes-agent.nousresearch.com and its
+/// install.sh, which may call `sudo`, runs `hermes setup` from the terminal,
+/// and links `hermes` into `~/.local/bin`.
+fn install_info() -> InstallInfo {
+    InstallInfo::default()
+        .program("hermes")
+        .page("https://hermes-agent.nousresearch.com")
+        .method(
+            InstallMethod::new(
+                Os::UNIX,
+                MethodKind::Script,
+                "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+            )
+            .attended()
+            .bin_dir("~/.local/bin"),
+        )
 }
 
 /*-- tests --*/

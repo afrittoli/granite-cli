@@ -111,6 +111,9 @@ pub struct InstallMethod {
     /// Directories the method installs into that may not be on PATH yet.
     /// A leading `~/` stands for the home directory.
     pub bin_dirs: Vec<String>,
+    /// Programs the command needs on PATH beyond those of its kind, such as
+    /// `npm` for a vendor script that installs through npm.
+    pub needs: Vec<String>,
 }
 
 impl InstallMethod {
@@ -121,12 +124,19 @@ impl InstallMethod {
             command: command.to_string(),
             attended: false,
             bin_dirs: Vec::new(),
+            needs: Vec::new(),
         }
     }
 
     /// Mark the method as asking for input.
     pub(crate) fn attended(mut self) -> Self {
         self.attended = true;
+        self
+    }
+
+    /// Add a program the command needs on PATH.
+    pub(crate) fn needs(mut self, program: &str) -> Self {
+        self.needs.push(program.to_string());
         self
     }
 
@@ -214,16 +224,23 @@ impl InstallInfo {
 pub(crate) struct Platform {
     pub(crate) os: Os,
     pub(crate) wsl: bool,
-    /// Each program in `MethodKind::ALL_PROGRAMS`, with where it was found.
+    /// Each program in `MethodKind::ALL_PROGRAMS` and in the `needs` of the
+    /// methods `detect` was given, with where it was found.
     found: HashMap<String, Option<PathBuf>>,
 }
 
 impl Platform {
-    /// Ask `env` for the operating system, WSL, and every program a method
-    /// kind can need.
-    pub(crate) fn detect(env: &dyn InstallEnv) -> Self {
+    /// Ask `env` for the operating system, WSL, every program a method kind
+    /// can need, and every program a method in `infos` lists in `needs`.
+    pub(crate) fn detect(env: &dyn InstallEnv, infos: &[&InstallInfo]) -> Self {
+        let extra = infos
+            .iter()
+            .flat_map(|i| i.methods.iter())
+            .flat_map(|m| m.needs.iter().map(String::as_str));
         let found = MethodKind::ALL_PROGRAMS
             .iter()
+            .copied()
+            .chain(extra)
             .map(|p| (p.to_string(), env.find(p)))
             .collect();
         Self {
@@ -246,7 +263,7 @@ pub(crate) enum Unavailable {
     /// granite-cli is running under WSL (decision 8 of spec 0028).
     Wsl,
     /// A program the method needs is not on PATH.
-    MissingProgram(&'static str),
+    MissingProgram(String),
     /// The method asks for input and the installer cannot use the terminal.
     Attended,
 }
@@ -288,9 +305,11 @@ pub(crate) fn assess<'a>(
                 .kind
                 .required_programs(platform.os)
                 .iter()
+                .copied()
+                .chain(method.needs.iter().map(String::as_str))
                 .find(|p| !platform.has(p))
             {
-                Some(Unavailable::MissingProgram(missing))
+                Some(Unavailable::MissingProgram(missing.to_string()))
             } else if method.attended && !allow_attended {
                 Some(Unavailable::Attended)
             } else {
@@ -585,7 +604,7 @@ mod tests {
     fn mac_with_homebrew_and_curl_selects_brew_first() {
         let env = FakeInstallEnv::new(Os::Mac).with_programs(&["brew", "curl"]);
         let info = info();
-        let methods = applicable(&info, &Platform::detect(&env), false);
+        let methods = applicable(&info, &Platform::detect(&env, &[&info]), false);
         assert_eq!(
             commands(&methods),
             vec![
@@ -599,11 +618,11 @@ mod tests {
     fn mac_without_homebrew_lists_brew_with_its_reason() {
         let env = FakeInstallEnv::new(Os::Mac).with_programs(&["curl"]);
         let info = info();
-        let platform = Platform::detect(&env);
+        let platform = Platform::detect(&env, &[&info]);
         let statuses = assess(&info, &platform, false);
         assert_eq!(
             reason(&statuses, "brew install tool"),
-            Some(&Unavailable::MissingProgram("brew"))
+            Some(&Unavailable::MissingProgram("brew".to_string()))
         );
         assert_eq!(
             reason(&statuses, "brew install tool").unwrap().to_string(),
@@ -619,7 +638,7 @@ mod tests {
     fn linux_with_npm_only_selects_npm() {
         let env = FakeInstallEnv::new(Os::Linux).with_programs(&["npm"]);
         let info = info();
-        let platform = Platform::detect(&env);
+        let platform = Platform::detect(&env, &[&info]);
         assert_eq!(
             commands(&applicable(&info, &platform, false)),
             vec!["npm install -g tool"]
@@ -631,7 +650,7 @@ mod tests {
         );
         assert_eq!(
             reason(&statuses, "curl -fsSL https://example.com/i.sh | sh"),
-            Some(&Unavailable::MissingProgram("curl"))
+            Some(&Unavailable::MissingProgram("curl".to_string()))
         );
     }
 
@@ -640,7 +659,7 @@ mod tests {
         let env = FakeInstallEnv::new(Os::Windows).with_programs(&["winget", "curl"]);
         let info = info();
         assert_eq!(
-            commands(&applicable(&info, &Platform::detect(&env), false)),
+            commands(&applicable(&info, &Platform::detect(&env, &[&info]), false)),
             vec!["winget install tool"]
         );
     }
@@ -650,7 +669,7 @@ mod tests {
         let info = InstallInfo::default()
             .method(InstallMethod::new(&[Os::Linux], MethodKind::Script, "curl x | sh").attended());
         let env = FakeInstallEnv::new(Os::Linux).with_programs(&["curl"]);
-        let platform = Platform::detect(&env);
+        let platform = Platform::detect(&env, &[&info]);
 
         let statuses = assess(&info, &platform, false);
         assert_eq!(statuses[0].unavailable, Some(Unavailable::Attended));
@@ -660,12 +679,36 @@ mod tests {
     }
 
     #[test]
+    fn method_needing_an_extra_program_waits_for_it() {
+        let info = InstallInfo::default().method(
+            InstallMethod::new(
+                &[Os::Linux],
+                MethodKind::Script,
+                "curl x | bash -s -- --pm npm",
+            )
+            .needs("npm"),
+        );
+        let without = FakeInstallEnv::new(Os::Linux).with_programs(&["curl"]);
+        let statuses = assess(&info, &Platform::detect(&without, &[&info]), false);
+        assert_eq!(
+            statuses[0].unavailable,
+            Some(Unavailable::MissingProgram("npm".to_string()))
+        );
+
+        let with = FakeInstallEnv::new(Os::Linux).with_programs(&["curl", "npm"]);
+        assert_eq!(
+            applicable(&info, &Platform::detect(&with, &[&info]), false).len(),
+            1
+        );
+    }
+
+    #[test]
     fn every_method_is_unavailable_under_wsl() {
         let env = FakeInstallEnv::new(Os::Windows)
             .with_programs(&["winget", "npm", "curl", "powershell"])
             .wsl();
         let info = info();
-        let platform = Platform::detect(&env);
+        let platform = Platform::detect(&env, &[&info]);
         assert!(applicable(&info, &platform, true).is_empty());
         let statuses = assess(&info, &platform, true);
         assert_eq!(

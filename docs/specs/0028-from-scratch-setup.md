@@ -1000,7 +1000,7 @@ nothing.
 - `src/commands/launcher.rs:75` (`info`)
 - `docs/data-model.md`
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 

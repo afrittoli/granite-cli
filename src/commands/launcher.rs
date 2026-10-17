@@ -103,6 +103,12 @@ impl LauncherCommands {
 
                 ctx.ui.detail("Type Metadata", &type_fields);
 
+                // Only for a catalog type: a configured instance may point at
+                // its program through settings the PATH lookup does not read.
+                if configured.is_none() {
+                    crate::commands::shared::install::show_install_detail(ctx, &md.install);
+                }
+
                 if let Some(cfg) = configured {
                     let mut instance_fields: Vec<(&str, String)> = Vec::new();
 
@@ -706,7 +712,8 @@ mod tests {
         assert!(result.is_ok());
 
         let details = details!(ctx);
-        assert_eq!(details.len(), 1);
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[1].0, "Install");
 
         let (id, fields) = &details[0];
         assert_eq!(id, "Type Metadata");
@@ -747,6 +754,113 @@ mod tests {
                 .iter()
                 .any(|(k, v)| *k == "Enabled Capabilities" && v == "chat, plan")
         );
+    }
+
+    fn install_detail(ctx: &crate::AppContext) -> Vec<(String, String)> {
+        details!(ctx)
+            .iter()
+            .find(|(title, _)| title == "Install")
+            .map(|(_, fields)| fields.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn info_shows_install_detail_on_linux_with_npm() {
+        use crate::utils::install::Os;
+        let mut ctx = test_ctx();
+        ctx.set_install_env(Arc::new(
+            crate::utils::test_support::FakeInstallEnv::new(Os::Linux).with_programs(&["npm"]),
+        ));
+        LauncherCommands::info(&ctx, "opencode").unwrap();
+
+        assert_eq!(
+            install_detail(&ctx),
+            vec![
+                (
+                    "Program".to_string(),
+                    "opencode (not found on PATH)".to_string()
+                ),
+                (
+                    "Install 1".to_string(),
+                    "npm install -g opencode-ai  [✓ runs on this machine]".to_string()
+                ),
+                (
+                    "Install 2".to_string(),
+                    "curl -fsSL https://opencode.ai/install | bash  [curl not found]".to_string()
+                ),
+                (
+                    "Install 3".to_string(),
+                    "brew install anomalyco/tap/opencode  [Homebrew not found]".to_string()
+                ),
+                ("Page".to_string(), "https://opencode.ai/docs/".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn info_shows_install_detail_on_a_machine_with_nothing() {
+        use crate::utils::install::Os;
+        let mut ctx = test_ctx();
+        ctx.set_install_env(Arc::new(crate::utils::test_support::FakeInstallEnv::new(
+            Os::Linux,
+        )));
+        LauncherCommands::info(&ctx, "bob").unwrap();
+
+        let fields = install_detail(&ctx);
+        assert!(fields.contains(&(
+            "Install".to_string(),
+            "curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --pm npm  [curl not found]"
+                .to_string()
+        )));
+        assert!(
+            fields
+                .iter()
+                .any(|(k, v)| k == "Note" && v.contains("Node.js"))
+        );
+        assert!(
+            fields
+                .iter()
+                .all(|(_, v)| !v.contains("runs on this machine"))
+        );
+    }
+
+    #[test]
+    fn every_launcher_type_declares_a_page_or_a_note() {
+        for (id, md) in LAUNCHER_REGISTRY.entries() {
+            assert!(
+                md.install.page.is_some() || md.install.note.is_some(),
+                "{id} declares neither a page nor a note"
+            );
+        }
+    }
+
+    #[test]
+    fn every_launcher_program_is_its_default_command() {
+        for (id, md) in LAUNCHER_REGISTRY.entries() {
+            assert_eq!(
+                md.install.program.as_deref(),
+                Some(md.default_command.as_str()),
+                "{id}"
+            );
+        }
+    }
+
+    /// A vendor script that installs through npm puts the binary in npm's
+    /// global prefix, which is on PATH when npm is, so it needs no directory.
+    #[test]
+    fn every_script_method_declares_a_directory() {
+        use crate::utils::install::MethodKind;
+        for (id, md) in LAUNCHER_REGISTRY.entries() {
+            for m in &md.install.methods {
+                if m.kind == MethodKind::Script && !m.needs.iter().any(|n| n == "npm") {
+                    assert!(
+                        !m.bin_dirs.is_empty(),
+                        "{id}: {} declares no directory",
+                        m.command
+                    );
+                }
+            }
+        }
     }
 
     #[test]

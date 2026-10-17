@@ -155,7 +155,11 @@ impl ProviderCommands {
 
                 ctx.ui.detail("Type Metadata", &type_fields);
 
-                crate::commands::shared::install::show_install_detail(ctx, &md.install);
+                // Only for a catalog type: a configured instance may point at
+                // its program through settings the PATH lookup does not read.
+                if configured.is_none() {
+                    crate::commands::shared::install::show_install_detail(ctx, &md.install);
+                }
 
                 if let Some(cfg) = configured {
                     let mut instance_fields: Vec<(&str, String)> = Vec::new();
@@ -629,13 +633,13 @@ mod tests {
         assert!(result.is_ok());
 
         let details = details!(ctx);
-        assert_eq!(details.len(), 3);
+        assert_eq!(details.len(), 2);
 
         let (id1, fields1) = &details[0];
         assert_eq!(id1, "Type Metadata");
         assert!(fields1.iter().any(|(k, _)| *k == "Name"));
 
-        let (id2, fields2) = &details[2];
+        let (id2, fields2) = &details[1];
         assert_eq!(id2, "my-provider");
 
         assert!(

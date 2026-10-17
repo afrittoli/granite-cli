@@ -402,6 +402,8 @@ pub struct LauncherMetadata {
     /// Binding surfaces this launcher type can make use of.
     pub supported_capabilities: HashSet<BindingType>,
     pub tags: Vec<String>,
+    /// How to install this type's tool. Its `program` is `default_command`.
+    pub install: crate::utils::install::InstallInfo,
 }
 
 impl std::fmt::Display for LauncherMetadata {
@@ -571,6 +573,7 @@ pub(crate) mod tests {
                 default_command: "fake-binary-that-does-not-exist".to_string(),
                 supported_capabilities: HashSet::new(),
                 tags: vec![],
+                install: Default::default(),
             }
         }
     }
@@ -668,6 +671,7 @@ pub(crate) mod tests {
             default_command: "test".to_string(),
             supported_capabilities: HashSet::new(),
             tags: vec![],
+            install: Default::default(),
         };
         assert_eq!(meta.to_string(), "A test launcher");
     }
@@ -680,6 +684,7 @@ pub(crate) mod tests {
             default_command: "claude".to_string(),
             supported_capabilities: HashSet::new(),
             tags: vec!["claude".to_string(), "anthropic".to_string()],
+            install: Default::default(),
         };
         let fields = meta.search_fields();
         assert!(fields.contains(&"Claude Code"));
