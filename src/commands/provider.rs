@@ -438,8 +438,9 @@ impl ProviderCommands {
 /// A hosted type gets its note. A local type at a localhost or loopback
 /// endpoint is looked up on PATH: when its program is missing, the user is
 /// told the server may simply not be running and is offered the install;
-/// when it is present, where it is. Either way, granite-cli then shows how to
-/// start the server and offers to check again. A local type at any other
+/// when it is present, granite-cli says where it found it. Either way,
+/// granite-cli then says the server is not answering, shows how to start it
+/// and offers to check again. A local type at any other
 /// endpoint gets the warning `provider setup` has always given.
 async fn after_failed_health_check(
     ctx: &crate::AppContext,
@@ -466,24 +467,31 @@ async fn after_failed_health_check(
         return Ok(false);
     };
 
-    let env = ctx.install_env();
-    match env.find(program) {
-        Some(path) => ctx.ui.info(&format!(
-            "  '{program}' was found at {}. Nothing is answering at {endpoint}.",
-            path.display()
-        )),
+    use crate::commands::shared::install::{InstallOutcome, ServerProgram};
+    let found = ctx.install_env().find(program);
+    let installed = match &found {
+        Some(_) => false,
         None => {
             ctx.ui.info(&format!(
                 "  '{program}' was not found on PATH. If {} is installed elsewhere, \
                  it may simply not be running.",
                 md.name
             ));
-            crate::commands::shared::install::offer_install(ctx, &md.name, info).await?;
+            matches!(
+                crate::commands::shared::install::offer_install(ctx, &md.name, info).await?,
+                InstallOutcome::Installed { .. }
+            )
         }
-    }
+    };
+    let state = match (&found, installed) {
+        (Some(path), _) => ServerProgram::FoundAt(path),
+        (None, true) => ServerProgram::Installed,
+        (None, false) => ServerProgram::Unknown,
+    };
     crate::commands::shared::install::wait_for_provider(
         ctx,
         &md.name,
+        state,
         provider_type,
         config,
         &endpoint,
@@ -942,8 +950,9 @@ mod tests {
         assert!(text.contains(
             "'ollama' was not found on PATH. If Ollama is installed elsewhere, it may simply not be running."
         ));
-        assert!(text.contains("granite-cli does not start Ollama. Start it in another terminal:"));
-        assert!(text.contains("    ollama serve"));
+        assert!(text.contains("Ollama is installed but not answering at http://localhost:11434."));
+        assert!(text.contains("  You can start it in another terminal with:"));
+        assert!(text.contains("      ollama serve"));
         assert!(text.contains("brew services start ollama"));
         let prompts: Vec<String> = ui
             .select_prompts
@@ -951,13 +960,7 @@ mod tests {
             .iter()
             .map(|p| p.0.clone())
             .collect();
-        assert_eq!(
-            prompts,
-            vec![
-                "Install Ollama now?",
-                "Ollama is not answering at http://localhost:11434."
-            ]
-        );
+        assert_eq!(prompts, vec!["Install Ollama now?", "Would you like to:"]);
         // "Continue without it" leaves the provider configured.
         assert!(ctx.config().get_provider("ollama").is_some());
         assert!(!text.contains("is healthy"));
@@ -986,7 +989,7 @@ mod tests {
         assert_eq!(ui.select_prompts.borrow().len(), 1);
         let text = texts(ui);
         assert!(text.contains(
-            "'ollama' was found at /usr/bin/ollama. Nothing is answering at http://localhost:11434."
+            "Ollama was found at /usr/bin/ollama but is not answering at http://localhost:11434."
         ));
         assert!(text.contains("sudo systemctl start ollama"));
         assert!(text.contains("Provider 'ollama' is healthy!"));
@@ -1062,7 +1065,7 @@ mod tests {
 
         assert!(env.runs().is_empty());
         let ui = capture(&ctx);
-        assert!(texts(ui).contains("granite-cli does not start Ollama."));
+        assert!(texts(ui).contains("Ollama is not answering at http://localhost:11434."));
         assert_eq!(ui.select_prompts.borrow().len(), 2);
     }
 

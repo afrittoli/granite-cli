@@ -1897,26 +1897,41 @@ impl SetupCommands {
             }
         }
 
-        let mut waiting: Vec<String> = step.providers.iter().cloned().collect();
-        waiting.sort();
-        waiting.extend(not_running);
-        if !waiting.is_empty() {
+        use crate::commands::shared::install::{
+            ServerProgram, WOULD_YOU_LIKE_TO, show_not_answering,
+        };
+        let mut installed: Vec<String> = step.providers.iter().cloned().collect();
+        installed.sort();
+        if !installed.is_empty() || !not_running.is_empty() {
             let env = ctx.install_env();
-            for id in &waiting {
-                if let Some(md) = PROVIDER_REGISTRY.get(id) {
-                    crate::commands::shared::install::show_start_instructions(
-                        ui,
-                        &*env,
-                        &md.name,
-                        &md.install,
-                    );
-                }
+            let waiting = installed
+                .iter()
+                .map(|id| (id, true))
+                .chain(not_running.iter().map(|id| (id, false)));
+            for (id, was_installed) in waiting {
+                let Some(md) = PROVIDER_REGISTRY.get(id) else {
+                    continue;
+                };
+                let found = md.install.program.as_deref().and_then(|p| env.find(p));
+                let program = match (&found, was_installed) {
+                    (_, true) => ServerProgram::Installed,
+                    (Some(path), false) => ServerProgram::FoundAt(path),
+                    (None, false) => ServerProgram::Unknown,
+                };
+                show_not_answering(
+                    ui,
+                    &*env,
+                    &md.name,
+                    program,
+                    &md.default_endpoint,
+                    &md.install,
+                );
             }
             let items = vec![
                 "Check again".to_string(),
                 "Continue without them".to_string(),
             ];
-            if ui.select("Start the model servers above, then:", &items, 1)? == 0 {
+            if ui.select(WOULD_YOU_LIKE_TO, &items, 1)? == 0 {
                 step.rediscover = true;
             }
         }
@@ -3493,11 +3508,15 @@ mod tests {
                 "Found on PATH, not answering: llama-cpp (start it with `llama-server`)."
             )
         );
-        assert!(infos.contains("granite-cli does not start llama.cpp"));
-        assert_eq!(
-            ui.select_prompts.borrow()[0].0,
-            "Start the model servers above, then:"
+        assert!(
+            ui.warns
+                .borrow()
+                .iter()
+                .any(|w| w.starts_with("llama.cpp was found at ")
+                    && w.contains(" but is not answering at "))
         );
+        assert!(infos.contains("      llama-server"));
+        assert_eq!(ui.select_prompts.borrow()[0].0, "Would you like to:");
         assert!(env.runs().is_empty());
     }
 
@@ -3583,16 +3602,14 @@ mod tests {
 
         assert_eq!(step.providers, HashSet::from(["ollama".to_string()]));
         let ui = capture_ui(&ctx);
+        assert!(ui.infos.borrow().iter().any(|i| i == "      ollama serve"));
         assert!(
-            ui.infos
+            ui.warns
                 .borrow()
                 .iter()
-                .any(|i| i.contains("granite-cli does not start Ollama"))
+                .any(|w| w == "Ollama is installed but not answering at http://localhost:11434.")
         );
-        assert_eq!(
-            ui.select_prompts.borrow()[0].0,
-            "Start the model servers above, then:"
-        );
+        assert_eq!(ui.select_prompts.borrow()[0].0, "Would you like to:");
     }
 
     #[tokio::test]

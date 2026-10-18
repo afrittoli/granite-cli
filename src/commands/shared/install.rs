@@ -202,18 +202,31 @@ pub(crate) async fn install_unattended(
     run_method(ui, &*env, name, info, method, RunMode::Captured).await
 }
 
-/// Show how to start a provider's server, then ask "Check again" or
-/// "Continue without it", running the health check of `provider_type` with
-/// `config` through the install environment on each "Check again". Returns
-/// whether the provider ended healthy. granite-cli runs nothing else: it
-/// does not start the server. "Continue without it" is the default, so
-/// pressing Enter, or a caller that answers every prompt with its default,
-/// ends the loop.
+/// What granite-cli knows about a provider's program when its server does
+/// not answer, which decides the first line of [`show_not_answering`].
+pub(crate) enum ServerProgram<'a> {
+    /// granite-cli installed it in this run.
+    Installed,
+    /// The program was found on PATH at this path.
+    FoundAt(&'a std::path::Path),
+    /// The program was not found, and nothing was installed.
+    Unknown,
+}
+
+/// Say that `name` is not answering at `endpoint`, then how to start it,
+/// and ask "Check again" or "Continue without it", running the health check
+/// of `provider_type` with `config` through the install environment on each
+/// "Check again". Returns whether the provider ended healthy. granite-cli
+/// runs nothing else: it does not start the server. "Continue without it" is
+/// the default, so pressing Enter, or a caller that answers every prompt
+/// with its default, ends the loop.
 ///
-/// When the UI is not interactive, only the instructions are shown.
+/// When the UI is not interactive, only the message and instructions are
+/// shown.
 pub(crate) async fn wait_for_provider(
     ctx: &crate::AppContext,
     name: &str,
+    program: ServerProgram<'_>,
     provider_type: &str,
     config: &serde_json::Value,
     endpoint: &str,
@@ -221,54 +234,65 @@ pub(crate) async fn wait_for_provider(
 ) -> anyhow::Result<bool> {
     let env = ctx.install_env();
     let ui = &*ctx.ui;
-    show_start_instructions(ui, &*env, name, info);
+    show_not_answering(ui, &*env, name, program, endpoint, info);
     if !ui.is_interactive() {
         return Ok(false);
     }
 
     let items = vec![CHECK_AGAIN.to_string(), CONTINUE_WITHOUT.to_string()];
     loop {
-        let choice = ui.select(
-            &format!("{name} is not answering at {endpoint}."),
-            &items,
-            1,
-        )?;
-        if choice != 0 {
+        if ui.select(WOULD_YOU_LIKE_TO, &items, 1)? != 0 {
             return Ok(false);
         }
         match env.check_provider(provider_type, config).await {
             Ok(status) if status.healthy => return Ok(true),
             Ok(status) => match status.error {
-                Some(error) => ui.warn(&format!("Still not answering: {error}")),
-                None => ui.warn("Still not answering."),
+                Some(error) => ui.warn(&format!(
+                    "{name} is still not answering at {endpoint}: {error}"
+                )),
+                None => ui.warn(&format!("{name} is still not answering at {endpoint}.")),
             },
             Err(e) => ui.warn(&format!("Could not run health check: {e}")),
         }
     }
 }
 
-/// Print how to start a provider's server: the run command and the start
+/// Print that `name` is not answering at `endpoint`, with what is known
+/// about its program, then how to start it: the run command and the start
 /// notes for this operating system. granite-cli runs neither.
-pub(crate) fn show_start_instructions(
+pub(crate) fn show_not_answering(
     ui: &dyn Ui,
     env: &dyn InstallEnv,
     name: &str,
+    program: ServerProgram<'_>,
+    endpoint: &str,
     info: &InstallInfo,
 ) {
+    ui.warn(&match program {
+        ServerProgram::Installed => {
+            format!("{name} is installed but not answering at {endpoint}.")
+        }
+        ServerProgram::FoundAt(path) => format!(
+            "{name} was found at {} but is not answering at {endpoint}.",
+            path.display()
+        ),
+        ServerProgram::Unknown => format!("{name} is not answering at {endpoint}."),
+    });
     let Some(run) = &info.run_command else {
         if let Some(note) = &info.note {
-            ui.info(note);
+            ui.info(&format!("  {note}"));
         }
         return;
     };
-    ui.info(&format!(
-        "granite-cli does not start {name}. Start it in another terminal:"
-    ));
-    ui.info(&format!("    {run}"));
+    ui.info("  You can start it in another terminal with:");
+    ui.info(&format!("      {run}"));
     for note in info.start_notes_for(env.os()) {
         ui.info(&format!("  {note}"));
     }
 }
+
+/// The question asked after [`show_not_answering`].
+pub(crate) const WOULD_YOU_LIKE_TO: &str = "Would you like to:";
 
 /// Print how to install a type by hand: every method for this operating
 /// system with what it needs, then the page and the note. This is the one
@@ -774,6 +798,7 @@ mod tests {
             !wait_for_provider(
                 &ctx,
                 "Tool",
+                ServerProgram::Unknown,
                 "tool",
                 &serde_json::json!({}),
                 "http://x",
@@ -869,6 +894,7 @@ mod tests {
         let healthy = wait_for_provider(
             &ctx,
             "Tool",
+            ServerProgram::Unknown,
             "tool",
             &serde_json::json!({}),
             "http://localhost:1",
@@ -880,14 +906,55 @@ mod tests {
         assert!(healthy);
         assert_eq!(env.health_checks(), vec!["tool", "tool"]);
         assert!(env.runs().is_empty());
-        let text = all_text(&ui);
-        assert!(text.contains("granite-cli does not start Tool. Start it in another terminal:"));
-        assert!(text.contains("    tool serve"));
-        assert!(text.contains("  systemctl start tool"));
         assert_eq!(
-            ui.select_prompts.borrow()[0].0,
+            ui.warns.borrow()[0],
             "Tool is not answering at http://localhost:1."
         );
+        assert!(
+            ui.warns.borrow()[1].starts_with("Tool is still not answering at http://localhost:1: ")
+        );
+        let infos = ui.infos.borrow().clone();
+        assert_eq!(
+            infos[..3],
+            [
+                "  You can start it in another terminal with:",
+                "      tool serve",
+                "  systemctl start tool",
+            ]
+        );
+        assert_eq!(ui.select_prompts.borrow()[0].0, WOULD_YOU_LIKE_TO);
+    }
+
+    #[test]
+    fn the_not_answering_line_says_what_is_known_about_the_program() {
+        let env = FakeInstallEnv::new(Os::Linux);
+        let path = std::path::PathBuf::from("/usr/bin/tool");
+        let cases = [
+            (
+                ServerProgram::Installed,
+                "Tool is installed but not answering at http://localhost:1.",
+            ),
+            (
+                ServerProgram::FoundAt(&path),
+                "Tool was found at /usr/bin/tool but is not answering at http://localhost:1.",
+            ),
+            (
+                ServerProgram::Unknown,
+                "Tool is not answering at http://localhost:1.",
+            ),
+        ];
+        for (program, expected) in cases {
+            let ui = CaptureUi::default();
+            show_not_answering(
+                &ui,
+                &env,
+                "Tool",
+                program,
+                "http://localhost:1",
+                &tool_info(),
+            );
+            assert_eq!(ui.warns.borrow().as_slice(), [expected]);
+        }
     }
 
     /// A caller that answers every prompt with its default must leave the
@@ -899,6 +966,7 @@ mod tests {
         let healthy = wait_for_provider(
             &ctx,
             "Tool",
+            ServerProgram::Unknown,
             "tool",
             &serde_json::json!({}),
             "http://localhost:1",
@@ -922,6 +990,7 @@ mod tests {
         let healthy = wait_for_provider(
             &ctx,
             "Tool",
+            ServerProgram::Unknown,
             "tool",
             &serde_json::json!({}),
             "http://localhost:1",
