@@ -250,14 +250,14 @@ fn generate_config(
 
         // Add custom headers from binding if present. Omit entirely when
         // custom_headers is empty to match the behavior of other launchers.
-        if let Some(headers) = &binding.custom_headers {
-            if !headers.is_empty() {
-                let header_map: serde_json::Map<String, serde_json::Value> = headers
-                    .iter()
-                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.0.clone())))
-                    .collect();
-                provider_entry["headers"] = serde_json::Value::Object(header_map);
-            }
+        if let Some(headers) = &binding.custom_headers
+            && !headers.is_empty()
+        {
+            let header_map: serde_json::Map<String, serde_json::Value> = headers
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.0.clone())))
+                .collect();
+            provider_entry["headers"] = serde_json::Value::Object(header_map);
         }
 
         let mut providers = serde_json::Map::new();
@@ -332,6 +332,7 @@ mod tests {
             verify_ssl: true,
             context_length: Some(131072),
             custom_headers: None,
+            supported_reasoning_efforts: vec![],
         }
     }
 
@@ -499,6 +500,7 @@ mod tests {
         headers.insert("Authorization".to_string(), Secret::from("Bearer token"));
         let b = AgentModelBinding {
             custom_headers: Some(headers),
+            supported_reasoning_efforts: vec![],
             ..binding()
         };
         let config = generate_config(Some(&b), &[]);
@@ -526,6 +528,7 @@ mod tests {
     fn generate_config_omits_headers_when_empty() {
         let b = AgentModelBinding {
             custom_headers: Some(std::collections::HashMap::new()),
+            supported_reasoning_efforts: vec![],
             ..binding()
         };
         let config = generate_config(Some(&b), &[]);

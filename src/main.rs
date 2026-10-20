@@ -21,6 +21,7 @@ use alog::{MessageLevel, alog};
 use clap::{CommandFactory, Parser, Subcommand};
 
 // Local
+use commands::shared::remediation::DependentsPolicy;
 use commands::{
     CapabilityCommands, HardwareCommands, LauncherCommands, ModelCommands, ProviderCommands,
     SetupCommands,
@@ -264,6 +265,15 @@ enum ModelSubcommands {
     Remove {
         /// Configured model ID to remove
         model_id: String,
+
+        /// How to handle other configured instances that depend on this model.
+        /// `cascade` removes them too; `refuse` aborts with a non-zero exit;
+        /// `leave` removes only this model and leaves dependents broken.
+        /// Omitting the flag prompts when the run can ask; otherwise, when
+        /// something depends on it, it aborts with a non-zero exit that
+        /// names the policies.
+        #[arg(long, value_name = "POLICY")]
+        dependents: Option<DependentsPolicy>,
     },
 }
 
@@ -297,6 +307,15 @@ enum CapabilitySubcommands {
     Remove {
         /// Configured capability ID to remove
         capability_id: String,
+
+        /// How to handle other configured instances that depend on this
+        /// capability. `cascade` removes them too; `refuse` aborts with a
+        /// non-zero exit; `leave` removes only this capability and leaves
+        /// dependents broken. Omitting the flag prompts when the run can
+        /// ask; otherwise, when something depends on it, it aborts with a
+        /// non-zero exit that names the policies.
+        #[arg(long, value_name = "POLICY")]
+        dependents: Option<DependentsPolicy>,
     },
 }
 
@@ -340,6 +359,15 @@ enum ProviderSubcommands {
     Remove {
         /// Configured provider instance ID to remove
         provider_id: String,
+
+        /// How to handle other configured instances that depend on this
+        /// provider. `cascade` removes them too; `refuse` aborts with a
+        /// non-zero exit; `leave` removes only this provider and leaves
+        /// dependents broken. Omitting the flag prompts when the run can
+        /// ask; otherwise, when something depends on it, it aborts with a
+        /// non-zero exit that names the policies.
+        #[arg(long, value_name = "POLICY")]
+        dependents: Option<DependentsPolicy>,
     },
 }
 
@@ -373,6 +401,15 @@ enum LauncherSubcommands {
     Remove {
         /// Configured launcher instance ID to remove
         launcher_id: String,
+
+        /// How to handle other configured instances that depend on this
+        /// launcher. `cascade` removes them too; `refuse` aborts with a
+        /// non-zero exit; `leave` removes only this launcher and leaves
+        /// dependents broken. Omitting the flag prompts when the run can
+        /// ask; otherwise, when something depends on it, it aborts with a
+        /// non-zero exit that names the policies.
+        #[arg(long, value_name = "POLICY")]
+        dependents: Option<DependentsPolicy>,
     },
 }
 
@@ -409,9 +446,6 @@ fn construct_context(
         alog::FormatterKind::Pretty
     };
     let ui_arc_clone = Arc::clone(&ui);
-    let ui_writer = UiWriter {
-        ui: Arc::clone(&ui),
-    };
     alog::configure(alog::Config {
         default_level: log_level.parse().unwrap(),
         filters: alog::Filters::Spec(log_filters.to_string()),
@@ -419,7 +453,9 @@ fn construct_context(
             formatter_kind,
             ui_arc_clone,
         ))),
-        writer: alog::Writer::Custom(Box::new(ui_writer)),
+        writer: alog::Writer::Custom(Box::new(LogWriter {
+            out: std::io::stderr(),
+        })),
         thread_id: log_thread_id,
     });
     alog!("MAIN", MessageLevel::Debug, "Welcome to granite-cli!");
@@ -509,26 +545,29 @@ fn completion_command() -> clap::Command {
     cmd
 }
 
-/// A log sink that routes formatted records through a [`Ui`] backend.
-struct UiWriter {
-    ui: Arc<dyn Ui>,
+/// The log sink: writes each formatted record to `out`, which is stderr
+/// outside tests, one line per record. Log lines stay off stdout, which
+/// carries the command's output in every `--output` format.
+struct LogWriter<W: Write> {
+    out: W,
 }
 
-impl Write for UiWriter {
+impl<W: Write> Write for LogWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let text = std::str::from_utf8(buf).unwrap_or("");
-        // The formatter adds a trailing newline; split and route each line.
+        let text = String::from_utf8_lossy(buf);
+        // UiFormatter trims the record's trailing newline; put one back after
+        // each line.
         for line in text.split('\n') {
             if line.is_empty() {
                 continue;
             }
-            self.ui.info(line);
+            writeln!(self.out, "{line}")?;
         }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        self.out.flush()
     }
 }
 
@@ -729,7 +768,7 @@ async fn main() {
                 log_json,
                 log_thread_id,
             );
-            run_interactive_tui(ctx)
+            run_interactive_tui(ctx, log_level.parse().unwrap(), &log_filters)
                 .await
                 .map_err(|e| eprintln!("Error: {e}"))
         }
@@ -756,7 +795,10 @@ async fn run_model_command(ctx: &mut AppContext, subcmd: ModelSubcommands) -> an
             instance_id,
         } => ModelCommands::setup(ctx, &model_type, instance_id.as_deref(), false).await,
         ModelSubcommands::Pull { model_id } => ModelCommands::pull(ctx, &model_id).await,
-        ModelSubcommands::Remove { model_id } => ModelCommands::remove(ctx, &model_id),
+        ModelSubcommands::Remove {
+            model_id,
+            dependents,
+        } => ModelCommands::remove(ctx, &model_id, dependents),
     }
 }
 
@@ -774,9 +816,10 @@ async fn run_capability_command(
             capability_type,
             instance_id,
         } => CapabilityCommands::setup(ctx, &capability_type, instance_id.as_deref(), false).await,
-        CapabilitySubcommands::Remove { capability_id } => {
-            CapabilityCommands::remove(ctx, &capability_id)
-        }
+        CapabilitySubcommands::Remove {
+            capability_id,
+            dependents,
+        } => CapabilityCommands::remove(ctx, &capability_id, dependents),
     }
 }
 
@@ -795,7 +838,10 @@ async fn run_provider_command(
         ProviderSubcommands::Health { provider_id } => {
             ProviderCommands::health(ctx, provider_id.as_deref()).await
         }
-        ProviderSubcommands::Remove { provider_id } => ProviderCommands::remove(ctx, &provider_id),
+        ProviderSubcommands::Remove {
+            provider_id,
+            dependents,
+        } => ProviderCommands::remove(ctx, &provider_id, dependents),
     }
 }
 
@@ -811,11 +857,14 @@ async fn run_launcher_command(
             launcher_type,
             instance_id,
         } => LauncherCommands::setup(ctx, &launcher_type, instance_id.as_deref(), false).await,
-        LauncherSubcommands::Remove { launcher_id } => LauncherCommands::remove(ctx, &launcher_id),
+        LauncherSubcommands::Remove {
+            launcher_id,
+            dependents,
+        } => LauncherCommands::remove(ctx, &launcher_id, dependents),
     }
 }
 
-async fn run_launch(
+pub(crate) async fn run_launch(
     ctx: &mut AppContext,
     launcher_id: &str,
     args: &[String],
@@ -1120,6 +1169,24 @@ fn bob_hook_capture_should_write(ancestor_lock: Option<&std::path::Path>) -> boo
 }
 
 #[cfg(test)]
+mod log_writer_tests {
+    use super::*;
+
+    #[test]
+    fn each_record_is_written_as_its_own_line() {
+        let mut writer = LogWriter { out: Vec::new() };
+
+        writer.write_all(b"[CONF :WARN] first").unwrap();
+        writer.write_all(b"[CONF :WARN] second\n").unwrap();
+
+        assert_eq!(
+            String::from_utf8(writer.out).unwrap(),
+            "[CONF :WARN] first\n[CONF :WARN] second\n"
+        );
+    }
+}
+
+#[cfg(test)]
 mod hook_capture_tests {
     use super::*;
 
@@ -1334,5 +1401,29 @@ mod completions_tests {
     #[test]
     fn completions_command_rejects_unknown_shell() {
         assert!(Cli::try_parse_from(["granite-cli", "completions", "tcsh"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod run_launch_tests {
+    use super::*;
+
+    use crate::utils::ui::base::tests::CaptureUi;
+
+    #[tokio::test]
+    async fn run_launch_unknown_launcher_returns_err() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = AppContext::new(
+            crate::config::Config::default(),
+            Arc::new(CaptureUi::default()),
+        );
+
+        let result = run_launch(&mut ctx, "no-such-launcher", &[], true).await;
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Launch aborted"), "unexpected error: {msg}");
+        assert!(msg.contains("no-such-launcher"), "unexpected error: {msg}");
     }
 }

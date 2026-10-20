@@ -334,7 +334,7 @@ impl ModelCommands {
             })
             .collect();
 
-        rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        sort_recommend_rows(&mut rows);
         rows.into_iter().map(|(_, row)| row).collect()
     }
 
@@ -629,13 +629,11 @@ impl ModelCommands {
 
                 ctx.ui.detail("Type Metadata", &type_fields);
 
-                let mut instance_fields: Vec<(&str, String)> = Vec::new();
-                instance_fields.push(("Config: Type", model_config.model_type.clone()));
-                instance_fields.push((
-                    "Config: Provider",
-                    format!("{:?}", model_config.provider_id),
-                ));
-                instance_fields.push(("Config: Variant", format!("{:?}", model_config.variant)));
+                let instance_fields: Vec<(&str, String)> = vec![
+                    ("Config: Type", model_config.model_type.clone()),
+                    ("Config: Provider", model_config.provider_id.clone()),
+                    ("Config: Variant", variant_field(&model_config.variant)),
+                ];
                 ctx.ui.detail(id, &instance_fields);
                 return Ok(());
             }
@@ -646,10 +644,10 @@ impl ModelCommands {
                 ctx.ui.detail("Type Metadata", &type_fields);
 
                 if let Some(configured) = ctx.config().get_model(id) {
-                    let mut instance_fields: Vec<(&str, String)> = Vec::new();
-                    instance_fields
-                        .push(("Config: Provider", format!("{:?}", configured.provider_id)));
-                    instance_fields.push(("Config: Variant", format!("{:?}", configured.variant)));
+                    let instance_fields: Vec<(&str, String)> = vec![
+                        ("Config: Provider", configured.provider_id.clone()),
+                        ("Config: Variant", variant_field(&configured.variant)),
+                    ];
 
                     ctx.ui.detail(id, &instance_fields);
                 }
@@ -936,20 +934,32 @@ impl ModelCommands {
     ///
     /// Deletes the model's config file and removes it from the in-memory
     /// config. After this call `model list` will no longer show the entry.
-    pub fn remove(ctx: &mut crate::AppContext, model_id: &str) -> Result<()> {
+    ///
+    /// `policy` controls what happens to dependents: `Cascade` removes them
+    /// too, `Refuse` aborts, `Leave` strands them. `None` asks interactively
+    /// or leaves in non-interactive sessions.
+    pub fn remove(
+        ctx: &mut crate::AppContext,
+        model_id: &str,
+        policy: Option<crate::commands::shared::remediation::DependentsPolicy>,
+    ) -> Result<()> {
         if ctx.config().get_model(model_id).is_none() {
             anyhow::bail!("No model configured with id '{model_id}'. Nothing to remove.");
         }
 
         // Anything pointing at it would be stranded by this removal.
-        match crate::commands::shared::remediation::confirm_removal(ctx, RefKind::Model, model_id)?
-        {
+        match crate::commands::shared::remediation::confirm_removal(
+            ctx,
+            RefKind::Model,
+            model_id,
+            policy,
+        )? {
             crate::commands::shared::remediation::Removal::Cancel => {
                 ctx.ui.info(&format!("Keeping model '{model_id}'."));
                 return Ok(());
             }
             crate::commands::shared::remediation::Removal::Proceed { with } => {
-                crate::commands::shared::remediation::remove_all(ctx, &with)?;
+                crate::commands::shared::remediation::remove_all(ctx, &with, policy)?;
             }
         }
 
@@ -1045,6 +1055,20 @@ pub async fn ensure_model_pulled(
     ui: &dyn Ui,
 ) -> Result<PullResult, crate::providers::ProviderError> {
     provider.pull_model(model, variant, ui).await
+}
+
+/*-- private ---------------------------------------------------------------------*/
+
+/// Orders `recommend` rows, each paired with its variant size in GB, by
+/// size, largest first. MODEL_REGISTRY.entries() comes in no fixed order, so
+/// rows with the same size are ordered by model id, the first column.
+fn sort_recommend_rows(rows: &mut [(f64, Vec<String>)]) {
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1[0].cmp(&b.1[0])));
+}
+
+/// The `Config: Variant` value `model info` shows for a configured model.
+fn variant_field(variant: &Option<String>) -> String {
+    variant.clone().unwrap_or_else(|| "(not set)".to_string())
 }
 
 /*-- tests -----------------------------------------------------------------------*/
@@ -1742,6 +1766,32 @@ mod tests {
     }
 
     #[test]
+    fn recommend_rows_with_the_same_variant_size_are_ordered_by_id() {
+        let row = |size: f64, id: &str| (size, vec![id.to_string()]);
+        let mut rows = vec![
+            row(4.9, "granite-speech-3.2-8b"),
+            row(6.7, "granite-guardian-3.3-8b"),
+            row(4.9, "granite-3.0-8b-instruct"),
+            row(f64::MAX, "no-size"),
+            row(4.9, "granite-3.2-8b-instruct"),
+        ];
+
+        sort_recommend_rows(&mut rows);
+
+        let ids: Vec<&str> = rows.iter().map(|(_, r)| r[0].as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "no-size",
+                "granite-guardian-3.3-8b",
+                "granite-3.0-8b-instruct",
+                "granite-3.2-8b-instruct",
+                "granite-speech-3.2-8b",
+            ]
+        );
+    }
+
+    #[test]
     fn recommend_default_with_gguf_only_provider_excludes_non_gguf_models() {
         let with_all = ctx_with_config(Config::default());
         ModelCommands::recommend(&with_all, None, &all_providers(), false).unwrap();
@@ -1940,7 +1990,7 @@ mod tests {
         let mut ctx = ctx_with_model("granite-3.1-8b-instruct", Some("my-ollama"));
         assert!(ctx.config().get_model("granite-3.1-8b-instruct").is_some());
 
-        ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
+        ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct", None).unwrap();
 
         assert!(ctx.config().get_model("granite-3.1-8b-instruct").is_none());
         let infos = infos!(ctx);
@@ -1954,7 +2004,7 @@ mod tests {
     #[test]
     fn remove_nonexistent_model_returns_err() {
         let mut ctx = empty_ctx();
-        let result = ModelCommands::remove(&mut ctx, "doesnt-exist");
+        let result = ModelCommands::remove(&mut ctx, "doesnt-exist", None);
         assert!(result.is_err());
         assert!(
             result
@@ -1968,7 +2018,7 @@ mod tests {
     fn list_does_not_show_removed_model() {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_model("granite-3.1-8b-instruct", Some("my-ollama"));
-        ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct").unwrap();
+        ModelCommands::remove(&mut ctx, "granite-3.1-8b-instruct", None).unwrap();
         ModelCommands::list(&ctx, None).unwrap();
         let tables = tables!(ctx);
         let (_, _, rows) = &tables[0];
@@ -2049,6 +2099,43 @@ mod tests {
             fields2
                 .iter()
                 .any(|(k, v)| k == "Config: Type" && v == "custom")
+        );
+        assert!(
+            fields2
+                .iter()
+                .any(|(k, v)| k == "Config: Provider" && v == "ollama"),
+            "{fields2:?}"
+        );
+        assert!(
+            fields2
+                .iter()
+                .any(|(k, v)| k == "Config: Variant" && v == "(not set)"),
+            "{fields2:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn info_shows_the_configured_variant_as_written() {
+        let mut ctx = ctx_with_custom_model(
+            "my-custom",
+            serde_json::json!({ "family": "My Local Model" }),
+            None,
+        );
+        ctx.config_mut()
+            .models
+            .get_mut("my-custom")
+            .unwrap()
+            .variant = Some("GGUF/Q8_0".to_string());
+
+        ModelCommands::info(&mut ctx, "my-custom").await.unwrap();
+
+        let details = details!(ctx);
+        let (_, fields) = &details[1];
+        assert!(
+            fields
+                .iter()
+                .any(|(k, v)| k == "Config: Variant" && v == "GGUF/Q8_0"),
+            "{fields:?}"
         );
     }
 

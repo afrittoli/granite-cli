@@ -159,11 +159,9 @@ impl ProviderCommands {
                     let mut instance_fields: Vec<(&str, String)> = Vec::new();
 
                     instance_fields.push(("Config: Type", cfg.provider_type.clone()));
-                    if let Some(obj) = cfg.config.as_object() {
-                        for (k, v) in obj {
-                            instance_fields.push(("Config", format!("{k} = {v}")))
-                        }
-                    }
+                    let config_fields = crate::commands::shared::config_fields(&cfg.config);
+                    instance_fields
+                        .extend(config_fields.iter().map(|(k, v)| (k.as_str(), v.clone())));
 
                     ctx.ui.detail(id, &instance_fields);
                 }
@@ -355,7 +353,15 @@ impl ProviderCommands {
     ///
     /// Deletes the provider's config file and removes it from the in-memory
     /// config. After this call `provider list` will no longer show the entry.
-    pub fn remove(ctx: &mut crate::AppContext, provider_id: &str) -> Result<()> {
+    ///
+    /// `policy` controls what happens to dependents: `Cascade` removes them
+    /// too, `Refuse` aborts, `Leave` strands them. `None` asks interactively
+    /// or leaves in non-interactive sessions.
+    pub fn remove(
+        ctx: &mut crate::AppContext,
+        provider_id: &str,
+        policy: Option<crate::commands::shared::remediation::DependentsPolicy>,
+    ) -> Result<()> {
         if ctx.config().get_provider(provider_id).is_none() {
             anyhow::bail!("No provider configured with id '{provider_id}'. Nothing to remove.");
         }
@@ -365,13 +371,14 @@ impl ProviderCommands {
             ctx,
             RefKind::Provider,
             provider_id,
+            policy,
         )? {
             crate::commands::shared::remediation::Removal::Cancel => {
                 ctx.ui.info(&format!("Keeping provider '{provider_id}'."));
                 return Ok(());
             }
             crate::commands::shared::remediation::Removal::Proceed { with } => {
-                crate::commands::shared::remediation::remove_all(ctx, &with)?;
+                crate::commands::shared::remediation::remove_all(ctx, &with, policy)?;
             }
         }
 
@@ -636,8 +643,38 @@ mod tests {
         assert!(
             fields2
                 .iter()
-                .any(|(k, v)| *k == "Config" && v.contains("http://localhost:11434"))
+                .any(|(k, v)| *k == "Config: base_url" && v == "http://localhost:11434")
         );
+    }
+
+    #[test]
+    fn info_in_json_keeps_every_config_value() {
+        let json = Arc::new(crate::utils::ui::backends::json::JsonOutput::with_capture());
+        let mut ctx = crate::AppContext::new(Config::default(), json.clone());
+        ctx.config_mut().providers.insert(
+            "my-provider".to_string(),
+            ProviderConfig {
+                provider_id: "my-provider".to_string(),
+                provider_type: "openai-compatible".to_string(),
+                config: serde_json::json!({
+                    "base_url": "http://localhost:11434",
+                    "timeout_secs": 10,
+                }),
+            },
+        );
+
+        ProviderCommands::info(&ctx, "my-provider").unwrap();
+
+        let records = json.captured();
+        let instance = records
+            .iter()
+            .find(|r| r["title"] == "my-provider")
+            .expect("an instance detail record");
+        assert_eq!(
+            instance["fields"]["Config: base_url"],
+            "http://localhost:11434"
+        );
+        assert_eq!(instance["fields"]["Config: timeout_secs"], "10");
     }
 
     #[test]
@@ -711,7 +748,7 @@ mod tests {
         let mut ctx = ctx_with_provider("my-ollama", "http://localhost:11434");
         assert!(ctx.config().get_provider("my-ollama").is_some());
 
-        ProviderCommands::remove(&mut ctx, "my-ollama").unwrap();
+        ProviderCommands::remove(&mut ctx, "my-ollama", None).unwrap();
 
         assert!(ctx.config().get_provider("my-ollama").is_none());
         let infos = infos!(ctx);
@@ -725,7 +762,7 @@ mod tests {
     #[test]
     fn remove_nonexistent_provider_returns_err() {
         let mut ctx = test_ctx();
-        let result = ProviderCommands::remove(&mut ctx, "doesnt-exist");
+        let result = ProviderCommands::remove(&mut ctx, "doesnt-exist", None);
         assert!(result.is_err());
         assert!(
             result
@@ -739,7 +776,7 @@ mod tests {
     fn list_does_not_show_removed_provider() {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = ctx_with_provider("my-ollama", "http://localhost:11434");
-        ProviderCommands::remove(&mut ctx, "my-ollama").unwrap();
+        ProviderCommands::remove(&mut ctx, "my-ollama", None).unwrap();
         ProviderCommands::list(&ctx).unwrap();
         let tables = tables!(ctx);
         let (_, _, rows) = &tables[0];

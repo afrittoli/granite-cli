@@ -181,31 +181,31 @@ impl Launcher for ClaudeLauncher {
             // Add custom headers if configured, formatted as "Name: Value" pairs
             // newline-separated, matching ANTHROPIC_CUSTOM_HEADERS format.
             // Sort by key for deterministic output.
-            if let Some(ref headers) = binding.custom_headers {
-                if !headers.is_empty() {
-                    let mut header_pairs: Vec<(String, String)> = headers
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                k.clone(),
-                                serde_json::to_value(v)
-                                    .unwrap()
-                                    .as_str()
-                                    .unwrap()
-                                    .to_string(),
-                            )
-                        })
-                        .collect();
-                    header_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-                    let header_lines: Vec<String> = header_pairs
-                        .iter()
-                        .map(|(k, v)| format!("{k}: {v}"))
-                        .collect();
-                    bindings.push(EnvBinding {
-                        key: "ANTHROPIC_CUSTOM_HEADERS".to_string(),
-                        value: header_lines.join("\n"),
-                    });
-                }
+            if let Some(ref headers) = binding.custom_headers
+                && !headers.is_empty()
+            {
+                let mut header_pairs: Vec<(String, String)> = headers
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            serde_json::to_value(v)
+                                .unwrap()
+                                .as_str()
+                                .unwrap()
+                                .to_string(),
+                        )
+                    })
+                    .collect();
+                header_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                let header_lines: Vec<String> = header_pairs
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect();
+                bindings.push(EnvBinding {
+                    key: "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                    value: header_lines.join("\n"),
+                });
             }
 
             // verify_ssl is dropped per user's note
@@ -529,6 +529,7 @@ mod tests {
                 verify_ssl: true,
                 context_length: Some(4096),
                 custom_headers: Some(headers),
+                supported_reasoning_efforts: vec![],
             }),
             vec![],
         );
@@ -557,6 +558,7 @@ mod tests {
                 verify_ssl: true,
                 context_length: Some(4096),
                 custom_headers: None,
+                supported_reasoning_efforts: vec![],
             }),
             vec![],
         );
@@ -578,6 +580,7 @@ mod tests {
                 verify_ssl: true,
                 context_length: Some(4096),
                 custom_headers: Some(HashMap::new()),
+                supported_reasoning_efforts: vec![],
             }),
             vec![],
         );
@@ -654,6 +657,7 @@ mod tests {
                 verify_ssl: true,
                 context_length: Some(4096),
                 custom_headers: None,
+                supported_reasoning_efforts: vec![],
             },
             known_type: None,
         }
@@ -894,6 +898,7 @@ mod tests {
                 verify_ssl: true,
                 context_length: Some(4096),
                 custom_headers: None,
+                supported_reasoning_efforts: vec![],
             }),
             vec![(
                 "reviewer".to_string(),
