@@ -11,7 +11,7 @@
 # shellcheck source=tests/e2e/lib.sh
 . "$(dirname "$0")/../lib.sh"
 
-require_url http://localhost:11434/api/tags
+require_service ollama
 
 fresh
 fresh_home

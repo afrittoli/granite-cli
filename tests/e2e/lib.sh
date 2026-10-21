@@ -264,6 +264,22 @@ require_url() {
     curl -fsS -m 2 -o /dev/null "$1" 2>/dev/null || skip "$1 is not reachable"
 }
 
+# require_service NAME...: skip unless each provider service answers at the
+# URL that tests/e2e/services.txt gives for it. run.sh --services reads these
+# calls to pick the tests to run, so give the names literally, on a line of
+# their own.
+require_service() {
+    local service url
+    for service in "$@"; do
+        url=$(awk -v s="$service" '$1 == s { print $2 }' "$E2E_DIR/services.txt")
+        if [ -z "$url" ]; then
+            echo "require_service: $service is not in tests/e2e/services.txt" >&2
+            exit 1
+        fi
+        require_url "$url"
+    done
+}
+
 # finish: print the summary and exit 0 when every check passed, 1 otherwise.
 # Call it as the last line of a test script.
 finish() {

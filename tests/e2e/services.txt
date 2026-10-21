@@ -1,0 +1,14 @@
+# Provider services in docker-compose.providers.yml that end-to-end tests use.
+#
+#   SERVICE  the compose service name, as tests name it in require_service
+#   URL      answers an HTTP GET once the service is ready; require_service
+#            skips the test when it does not
+#   CI       always:  the e2e-local job starts it in every run
+#            changed: the e2e-local job starts it, and runs the tests that
+#                     require it, only when its image is new or changed
+#            -:       not used in CI
+#            The E2E images workflow mirrors the always and changed ones.
+#
+# SERVICE  URL                               CI
+ollama     http://localhost:11434/api/tags   always
+localai    http://localhost:8080/readyz      -

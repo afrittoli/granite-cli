@@ -108,9 +108,9 @@ jobs:
     permissions:
       contents: read
       packages: read
-    # The provider images come from the mirror that e2e-images.yml keeps up
-    # to date. Their versions are the defaults in
-    # tests/e2e/docker-compose.providers.yml.
+    # The provider services are listed in tests/e2e/services.txt, and their
+    # images come from the mirror that e2e-images.yml keeps up to date. Their
+    # versions are the defaults in tests/e2e/docker-compose.providers.yml.
     env:
       E2E_IMAGE_MIRROR: ${{ vars.E2E_IMAGE_MIRROR || format('ghcr.io/{0}', github.repository_owner) }}
     steps:
@@ -143,28 +143,53 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: echo "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
 
-      # Takes the Ollama image from the mirror and tags it as the image
-      # compose runs. An image the mirror does not have is new or changed in
-      # this pull request: it is pulled from its registry, or built from
+      # The services that tests/e2e/services.txt marks `always`, and each
+      # one marked `changed` whose image is new or changed in this run, that
+      # is, not in the mirror yet. The job summary lists them.
+      - name: Select provider services
+        id: services
+        run: |
+          list=$(bash tests/e2e/images.sh select | tr '\n' ' ')
+          list=${list% }
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          printf '## Provider services\n\nStarted: %s\n\n' "${list:-none}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Takes each image from the mirror and tags it as the image compose
+      # runs. An image the mirror does not have is new or changed in this
+      # pull request: it is pulled from its registry, or built from
       # tests/e2e/docker/, and the local tests below run against it. The job
       # summary lists where each image came from. e2e-images.yml mirrors it
       # once the change is on main.
       - name: Get provider images
-        run: bash tests/e2e/images.sh pull ollama
+        if: steps.services.outputs.list != ''
+        env:
+          SERVICES: ${{ steps.services.outputs.list }}
+        run: |
+          # shellcheck disable=SC2086 # SERVICES is a space-separated list
+          bash tests/e2e/images.sh pull $SERVICES
 
-      # Start Ollama using Docker Compose. --wait returns once the service's
-      # health check passes, and fails if it does not within the timeout.
-      # Docker and Docker Compose are pre-installed on GitHub-hosted runners.
-      - name: Start Ollama with Docker Compose
-        run: docker compose -f tests/e2e/docker-compose.providers.yml up -d --wait --wait-timeout 120 ollama
+      # --wait returns once each service's health check passes, and fails if
+      # one does not within the timeout. Docker and Docker Compose are
+      # pre-installed on GitHub-hosted runners.
+      - name: Start provider services
+        if: steps.services.outputs.list != ''
+        env:
+          SERVICES: ${{ steps.services.outputs.list }}
+        run: |
+          # shellcheck disable=SC2086 # SERVICES is a space-separated list
+          docker compose -f tests/e2e/docker-compose.providers.yml up -d --wait --wait-timeout 300 $SERVICES
 
-      # Runs tests/e2e/local/*.sh only (the e2e job runs hermetic/).
-      # --no-skip fails a test that skips itself because Ollama, jq or
-      # curl is missing, so the job cannot pass without running it.
+      # Runs tests/e2e/local/*.sh only (the e2e job runs hermetic/), and of
+      # those only the ones whose require_service calls name started
+      # services: a test for a `changed` service runs when its image
+      # changed. --no-skip fails a test that skips itself because a service,
+      # jq or curl is missing, so the job cannot pass without running it.
       # As in the e2e job, the binary is instrumented and the coverage of
       # these runs is written for the coverage job.
       - name: Run local end-to-end tests
-        run: bash tests/e2e/coverage.sh lcov-e2e-local.info --local --no-skip local/
+        env:
+          SERVICES: ${{ steps.services.outputs.list }}
+        run: bash tests/e2e/coverage.sh lcov-e2e-local.info --local --no-skip --services="$SERVICES" local/
 
       - name: Upload coverage
         if: ${{ !cancelled() && hashFiles('lcov-e2e-local.info') != '' }}
@@ -174,9 +199,13 @@ jobs:
           path: lcov-e2e-local.info
           retention-days: 7
 
-      - name: Show Ollama logs
-        if: failure()
-        run: docker compose -f tests/e2e/docker-compose.providers.yml logs ollama
+      - name: Show provider logs
+        if: failure() && steps.services.outputs.list != ''
+        env:
+          SERVICES: ${{ steps.services.outputs.list }}
+        run: |
+          # shellcheck disable=SC2086 # SERVICES is a space-separated list
+          docker compose -f tests/e2e/docker-compose.providers.yml logs $SERVICES
 
       - name: Cleanup
         if: always()

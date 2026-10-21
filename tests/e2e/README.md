@@ -13,6 +13,7 @@ tests/e2e/
 ├── coverage.sh                  runs them against an instrumented build, writes LCOV
 ├── docker-compose.providers.yml Docker Compose config for AI model providers
 ├── images.sh                    gets provider images from the ghcr.io mirror
+├── services.txt                 provider services: readiness URL, use in CI
 ├── manual-test-template.md      starting point for a feature's manual test guide
 ├── fixtures/                    configuration homes (GRANITE_CLI_HOME contents)
 ├── hermetic/                    tests that need only the binary
@@ -24,9 +25,11 @@ Requirements: bash 3.2 or later, `jq`, and `curl` for the `local/` tests.
 Docker and Docker Compose for running provider services locally.
 
 CI runs both sets on Linux. The `e2e` job runs `hermetic/`. The `e2e-local`
-job uses Docker Compose to start Ollama from `docker-compose.providers.yml`,
-waits for it to be healthy, and runs `local/` with `--no-skip`, so a test
-that would skip itself fails instead. The `check` workflow runs `shellcheck -x`
+job uses Docker Compose to start provider services from
+`docker-compose.providers.yml` (see [Provider services in
+CI](#provider-services-in-ci)), waits for them to be healthy, and runs the
+`local/` tests those services allow with `--no-skip`, so a test that would
+skip itself fails instead. The `check` workflow runs `shellcheck -x`
 over every script here; `scripts/lint.sh` runs it too when `shellcheck` is
 installed.
 
@@ -37,7 +40,11 @@ tests/e2e/run.sh              # hermetic tests
 tests/e2e/run.sh --local      # also the local/ tests; each skips itself
                               # when what it needs is missing
 tests/e2e/run.sh --local --no-skip local/   # local/ only, skips count as
-                              # failures (what the e2e-local CI job runs)
+                              # failures
+tests/e2e/run.sh --local --no-skip --services=ollama local/
+                              # only the local/ tests whose services are
+                              # all in the list (what the e2e-local CI job
+                              # runs)
 tests/e2e/run.sh -v remove    # one test, with its full output
 GCLI_BIN=path/to/granite-cli tests/e2e/run.sh   # test another binary
 ```
@@ -77,17 +84,20 @@ terminal.
 
 A test goes in `local/` when it needs something from the machine: Ollama or
 another server listening on its default port, an installed launcher, the
-detected hardware, or an interactive terminal. It calls `require_url` or
-`require_cmd` first, which exits with status 77 (reported as skipped) when
-the requirement is missing. Its checks must hold for any machine that meets
+detected hardware, or an interactive terminal. It calls `require_service`,
+`require_url` or `require_cmd` first, which exits with status 77 (reported
+as skipped) when the requirement is missing. A test that needs a provider
+server names its compose service with `require_service ollama`, rather than
+its URL: `run.sh --services` reads these calls, on lines of their own, to
+pick the tests that the started services allow. Its checks must hold for any machine that meets
 the requirement: for example, after `setup --auto`, check that every model is
 bound to a configured provider, and do not check which models were chosen.
 
-The `e2e-local` CI job provides only Ollama on `localhost:11434`, with no
-models pulled, and fails every test that skips. A new `local/` test that
-needs anything else (a model, another server, a launcher, a terminal) needs
-a matching step in that job in `.github/workflows/ci.yml`, or the job's
-`run.sh` filter has to leave the test out.
+The `e2e-local` CI job starts the services that `services.txt` selects,
+with no models pulled, and fails every test that skips. A new `local/` test
+that needs anything else (a model, a launcher, a terminal) needs a matching
+step in that job in `.github/workflows/ci.yml`, or the job's `run.sh`
+filter has to leave the test out.
 
 Commands that are not hermetic on `main` today:
 
@@ -143,12 +153,10 @@ docker compose -f tests/e2e/docker-compose.providers.yml down
    - Reference it in `docker-compose.providers.yml` with `build:` directive
    - Or use the existing binary installation approach in CI
 
-3. **Update CI** (`.github/workflows/ci.yml`):
-   - Add the provider to the `images.sh pull` and `docker compose up -d`
-     commands of the `e2e-local` job
-   - Add it to `SERVICES` in `.github/workflows/e2e-images.yml`, so that
-     its image is mirrored (see [Provider images](#provider-images))
-   - Tests automatically skip if the provider isn't running
+3. **Add it to `services.txt`** with the URL that answers once it is
+   ready, and how CI uses it (see [Provider services in
+   CI](#provider-services-in-ci)). Its tests call `require_service NAME`.
+   The workflows read the list; they need no change.
 
 ### Testing with different provider versions
 
@@ -203,9 +211,10 @@ own registry or builds it, as compose would.
 Who writes the mirror:
 
 - The `E2E images` workflow (`.github/workflows/e2e-images.yml`) runs
-  `images.sh push` for the services in its `SERVICES` list: on `main` when
-  the compose file, `tests/e2e/docker/`, `images.sh` or the workflow
-  changes, every Monday, and on demand. It copies a registry image with all
+  `images.sh push` for the services that `services.txt` marks `always` or
+  `changed`: on `main` when the compose file, `tests/e2e/docker/`,
+  `images.sh`, `services.txt` or the workflow changes, every Monday, and
+  on demand. It copies a registry image with all
   its platforms, overwriting the tag so that a moving upstream tag is
   refreshed, and builds a `build:` image only when its tag is missing.
 - Pull requests only read the mirror. In a pull request that changes an
@@ -219,7 +228,37 @@ Who writes the mirror:
   `E2E_IMAGE_MIRROR` repository variable when it is set; the `E2E images`
   workflow writes the same place.
 
-Setting up the mirror in a repository (once, by an owner):
+### Provider services in CI
+
+`tests/e2e/services.txt` lists the services that tests use, with a URL that
+answers once each is ready, and how CI uses each one:
+
+| CI | The `e2e-local` job |
+|---|---|
+| `always` | starts it in every run, and runs the tests that require it |
+| `changed` | starts it, and runs the tests that require it, only when its image is new or changed: when the mirror has no image with its tag, as in a pull request that changes its version or its Dockerfile |
+| `-` | does not start it; the tests that require it run only locally |
+
+`always` suits small, quick services that every change should be tested
+against, such as Ollama with no models. `changed` suits large images, or
+ones that change rarely, whose tests matter when the image changes.
+
+The job runs `images.sh select` to list the services to start, gets their
+images with `images.sh pull`, starts them, and runs
+`run.sh --local --no-skip --services="<list>" local/`. Tests whose
+`require_service` calls name a service that was not started are reported
+as `OMIT` and do not count as failures; tests that name none run as before.
+The job summary lists the services started and where each image came from.
+
+```sh
+export E2E_IMAGE_MIRROR=ghcr.io/ibm-granite-community
+tests/e2e/images.sh list     # services CI uses (always and changed)
+tests/e2e/images.sh select   # services this run would start; reasons on stderr
+```
+
+### Setting up the mirror
+
+Once, by an owner of the repository:
 
 1. Run the `E2E images` workflow (Actions → E2E images → Run workflow).
    Its `GITHUB_TOKEN` creates the `granite-cli-e2e-*` packages and links
@@ -231,8 +270,9 @@ Setting up the mirror in a repository (once, by an owner):
    private package also works for runs in the repository itself, which log
    in with `packages: read`. Private packages count towards the account's
    GitHub Packages storage; public ones do not.
-3. Until the packages exist, the `e2e-local` job pulls from Docker Hub as
-   before; it prints `... is not available; falling back` for each image.
+3. Until the packages exist, or when a run cannot read them, every image
+   counts as new or changed: the `e2e-local` job pulls or builds each one,
+   and also starts the `changed` services and runs their tests.
 
 ## Writing a hermetic test
 
@@ -273,7 +313,7 @@ The helpers, all defined and described in `lib.sh`:
 | `expect_file`, `expect_no_file`, `expect_same_tree` | file and directory checks |
 | `pass TEXT`, `fail TEXT` | record a check made by hand |
 | `try ARGS...` | for manual guides: print the command, run it with `-o plain </dev/null`, print `exit N`; records no check |
-| `require_url URL`, `require_cmd NAME`, `skip TEXT` | skip a `local/` test |
+| `require_service NAME...`, `require_url URL`, `require_cmd NAME`, `skip TEXT` | skip a `local/` test |
 | `finish` | print the summary; exit 0 if every check passed |
 
 `expect_json` reads the output of `-o json`, which is one JSON object per

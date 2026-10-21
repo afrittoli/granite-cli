@@ -3,12 +3,20 @@
 # mirror registry, such as ghcr.io, and keep that mirror up to date.
 #
 # Usage:
-#   tests/e2e/images.sh pull SERVICE...    make each service's image
+#   tests/e2e/images.sh pull [SERVICE...]  make each service's image
 #                                          available locally
-#   tests/e2e/images.sh push SERVICE...    copy or build each service's image
+#   tests/e2e/images.sh push [SERVICE...]  copy or build each service's image
 #                                          into the mirror
+#   tests/e2e/images.sh list               print the services CI uses
+#   tests/e2e/images.sh select             print the services to start in a
+#                                          CI run
 #   tests/e2e/images.sh ref SERVICE        print the image compose runs
 #   tests/e2e/images.sh mirror-ref SERVICE print the image in the mirror
+#
+# pull and push default to the services CI uses: those with `always` or
+# `changed` in the CI column of tests/e2e/services.txt. select prints the
+# `always` ones, and each `changed` one whose image the mirror does not
+# have, which means it is new or changed, for example in a pull request.
 #
 # pull takes the image from the mirror when the mirror has it, and tags it
 # with the name compose uses, so `docker compose up` runs it without
@@ -48,7 +56,7 @@ E2E_DIR=$(cd "$(dirname "$0")" && pwd)
 COMPOSE_FILE="$E2E_DIR/docker-compose.providers.yml"
 
 usage() {
-    sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -121,6 +129,31 @@ report() {
 # An image the mirror does not have is new or changed, for example in a pull
 # request that changes its version or its Dockerfile: pull builds or pulls
 # it, so that the tests that follow run against it.
+# Prints the services whose CI column in services.txt is one of the given
+# modes.
+ci_services() {
+    awk -v modes=" $* " '$1 !~ /^#/ && NF >= 3 && index(modes, " " $3 " ") { print $1 }' \
+        "$E2E_DIR/services.txt"
+}
+
+select_services() {
+    local service mirrored
+    ci_services always
+    for service in $(ci_services changed); do
+        if [ -z "${E2E_IMAGE_MIRROR:-}" ]; then
+            echo "$service: not started, E2E_IMAGE_MIRROR is unset" >&2
+            continue
+        fi
+        mirrored=$(mirror_ref "$service")
+        if docker buildx imagetools inspect "$mirrored" >/dev/null 2>&1; then
+            echo "$service: not started, its image is unchanged ($mirrored)" >&2
+        else
+            echo "$service"
+            echo "$service: started, $mirrored is not in the mirror: new or changed" >&2
+        fi
+    done
+}
+
 pull() {
     local service=$1 image mirrored note=""
     image=$(local_ref "$service")
@@ -164,12 +197,24 @@ push() {
     fi
 }
 
-[ $# -ge 2 ] || usage
+[ $# -ge 1 ] || usage
 cmd=$1
 shift
 case "$cmd" in
     pull | push)
+        if [ $# -eq 0 ]; then
+            # shellcheck disable=SC2046 # service names have no spaces
+            set -- $(ci_services always changed)
+        fi
         for service in "$@"; do "$cmd" "$service"; done
+        ;;
+    list)
+        [ $# -eq 0 ] || usage
+        ci_services always changed
+        ;;
+    select)
+        [ $# -eq 0 ] || usage
+        select_services
         ;;
     ref)
         [ $# -eq 1 ] || usage

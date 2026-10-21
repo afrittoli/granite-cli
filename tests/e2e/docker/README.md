@@ -35,7 +35,8 @@ services:
 ## Images in CI
 
 CI does not build these images in every run. The `E2E images` workflow
-builds each one that its `SERVICES` list names and pushes it to the ghcr.io
+builds each one that `tests/e2e/services.txt` marks `always` or `changed`
+and pushes it to the ghcr.io
 mirror with a tag computed from the service's `build:` section and the
 files in its build context, and the `e2e-local` job pulls it from there.
 Changing any file in the directory gives a new tag, so the image is rebuilt
