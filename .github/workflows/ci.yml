@@ -105,8 +105,14 @@ jobs:
     name: End-to-end tests (local, with Ollama)
     needs: [check]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    # The provider images come from the mirror that e2e-images.yml keeps up
+    # to date. Their versions are the defaults in
+    # tests/e2e/docker-compose.providers.yml.
     env:
-      OLLAMA_VERSION: "0.40.0"
+      E2E_IMAGE_MIRROR: ${{ vars.E2E_IMAGE_MIRROR || format('ghcr.io/{0}', github.repository_owner) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,6 +132,25 @@ jobs:
         uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-llvm-cov@0.9.1
+
+      # Public mirror images need no login. The login lets a run read a
+      # private mirror package that grants this repository access; when it
+      # fails, the next step falls back for images it cannot pull.
+      - name: Log in to ghcr.io
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+
+      # Takes the Ollama image from the mirror and tags it as the image
+      # compose runs. An image the mirror does not have is new or changed in
+      # this pull request: it is pulled from its registry, or built from
+      # tests/e2e/docker/, and the local tests below run against it. The job
+      # summary lists where each image came from. e2e-images.yml mirrors it
+      # once the change is on main.
+      - name: Get provider images
+        run: bash tests/e2e/images.sh pull ollama
 
       # Start Ollama using Docker Compose. --wait returns once the service's
       # health check passes, and fails if it does not within the timeout.

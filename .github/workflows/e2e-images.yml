@@ -1,0 +1,70 @@
+name: E2E images
+
+# Copies the provider images that the end-to-end tests use into
+# ghcr.io/<owner>/granite-cli-e2e-<service>, and builds and pushes the ones
+# with a Dockerfile under tests/e2e/docker/. The e2e-local job in ci.yml
+# pulls them from there, and falls back to the images' own registries for an
+# image that is not mirrored yet. tests/e2e/images.sh does the work; the
+# "Provider images" section of tests/e2e/README.md describes it.
+#
+# It runs when the images may have changed on main, weekly to refresh moving
+# upstream tags, and on demand. Pull requests do not push images: the e2e-local
+# job of a pull request that changes an image builds or pulls that image
+# alone and runs the local tests against it; this workflow mirrors it after
+# the merge.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tests/e2e/docker-compose.providers.yml
+      - tests/e2e/docker/**
+      - tests/e2e/images.sh
+      - .github/workflows/e2e-images.yml
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+
+jobs:
+  mirror:
+    name: Mirror provider images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # The services that the e2e-local job in ci.yml starts.
+      SERVICES: ollama
+      # Set the E2E_IMAGE_MIRROR repository variable to use another registry
+      # or namespace; ci.yml reads the same variable.
+      E2E_IMAGE_MIRROR: ${{ vars.E2E_IMAGE_MIRROR || format('ghcr.io/{0}', github.repository_owner) }}
+      E2E_IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+
+      - name: Mirror images
+        run: |
+          # shellcheck disable=SC2086 # SERVICES is a space-separated list
+          bash tests/e2e/images.sh push $SERVICES
+
+      - name: Show mirrored images
+        run: |
+          for service in $SERVICES; do
+            ref=$(bash tests/e2e/images.sh mirror-ref "$service")
+            # shellcheck disable=SC2016 # Markdown backticks
+            printf -- '- `%s`\n' "$ref" >> "$GITHUB_STEP_SUMMARY"
+          done

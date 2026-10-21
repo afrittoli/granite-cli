@@ -12,6 +12,7 @@ tests/e2e/
 ├── run.sh                       runs the scripted tests and reports the result
 ├── coverage.sh                  runs them against an instrumented build, writes LCOV
 ├── docker-compose.providers.yml Docker Compose config for AI model providers
+├── images.sh                    gets provider images from the ghcr.io mirror
 ├── manual-test-template.md      starting point for a feature's manual test guide
 ├── fixtures/                    configuration homes (GRANITE_CLI_HOME contents)
 ├── hermetic/                    tests that need only the binary
@@ -143,7 +144,10 @@ docker compose -f tests/e2e/docker-compose.providers.yml down
    - Or use the existing binary installation approach in CI
 
 3. **Update CI** (`.github/workflows/ci.yml`):
-   - Add the provider to the `docker compose up -d` command
+   - Add the provider to the `images.sh pull` and `docker compose up -d`
+     commands of the `e2e-local` job
+   - Add it to `SERVICES` in `.github/workflows/e2e-images.yml`, so that
+     its image is mirrored (see [Provider images](#provider-images))
    - Tests automatically skip if the provider isn't running
 
 ### Testing with different provider versions
@@ -167,6 +171,68 @@ the runners:
 ```sh
 OLLAMA_IMAGE=ghcr.io/OWNER/ollama docker compose -f tests/e2e/docker-compose.providers.yml up -d ollama
 ```
+
+### Provider images
+
+CI takes the provider images from a mirror on ghcr.io instead of pulling
+them from Docker Hub or building them in every run. The mirror does not use
+the Actions cache, and it avoids Docker Hub rate limits.
+
+`tests/e2e/images.sh` names each service's image in the mirror
+`ghcr.io/OWNER/granite-cli-e2e-SERVICE`, with a tag that changes whenever
+the image would:
+
+| Service in the compose file | Mirror tag | Example |
+|---|---|---|
+| `image:` from a registry | the image's tag | `ollama/ollama:0.40.0` → `granite-cli-e2e-ollama:0.40.0` |
+| `build:` from `tests/e2e/docker/` | `ctx-` and a hash of the `build:` section and of every file in the build context | `granite-cli-e2e-llama-cpp:ctx-38e3cca5be199c62` |
+
+```sh
+export E2E_IMAGE_MIRROR=ghcr.io/ibm-granite-community
+tests/e2e/images.sh mirror-ref ollama   # ghcr.io/ibm-granite-community/granite-cli-e2e-ollama:0.40.0
+tests/e2e/images.sh pull ollama         # from the mirror, else from Docker Hub
+docker compose -f tests/e2e/docker-compose.providers.yml up -d --wait ollama
+```
+
+`images.sh pull` pulls the mirror image and tags it with the name compose
+uses (`ollama/ollama:0.40.0`, or `e2e-SERVICE` for a built image), so
+`docker compose up` neither pulls nor builds it. When the mirror does not
+have the image, or `E2E_IMAGE_MIRROR` is unset, it pulls the image from its
+own registry or builds it, as compose would.
+
+Who writes the mirror:
+
+- The `E2E images` workflow (`.github/workflows/e2e-images.yml`) runs
+  `images.sh push` for the services in its `SERVICES` list: on `main` when
+  the compose file, `tests/e2e/docker/`, `images.sh` or the workflow
+  changes, every Monday, and on demand. It copies a registry image with all
+  its platforms, overwriting the tag so that a moving upstream tag is
+  refreshed, and builds a `build:` image only when its tag is missing.
+- Pull requests only read the mirror. In a pull request that changes an
+  image, for example a new `OLLAMA_VERSION` default or a change under
+  `tests/e2e/docker/`, that image's mirror tag does not exist yet, so the
+  `e2e-local` job pulls it from its registry or builds it, and runs the
+  local tests against it; the other images still come from the mirror. The
+  job summary lists each image as "from the mirror" or "new or changed".
+  The `E2E images` workflow mirrors the image after the merge.
+- The `e2e-local` job reads `ghcr.io/<repository owner>`, or the
+  `E2E_IMAGE_MIRROR` repository variable when it is set; the `E2E images`
+  workflow writes the same place.
+
+Setting up the mirror in a repository (once, by an owner):
+
+1. Run the `E2E images` workflow (Actions → E2E images → Run workflow).
+   Its `GITHUB_TOKEN` creates the `granite-cli-e2e-*` packages and links
+   them to the repository. In an organisation, the "Package creation"
+   settings must allow members to create public packages, or the workflow
+   cannot create them.
+2. In each package's settings, make the package public, so that pull
+   requests from forks and local runs can pull it without logging in. A
+   private package also works for runs in the repository itself, which log
+   in with `packages: read`. Private packages count towards the account's
+   GitHub Packages storage; public ones do not.
+3. Until the packages exist, the `e2e-local` job pulls from Docker Hub as
+   before; it prints `... is not available; falling back` for each image.
 
 ## Writing a hermetic test
 
