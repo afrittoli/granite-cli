@@ -147,6 +147,37 @@ enum InstallKind {
     Provider,
 }
 
+impl InstallKind {
+    /// The types of this kind that granite-cli can offer to install, sorted
+    /// by id, as (id, name, install info): every launcher type, and the
+    /// local provider types.
+    fn types(self) -> Vec<(String, String, InstallInfo)> {
+        let mut types: Vec<(String, String, InstallInfo)> = match self {
+            InstallKind::Launcher => LAUNCHER_REGISTRY
+                .entries()
+                .into_iter()
+                .map(|(id, md)| (id.to_string(), md.name, md.install))
+                .collect(),
+            InstallKind::Provider => PROVIDER_REGISTRY
+                .entries()
+                .into_iter()
+                .filter(|(_, md)| md.provider_type == crate::providers::ProviderType::Local)
+                .map(|(id, md)| (id.to_string(), md.name, md.install))
+                .collect(),
+        };
+        types.sort_by(|a, b| a.0.cmp(&b.0));
+        types
+    }
+}
+
+/// [`InstallKind::types`] without the names.
+fn id_and_info(kind: InstallKind) -> Vec<(String, InstallInfo)> {
+    kind.types()
+        .into_iter()
+        .map(|(id, _, info)| (id, info))
+        .collect()
+}
+
 /// A type the user ticked in the install step, with the method to run.
 struct InstallChoice {
     id: String,
@@ -1847,15 +1878,10 @@ impl SetupCommands {
         });
         if !launcher_found && discovery.configured_launcher_ids.is_empty() {
             ui.info("No agent tools were found on this machine.");
-            let mut types: Vec<(String, crate::launchers::LauncherMetadata)> = LAUNCHER_REGISTRY
-                .entries()
+            let candidates = InstallKind::Launcher
+                .types()
                 .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
-            types.sort_by(|a, b| a.0.cmp(&b.0));
-            let candidates = types
-                .into_iter()
-                .map(|(id, md)| (id, md.name, md.install, InstallKind::Launcher))
+                .map(|(id, name, info)| (id, name, info, InstallKind::Launcher))
                 .collect();
             chosen.extend(Self::pick_installs(
                 ctx,
@@ -1876,16 +1902,10 @@ impl SetupCommands {
         });
         if !provider_found && discovery.configured_provider_ids.is_empty() {
             ui.info("No model server is answering on this machine.");
-            let mut types: Vec<(String, crate::providers::ProviderMetadata)> = PROVIDER_REGISTRY
-                .entries()
+            let candidates = InstallKind::Provider
+                .types()
                 .into_iter()
-                .filter(|(_, md)| md.provider_type == crate::providers::ProviderType::Local)
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
-            types.sort_by(|a, b| a.0.cmp(&b.0));
-            let candidates = types
-                .into_iter()
-                .map(|(id, md)| (id, md.name, md.install, InstallKind::Provider))
+                .map(|(id, name, info)| (id, name, info, InstallKind::Provider))
                 .collect();
             chosen.extend(Self::pick_installs(
                 ctx,
@@ -3110,8 +3130,9 @@ impl SetupCommands {
 
     /*-- Summary phase -------------------------------------------------------*/
 
-    /// Install each type named with `--install`, before discovery, with its
-    /// first applicable method that is not attended. A provider installed
+    /// Install each type named with `--install` that is not already
+    /// installed, before discovery, with its first applicable method. A
+    /// provider installed
     /// this way is not started: its run command is shown. Returns whether
     /// every named type was installed, and the launchers installed into a
     /// directory that is not on PATH, with where their binary is. An unknown
@@ -3212,13 +3233,11 @@ impl SetupCommands {
             )
         });
         if !launcher_found && discovery.configured_launcher_ids.is_empty() {
-            let mut types: Vec<(String, InstallInfo)> = LAUNCHER_REGISTRY
-                .entries()
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.install))
-                .collect();
-            types.sort_by(|a, b| a.0.cmp(&b.0));
-            Self::warn_kind(ctx, "No launcher found.", types);
+            Self::warn_kind(
+                ctx,
+                "No launcher found.",
+                id_and_info(InstallKind::Launcher),
+            );
         }
 
         let provider_found = discovery.recommendations.iter().any(|r| {
@@ -3231,14 +3250,11 @@ impl SetupCommands {
             )
         });
         if !provider_found && discovery.configured_provider_ids.is_empty() {
-            let mut types: Vec<(String, InstallInfo)> = PROVIDER_REGISTRY
-                .entries()
-                .into_iter()
-                .filter(|(_, md)| md.provider_type == crate::providers::ProviderType::Local)
-                .map(|(k, v)| (k.to_string(), v.install))
-                .collect();
-            types.sort_by(|a, b| a.0.cmp(&b.0));
-            Self::warn_kind(ctx, "No model server answering.", types);
+            Self::warn_kind(
+                ctx,
+                "No model server answering.",
+                id_and_info(InstallKind::Provider),
+            );
         }
     }
 
@@ -3322,20 +3338,7 @@ impl SetupCommands {
     /// install method that can run here; for providers, among
     /// local types only. Used for the summary's hint when a kind ends empty.
     fn installable_type(ctx: &crate::AppContext, kind: InstallKind) -> Option<String> {
-        let mut types: Vec<(String, InstallInfo)> = match kind {
-            InstallKind::Launcher => LAUNCHER_REGISTRY
-                .entries()
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.install))
-                .collect(),
-            InstallKind::Provider => PROVIDER_REGISTRY
-                .entries()
-                .into_iter()
-                .filter(|(_, md)| md.provider_type == crate::providers::ProviderType::Local)
-                .map(|(k, v)| (k.to_string(), v.install))
-                .collect(),
-        };
-        types.sort_by(|a, b| a.0.cmp(&b.0));
+        let types = id_and_info(kind);
         let env = ctx.install_env();
         types
             .into_iter()
@@ -3384,7 +3387,10 @@ impl SetupCommands {
         ui.info(&format!("Capabilities: {}", summary_list(selected_caps)));
 
         ui.info("\nRun `granite-cli launcher list` to see configured launchers.");
-        if let Some(first_launcher) = selected_launchers.iter().min() {
+        // A launch needs a provider; with none, the install hint above is
+        // the next step.
+        let has_provider = !selected_providers.is_empty() || !ctx.config().providers.is_empty();
+        if has_provider && let Some(first_launcher) = selected_launchers.iter().min() {
             ui.info(&format!(
                 "Run `granite-cli launch {first_launcher}` to launch with Granite overlay.",
             ));
@@ -3836,6 +3842,27 @@ mod tests {
         assert_eq!(
             ctx.config().get_launcher("claude").unwrap().config["command_path"],
             "/opt/claude/bin/claude"
+        );
+    }
+
+    #[test]
+    fn summary_suggests_a_launch_only_with_a_provider() {
+        let (ctx, _) = ctx_on(crate::utils::test_support::FakeInstallEnv::default());
+        let launchers = HashSet::from(["opencode".to_string()]);
+        SetupCommands::print_summary(
+            &ctx,
+            &HashSet::new(),
+            &launchers,
+            &HashSet::new(),
+            &HashSet::new(),
+            false,
+        );
+        assert!(
+            !capture_ui(&ctx)
+                .infos
+                .borrow()
+                .iter()
+                .any(|i| i.contains("granite-cli launch "))
         );
     }
 

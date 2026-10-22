@@ -1,7 +1,7 @@
 pub mod capabilities;
 pub mod hardware;
-// The install flow that runs commands arrives in spec 0028 sub-task 4.
-#[allow(dead_code)]
+// Unit tests use the fake install environment, never the real one.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) mod install;
 pub mod shell;
 pub mod subserver;
