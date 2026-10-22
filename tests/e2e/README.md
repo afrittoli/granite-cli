@@ -10,6 +10,7 @@ tests/e2e/
 ├── README.md                    this guide
 ├── lib.sh                       helpers for scripts and for manual sessions
 ├── run.sh                       runs the scripted tests and reports the result
+├── coverage.sh                  runs them against an instrumented build, writes LCOV
 ├── docker-compose.providers.yml Docker Compose config for AI model providers
 ├── manual-test-template.md      starting point for a feature's manual test guide
 ├── fixtures/                    configuration homes (GRANITE_CLI_HOME contents)
@@ -45,6 +46,26 @@ GCLI_BIN=path/to/granite-cli tests/e2e/run.sh   # test another binary
 numbered steps and one `ok` or `FAIL` line per check. `run.sh` shows a test's
 output only when it fails, unless `-v` is given. `KEEP=1` keeps the scratch
 directories so a failure can be inspected.
+
+### Coverage
+
+```bash
+tests/e2e/coverage.sh lcov-e2e.info                  # hermetic tests
+tests/e2e/coverage.sh lcov-e2e.info --local local/   # takes run.sh's arguments
+```
+
+`coverage.sh` builds `target/debug/granite-cli` with coverage
+instrumentation through `cargo llvm-cov show-env`, runs `run.sh` against it
+with the given arguments, and writes the line coverage of those runs as LCOV,
+also when a test fails. It needs `cargo-llvm-cov` and the
+`llvm-tools-preview` rustup component.
+
+In CI the `e2e` and `e2e-local` jobs run their tests this way and upload the
+LCOV files. The `coverage` job merges them with the unit test coverage
+(`scripts/lcov.sh merge`), applies the minimums to the combined result, and
+reports each suite and the combined coverage in the job summary and the pull
+request comment. Its `coverage` artifact holds every LCOV file and an HTML
+report of the combined line coverage.
 
 ## Hermetic and local tests
 
