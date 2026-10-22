@@ -248,7 +248,15 @@ impl Platform {
         }
     }
 
+    /// Whether `program` was found. A program `detect` did not look up is
+    /// a caller's mistake, such as assessing one type's methods with the
+    /// platform detected for another, and would read as "not found"; debug
+    /// builds, and so the tests, stop on it.
     fn has(&self, program: &str) -> bool {
+        debug_assert!(
+            self.found.contains_key(program),
+            "'{program}' was not looked up: detect the platform for the same install info"
+        );
         self.found.get(program).is_some_and(|p| p.is_some())
     }
 }
@@ -372,9 +380,20 @@ impl InstallEnv for RealInstallEnv {
     }
 
     /// A PATH lookup, the one `resolve_shell_command` makes for a launcher
-    /// whose `command_path` is unset.
+    /// whose `command_path` is unset, including its retry with `.exe` for
+    /// the Windows build under WSL, where `which` can find a Linux binary
+    /// that the Windows build cannot run.
     fn find(&self, program: &str) -> Option<PathBuf> {
-        which::which(program).ok()
+        let found = which::which(program).ok();
+        if cfg!(windows)
+            && found
+                .as_ref()
+                .is_some_and(|p| !p.to_string_lossy().to_lowercase().ends_with(".exe"))
+            && let Ok(exe) = which::which(format!("{program}.exe"))
+        {
+            return Some(exe);
+        }
+        found
     }
 
     fn find_in(&self, dir: &str, program: &str) -> Option<PathBuf> {
