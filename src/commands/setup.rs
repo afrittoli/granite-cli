@@ -3279,14 +3279,32 @@ impl SetupCommands {
                     .map(|m| (id.clone(), m.command))
             })
             .collect();
+        // The block goes to one stream, so that `2>/dev/null` or `| tee`
+        // does not separate the headline from its commands.
         let Some((first, _)) = installable.first() else {
-            ui.warn(&format!(
-                "{headline} Nothing can be installed here without input; \
+            let mut missing: Vec<String> = types
+                .iter()
+                .filter_map(|(_, info)| {
+                    crate::commands::shared::install::first_method(ctx, info)
+                        .err()
+                        .flatten()
+                })
+                .map(|reason| reason.to_string())
+                .collect();
+            missing.sort();
+            missing.dedup();
+            let why = if missing.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", missing.join(", "))
+            };
+            ui.info(&ui.warn_mark(&format!(
+                "⚠ {headline} Nothing can be installed here{why}; \
                  run `granite-cli setup` for instructions."
-            ));
+            )));
             return;
         };
-        ui.warn(&format!("{headline} To install one:"));
+        ui.info(&ui.warn_mark(&format!("⚠ {headline} To install one:")));
         let width = installable
             .iter()
             .map(|(id, _)| id.len())
@@ -3301,7 +3319,7 @@ impl SetupCommands {
     }
 
     /// The first type of `kind`, by id, that is not on PATH and has an
-    /// install method that can run here without input; for providers, among
+    /// install method that can run here; for providers, among
     /// local types only. Used for the summary's hint when a kind ends empty.
     fn installable_type(ctx: &crate::AppContext, kind: InstallKind) -> Option<String> {
         let mut types: Vec<(String, InstallInfo)> = match kind {
@@ -3914,6 +3932,20 @@ mod tests {
     // -- setup --auto: warnings and --install ------------------------------------
 
     #[test]
+    fn auto_names_the_missing_tools_when_nothing_can_be_installed() {
+        use crate::utils::install::Os;
+        use crate::utils::test_support::FakeInstallEnv;
+        let (ctx, _) = ctx_on(FakeInstallEnv::new(Os::Linux));
+
+        SetupCommands::warn_missing(&ctx, &empty_discovery());
+
+        let infos = capture_ui(&ctx).infos.borrow().join("\n");
+        assert!(infos.contains(
+            "⚠ No launcher found. Nothing can be installed here (curl not found, npm not found)"
+        ));
+    }
+
+    #[test]
     fn auto_warns_with_the_commands_for_each_empty_kind_and_runs_nothing() {
         use crate::utils::install::Os;
         use crate::utils::test_support::FakeInstallEnv;
@@ -3922,14 +3954,17 @@ mod tests {
         SetupCommands::warn_missing(&ctx, &empty_discovery());
 
         let ui = capture_ui(&ctx);
+        // Headline and commands go to the same stream.
+        assert!(ui.warns.borrow().is_empty());
         assert_eq!(
-            *ui.warns.borrow(),
+            *ui.warn_marks.borrow(),
             vec![
-                "No launcher found. To install one:",
-                "No model server answering. To install one:"
+                "⚠ No launcher found. To install one:",
+                "⚠ No model server answering. To install one:"
             ]
         );
         let infos = ui.infos.borrow().join("\n");
+        assert!(infos.contains("⚠ No launcher found. To install one:\n"));
         assert!(infos.contains("    opencode  npm install -g opencode-ai"));
         assert!(infos.contains("    ollama     brew install ollama"));
         assert!(
