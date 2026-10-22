@@ -1188,5 +1188,5 @@ without `--auto` rejected by the argument parser.
   discovery never meets)
 - `README.md` (setup flags), `install.sh` (`run_granite_setup`)
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
