@@ -78,7 +78,6 @@ pub(crate) fn install_fields(
 
 /// What happened when granite-cli offered or ran an install.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
 pub(crate) enum InstallOutcome {
     /// The command succeeded. `path` is where the program was found, when
     /// the type names one; `off_path` is true when it was found only in one
@@ -105,7 +104,6 @@ pub(crate) enum InstallOutcome {
 /// the chosen command runs attached exactly then, captured otherwise. When
 /// the UI is not interactive, nothing is offered and the manual instructions
 /// are shown. `name` is the type's display name.
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
 pub(crate) async fn offer_install(
     ctx: &crate::AppContext,
     name: &str,
@@ -153,7 +151,7 @@ pub(crate) async fn offer_install(
 
 /// Install a type with its first method that can run here without input,
 /// asking nothing. Used by `setup --auto --install`. The output is captured.
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
+#[allow(dead_code)] // called from spec 0028 sub-task 8
 pub(crate) async fn install_unattended(
     ctx: &crate::AppContext,
     name: &str,
@@ -176,7 +174,7 @@ pub(crate) async fn install_unattended(
 /// does not start the server.
 ///
 /// When the UI is not interactive, only the instructions are shown.
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
+#[allow(dead_code)] // called from spec 0028 sub-task 6
 pub(crate) async fn wait_for_provider(
     ctx: &crate::AppContext,
     name: &str,
@@ -215,7 +213,7 @@ pub(crate) async fn wait_for_provider(
 
 /// Print how to start a provider's server: the run command and the start
 /// notes for this operating system. granite-cli runs neither.
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
+#[allow(dead_code)] // called from spec 0028 sub-task 6
 pub(crate) fn show_start_instructions(
     ui: &dyn Ui,
     env: &dyn InstallEnv,
@@ -240,7 +238,6 @@ pub(crate) fn show_start_instructions(
 /// Print how to install a type by hand: every method for this operating
 /// system with what it needs, then the page and the note. This is the one
 /// format manual instructions take everywhere.
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
 pub(crate) fn show_manual_instructions(
     ui: &dyn Ui,
     env: &dyn InstallEnv,
@@ -273,16 +270,14 @@ pub(crate) fn show_manual_instructions(
 
 /*-- private --*/
 
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
 const DONT_INSTALL: &str = "Don't install (show manual instructions)";
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
+#[allow(dead_code)] // called from spec 0028 sub-task 6
 const CHECK_AGAIN: &str = "Check again";
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
+#[allow(dead_code)] // called from spec 0028 sub-task 6
 const CONTINUE_WITHOUT: &str = "Continue without it";
 
 /// Run `method`, report the result, and look for the program afterwards:
 /// on PATH first, then in the method's directories.
-#[allow(dead_code)] // called from spec 0028 sub-tasks 5 to 8
 async fn run_method(
     ui: &dyn Ui,
     env: &dyn InstallEnv,

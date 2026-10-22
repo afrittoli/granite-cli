@@ -408,6 +408,8 @@ impl InstallEnv for RealInstallEnv {
         crate::config::Config::is_wsl()
     }
 
+    /// A PATH lookup, the one `resolve_shell_command` makes for a launcher
+    /// whose `command_path` is unset.
     fn find(&self, program: &str) -> Option<PathBuf> {
         which::which(program).ok()
     }
