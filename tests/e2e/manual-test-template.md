@@ -20,10 +20,13 @@ feature depends on discovery or hardware.>
 ## How to run this plan
 
 <!--
-Every step that needs no person goes in a script under tests/e2e/hermetic/
-(or tests/e2e/local/ when it needs a server, hardware or a launcher), added
-in this branch. The script is what a reviewer runs first; the manual steps
-are what is left.
+A step that needs no person is either Automated or Scripted. It is
+Automated, a test under tests/e2e/hermetic/ (or tests/e2e/local/ when it
+needs a server, hardware or a launcher) added in this branch, when it meets
+"Which kind of test to write" in AGENTS.md; that test keeps running after
+the branch merges. Otherwise it is Scripted: its commands and the output
+observed on this guide's commit stay in the guide only. The tests are what
+a reviewer runs first; the Scripted and Manual steps are what is left.
 -->
 
 Run every automated step:
@@ -39,13 +42,15 @@ script that fails.
 |---|---|---|---|
 | 1 | <behaviour> | Automated | Passed in the automated run (<date>) |
 | 2 | <behaviour> | Automated, needs <Ollama on `localhost:11434`> | Not run: <reason> |
-| 3 | <behaviour> | Manual: needs a terminal | Run through a scripted pseudo-terminal, not typed by hand |
-| 4 | <behaviour> | Manual: needs a person to judge <the layout at 80 columns> | Failed: <reason, see Findings> |
+| 3 | <behaviour> | Scripted: guide only, <repeats unit tests of ...> | Observed on `<short sha>` (<date>) |
+| 4 | <behaviour> | Manual: needs a terminal | Run through a scripted pseudo-terminal, not typed by hand |
+| 5 | <behaviour> | Manual: needs a person to judge <the layout at 80 columns> | Failed: <reason, see Findings> |
 
-Manual steps to run:
+Scripted and manual steps to run:
 
 - [ ] Step 3: <one line>
 - [ ] Step 4: <one line>
+- [ ] Step 5: <one line>
 
 ## 1. What an end user can see
 
@@ -114,7 +119,7 @@ Expected:
 <What to look for in the output, and what differs with the default terminal
 output (colours, wrapping).>
 
-### Step 2 [Automated]: <a batch of error cases>
+### Step 2 [Scripted]: <a batch of error cases>
 
 `try` prints each command, runs it with `-o plain </dev/null` and prints the
 exit status:
