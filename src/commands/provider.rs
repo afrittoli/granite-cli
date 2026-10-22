@@ -282,6 +282,7 @@ impl ProviderCommands {
 
         let config = prompt_from_schema(&*ctx.ui, &schema, &defaults)?;
 
+        let saved = config.clone();
         let provider_config = crate::config::ProviderConfig {
             provider_id: instance_id.clone(),
             provider_type: provider_type.to_string(),
@@ -292,15 +293,26 @@ impl ProviderCommands {
             .insert_provider(&instance_id, provider_config)
             .map_err(|e| anyhow::anyhow!("failed to save provider config: {e}"))?;
 
-        // Health check
+        // Health check, through the install environment so that what
+        // follows a failure can be tested without a server.
         ctx.ui.info("\nRunning health check...");
-        match Self::check_provider_health(ctx, &instance_id).await {
+        match ctx
+            .install_env()
+            .check_provider(provider_type, &saved)
+            .await
+        {
+            Ok(status) if status.healthy => {
+                ctx.ui
+                    .info(&format!("Provider '{instance_id}' is healthy!"));
+            }
             Ok(status) => {
-                if status.healthy {
+                ctx.ui.warn(&format!(
+                    "Provider '{instance_id}' health check failed: {}",
+                    status.error.unwrap_or_else(|| "no answer".to_string())
+                ));
+                if after_failed_health_check(ctx, provider_type, &provider_def, &saved).await? {
                     ctx.ui
                         .info(&format!("Provider '{instance_id}' is healthy!"));
-                } else {
-                    ctx.ui.warn(&format!("Provider '{instance_id}' health check failed. It may need to be started or configured differently."));
                 }
             }
             Err(e) => {
@@ -415,6 +427,84 @@ impl ProviderCommands {
         let status = provider.health_check().await?;
 
         Ok(status)
+    }
+}
+
+/*-- private --*/
+
+/// What `provider setup` does after a failed health check, following
+/// decision 5 of spec 0028. Returns whether the provider ended healthy.
+///
+/// A hosted type gets its note. A local type at a localhost or loopback
+/// endpoint is looked up on PATH: when its program is missing, the user is
+/// told the server may simply not be running and is offered the install;
+/// when it is present, where it is. Either way, granite-cli then shows how to
+/// start the server and offers to check again. A local type at any other
+/// endpoint gets the warning `provider setup` has always given.
+async fn after_failed_health_check(
+    ctx: &crate::AppContext,
+    provider_type: &str,
+    md: &crate::providers::ProviderMetadata,
+    config: &serde_json::Value,
+) -> Result<bool> {
+    let info = &md.install;
+    if md.provider_type == crate::providers::ProviderType::Hosted {
+        match &info.note {
+            Some(note) => ctx.ui.info(&format!("  {note}")),
+            None => ctx.ui.warn(NOT_ANSWERING),
+        }
+        return Ok(false);
+    }
+
+    let endpoint = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&md.default_endpoint)
+        .to_string();
+    let (Some(program), true) = (&info.program, is_local_endpoint(&endpoint)) else {
+        ctx.ui.warn(NOT_ANSWERING);
+        return Ok(false);
+    };
+
+    let env = ctx.install_env();
+    match env.find(program) {
+        Some(path) => ctx.ui.info(&format!(
+            "  '{program}' was found at {}. Nothing is answering at {endpoint}.",
+            path.display()
+        )),
+        None => {
+            ctx.ui.info(&format!(
+                "  '{program}' was not found on PATH. If {} is installed elsewhere, \
+                 it may simply not be running.",
+                md.name
+            ));
+            crate::commands::shared::install::offer_install(ctx, &md.name, info).await?;
+        }
+    }
+    crate::commands::shared::install::wait_for_provider(
+        ctx,
+        &md.name,
+        provider_type,
+        config,
+        &endpoint,
+        info,
+    )
+    .await
+}
+
+const NOT_ANSWERING: &str = "It may need to be started or configured differently.";
+
+/// Whether `endpoint`'s host is `localhost`, a loopback address, or the
+/// unspecified address (`0.0.0.0`, `::`), which a client reaches locally.
+fn is_local_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    match url.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        None => false,
     }
 }
 
@@ -804,6 +894,187 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -- setup after a failed health check -------------------------------------
+
+    fn capture(ctx: &crate::AppContext) -> &CaptureUi {
+        (&*ctx.ui as &dyn std::any::Any)
+            .downcast_ref::<CaptureUi>()
+            .expect("test contexts are built with a CaptureUi")
+    }
+
+    fn texts(ui: &CaptureUi) -> String {
+        let mut lines = ui.infos.borrow().clone();
+        lines.extend(ui.warns.borrow().iter().cloned());
+        lines.join("\n")
+    }
+
+    #[tokio::test]
+    async fn setup_offers_the_install_then_shows_how_to_start_when_the_program_is_missing() {
+        use crate::utils::install::{Os, RunMode};
+        use crate::utils::test_support::{FakeInstallEnv, FakeRun};
+        let _home = crate::config::TestConfigHome::new();
+        let env = Arc::new(
+            FakeInstallEnv::new(Os::Mac)
+                .with_programs(&["brew"])
+                .with_run(
+                    "brew install ollama",
+                    FakeRun::ok(&["==> Pouring ollama"])
+                        .installs("ollama", "/opt/homebrew/bin/ollama"),
+                ),
+        );
+        let mut ctx = test_ctx();
+        ctx.set_install_env(env.clone());
+        // Install with brew, then "Continue without it".
+        capture(&ctx).select_answers.borrow_mut().extend([0, 1]);
+
+        ProviderCommands::setup(&mut ctx, "ollama", Some("ollama"), false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            env.runs(),
+            vec![("brew install ollama".to_string(), RunMode::Captured)]
+        );
+        let ui = capture(&ctx);
+        let text = texts(ui);
+        assert!(text.contains(
+            "'ollama' was not found on PATH. If Ollama is installed elsewhere, it may simply not be running."
+        ));
+        assert!(text.contains("granite-cli does not start Ollama. Start it in another terminal:"));
+        assert!(text.contains("    ollama serve"));
+        assert!(text.contains("brew services start ollama"));
+        let prompts: Vec<String> = ui
+            .select_prompts
+            .borrow()
+            .iter()
+            .map(|p| p.0.clone())
+            .collect();
+        assert_eq!(
+            prompts,
+            vec![
+                "Install Ollama now?",
+                "Ollama is not answering at http://localhost:11434."
+            ]
+        );
+        // "Continue without it" leaves the provider configured.
+        assert!(ctx.config().get_provider("ollama").is_some());
+        assert!(!text.contains("is healthy"));
+    }
+
+    #[tokio::test]
+    async fn setup_shows_how_to_start_when_the_program_is_present() {
+        use crate::utils::install::Os;
+        use crate::utils::test_support::FakeInstallEnv;
+        let _home = crate::config::TestConfigHome::new();
+        let env = Arc::new(
+            FakeInstallEnv::new(Os::Linux)
+                .with_programs(&["ollama", "curl"])
+                .with_health(&[false, true]),
+        );
+        let mut ctx = test_ctx();
+        ctx.set_install_env(env.clone());
+        capture(&ctx).select_answers.borrow_mut().push_back(0); // Check again
+
+        ProviderCommands::setup(&mut ctx, "ollama", Some("ollama"), false)
+            .await
+            .unwrap();
+
+        assert!(env.runs().is_empty());
+        let ui = capture(&ctx);
+        assert_eq!(ui.select_prompts.borrow().len(), 1);
+        let text = texts(ui);
+        assert!(text.contains(
+            "'ollama' was found at /usr/bin/ollama. Nothing is answering at http://localhost:11434."
+        ));
+        assert!(text.contains("sudo systemctl start ollama"));
+        assert!(text.contains("Provider 'ollama' is healthy!"));
+        assert_eq!(env.health_checks(), vec!["ollama", "ollama"]);
+    }
+
+    #[tokio::test]
+    async fn setup_offers_neither_for_a_provider_on_another_host() {
+        use crate::utils::install::Os;
+        use crate::utils::test_support::FakeInstallEnv;
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = test_ctx();
+        ctx.set_install_env(Arc::new(
+            FakeInstallEnv::new(Os::Mac).with_programs(&["brew"]),
+        ));
+        capture(&ctx)
+            .text_answers
+            .borrow_mut()
+            .push_back("http://gpu-box:11434".to_string());
+
+        ProviderCommands::setup(&mut ctx, "ollama", Some("ollama"), false)
+            .await
+            .unwrap();
+
+        let ui = capture(&ctx);
+        assert!(ui.select_prompts.borrow().is_empty());
+        assert!(
+            ui.warns
+                .borrow()
+                .iter()
+                .any(|w| w == "It may need to be started or configured differently.")
+        );
+        assert_eq!(
+            ctx.config().get_provider("ollama").unwrap().config["base_url"],
+            "http://gpu-box:11434"
+        );
+    }
+
+    #[tokio::test]
+    async fn setup_of_a_hosted_type_shows_its_note() {
+        let _home = crate::config::TestConfigHome::new();
+        let mut ctx = test_ctx();
+
+        ProviderCommands::setup(&mut ctx, "openrouter", Some("openrouter"), false)
+            .await
+            .unwrap();
+
+        let ui = capture(&ctx);
+        assert!(ui.select_prompts.borrow().is_empty());
+        assert!(
+            ui.infos
+                .borrow()
+                .iter()
+                .any(|i| i.contains("OpenRouter is a hosted service."))
+        );
+        assert!(!ui.warns.borrow().iter().any(|w| w == NOT_ANSWERING));
+    }
+
+    #[tokio::test]
+    async fn setup_shows_how_to_start_after_a_declined_install() {
+        use crate::utils::install::Os;
+        use crate::utils::test_support::FakeInstallEnv;
+        let _home = crate::config::TestConfigHome::new();
+        let env = Arc::new(FakeInstallEnv::new(Os::Mac).with_programs(&["brew"]));
+        let mut ctx = test_ctx();
+        ctx.set_install_env(env.clone());
+        // Don't install, then the wait prompt's default.
+        capture(&ctx).select_answers.borrow_mut().push_back(1);
+
+        ProviderCommands::setup(&mut ctx, "ollama", Some("ollama"), false)
+            .await
+            .unwrap();
+
+        assert!(env.runs().is_empty());
+        let ui = capture(&ctx);
+        assert!(texts(ui).contains("granite-cli does not start Ollama."));
+        assert_eq!(ui.select_prompts.borrow().len(), 2);
+    }
+
+    #[test]
+    fn local_endpoints_are_localhost_and_loopback() {
+        assert!(is_local_endpoint("http://localhost:11434"));
+        assert!(is_local_endpoint("http://127.0.0.1:8080/v1"));
+        assert!(is_local_endpoint("http://[::1]:1234"));
+        assert!(is_local_endpoint("http://0.0.0.0:8080"));
+        assert!(!is_local_endpoint("http://gpu-box:11434"));
+        assert!(!is_local_endpoint("https://openrouter.ai/api"));
+        assert!(!is_local_endpoint("not a url"));
     }
 
     // -- setup -----------------------------------------------------------------
