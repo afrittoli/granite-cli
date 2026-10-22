@@ -68,7 +68,7 @@ showing the command it would run.
 | Flag | Purpose |
 |---|---|
 | `--auto` | Configure everything found, without asking. Installs nothing unless `--install` is given |
-| `--install <type>` | With `--auto`: install this launcher or provider type first, without asking. Repeatable, e.g. `--install ollama --install opencode`. A provider is installed but not started |
+| `--install <type>` | With `--auto`: install this launcher or provider type first, without asking. Repeatable, e.g. `--install ollama --install opencode`. A type already on PATH or configured is not installed again. A provider is installed but not started |
 | `--pull` | Pull model weights at the end without asking |
 | `--skip-pull` | Skip pulling model weights |
 

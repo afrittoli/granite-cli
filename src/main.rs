@@ -179,7 +179,7 @@ enum Commands {
         /// Install a launcher or provider type before configuring, without
         /// asking. Repeatable. Requires --auto. A provider is installed but
         /// not started.
-        #[arg(long = "install", value_name = "TYPE", requires = "auto")]
+        #[arg(long = "install", value_name = "TYPE", requires = "auto", value_parser = install_types())]
         install: Vec<String>,
     },
 
@@ -496,6 +496,29 @@ fn output_formats() -> clap::builder::PossibleValuesParser {
     output_format_names()
         .into_iter()
         .map(|name| clap::builder::PossibleValue::new(name).help(entries[name].description.clone()))
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// Value parser for `setup --install`: every launcher and provider type,
+/// with its name as help text. A name that is not a type is rejected before
+/// anything runs, and shells can complete the names.
+fn install_types() -> clap::builder::PossibleValuesParser {
+    let mut types: Vec<(&'static str, String)> = crate::launchers::LAUNCHER_REGISTRY
+        .entries()
+        .into_iter()
+        .map(|(id, md)| (id, md.name))
+        .chain(
+            crate::providers::PROVIDER_REGISTRY
+                .entries()
+                .into_iter()
+                .map(|(id, md)| (id, md.name)),
+        )
+        .collect();
+    types.sort();
+    types
+        .into_iter()
+        .map(|(id, name)| clap::builder::PossibleValue::new(id).help(name))
         .collect::<Vec<_>>()
         .into()
 }
@@ -1415,6 +1438,13 @@ mod completions_tests {
             panic!("expected setup command");
         };
         assert_eq!(install, vec!["ollama", "opencode"]);
+    }
+
+    #[test]
+    fn setup_install_rejects_a_name_that_is_not_a_type() {
+        let err = Cli::try_parse_from(["granite-cli", "setup", "--auto", "--install", "olama"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
     }
 
     #[test]

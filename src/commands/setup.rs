@@ -3073,6 +3073,10 @@ impl SetupCommands {
                 all = false;
                 continue;
             };
+            if let Some(found) = Self::already_installed(ctx, name, &info, is_provider) {
+                ui.info(&ui.ok(&format!("✓ {display} is already installed: {found}.")));
+                continue;
+            }
             ui.info(&format!("Installing {name}:"));
             let outcome =
                 crate::commands::shared::install::install_unattended(ctx, &display, &info).await?;
@@ -3097,6 +3101,38 @@ impl SetupCommands {
             ui.info("");
         }
         Ok((all, launcher_paths))
+    }
+
+    /// Where a type named with `--install` already is, if it is: configured
+    /// as an instance, or with its program on PATH. Installing it again would
+    /// download it again, and could fail on a registry that is down although
+    /// the tool is there.
+    fn already_installed(
+        ctx: &crate::AppContext,
+        type_id: &str,
+        info: &InstallInfo,
+        is_provider: bool,
+    ) -> Option<String> {
+        let config = ctx.config();
+        let configured = if is_provider {
+            config
+                .providers
+                .iter()
+                .find(|(_, p)| p.provider_type == type_id)
+                .map(|(id, _)| id.clone())
+        } else {
+            config
+                .launchers
+                .iter()
+                .find(|(_, l)| l.launcher_type == type_id)
+                .map(|(id, _)| id.clone())
+        };
+        if let Some(id) = configured {
+            return Some(format!("configured as '{id}'"));
+        }
+        let program = info.program.as_ref()?;
+        let path = ctx.install_env().find(program)?;
+        Some(path.display().to_string())
     }
 
     /// Warn, for launchers and then for local providers, when discovery found
@@ -3852,6 +3888,27 @@ mod tests {
             "granite-cli does not start Ollama. Start it with `ollama serve`, then run setup again."
         ));
         assert!(capture_ui(&ctx).select_prompts.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn auto_install_skips_a_type_whose_program_is_on_path() {
+        use crate::utils::install::Os;
+        use crate::utils::test_support::FakeInstallEnv;
+        let (ctx, env) = ctx_on(FakeInstallEnv::new(Os::Linux).with_programs(&["npm", "opencode"]));
+
+        let (ok, _) = SetupCommands::auto_install(&ctx, &["opencode".to_string()])
+            .await
+            .unwrap();
+
+        assert!(ok);
+        assert!(env.runs().is_empty());
+        let ui = capture_ui(&ctx);
+        assert!(
+            ui.infos
+                .borrow()
+                .iter()
+                .any(|i| i.contains("is already installed: /usr/bin/opencode"))
+        );
     }
 
     #[tokio::test]
