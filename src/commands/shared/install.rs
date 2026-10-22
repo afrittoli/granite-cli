@@ -94,8 +94,10 @@ pub(crate) enum InstallOutcome {
 /// Offer to install a type whose program is missing.
 ///
 /// Lists the methods that can run here, each as its full command, and a line
-/// that installs nothing; choosing a command is the consent to run it. A
-/// method that may ask for input is marked. When the UI is not interactive,
+/// that installs nothing; choosing a command is the consent to run it. The
+/// line that installs nothing is the default, so pressing Enter runs
+/// nothing, and a prompt the user cancels counts as declining. A method
+/// that may ask for input is marked. When the UI is not interactive,
 /// or cannot lend the terminal to the installer, as in the TUI, nothing is
 /// offered and the manual instructions are shown. `name` is the type's
 /// display name.
@@ -129,8 +131,10 @@ pub(crate) async fn offer_install(
         })
         .collect();
     items.push(DONT_INSTALL.to_string());
-    let choice = ui.select(&format!("Install {name} now?"), &items, 0)?;
-    let Some(method) = methods.get(choice) else {
+    let choice = ui
+        .select(&format!("Install {name} now?"), &items, items.len() - 1)
+        .ok();
+    let Some(method) = choice.and_then(|c| methods.get(c)) else {
         show_manual_instructions(ui, &*env, name, info);
         return Ok(InstallOutcome::Declined);
     };
@@ -200,8 +204,8 @@ pub(crate) enum ServerProgram<'a> {
 /// of `provider_type` with `config` through the install environment on each
 /// "Check again". Returns whether the provider ended healthy. granite-cli
 /// runs nothing else: it does not start the server. "Continue without it" is
-/// the default, so pressing Enter, or a caller that answers every prompt
-/// with its default, ends the loop.
+/// the default, so pressing Enter, cancelling the prompt, or a caller that
+/// answers every prompt with its default, ends the loop.
 ///
 /// When the UI is not interactive, only the message and instructions are
 /// shown.
@@ -223,7 +227,7 @@ pub(crate) async fn wait_for_provider(
 
     let items = vec![CHECK_AGAIN.to_string(), CONTINUE_WITHOUT.to_string()];
     loop {
-        if ui.select(WOULD_YOU_LIKE_TO, &items, 1)? != 0 {
+        if ui.select(WOULD_YOU_LIKE_TO, &items, 1).ok() != Some(0) {
             return Ok(false);
         }
         match env.check_provider(provider_type, config).await {
@@ -580,6 +584,21 @@ mod tests {
         );
         assert!(all_text(&ui).contains("To install Tool yourself:"));
         assert!(all_text(&ui).contains("See https://example.com/tool"));
+    }
+
+    #[tokio::test]
+    async fn pressing_enter_installs_nothing() {
+        let (ctx, env, ui) = flow_ctx(
+            FakeInstallEnv::new(Os::Linux).with_programs(&["npm", "curl"]),
+            CaptureUi::default(),
+        );
+
+        let outcome = offer_install(&ctx, "Tool", &tool_info()).await.unwrap();
+
+        assert_eq!(outcome, InstallOutcome::Declined);
+        assert!(env.runs().is_empty());
+        let (_, items, default) = &ui.select_prompts.borrow()[0];
+        assert_eq!(items[*default], DONT_INSTALL);
     }
 
     #[tokio::test]
