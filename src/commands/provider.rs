@@ -437,7 +437,7 @@ impl ProviderCommands {
 ///
 /// A hosted type gets its note. A local type at a localhost or loopback
 /// endpoint is looked up on PATH: when its program is missing, the user is
-/// told the server may simply not be running and is offered the install;
+/// told it may be installed elsewhere and is offered the install;
 /// when it is present, granite-cli says where it found it. Either way,
 /// granite-cli then says the server is not answering, shows how to start it
 /// and offers to check again. A local type at any other
@@ -473,8 +473,7 @@ async fn after_failed_health_check(
         Some(_) => false,
         None => {
             ctx.ui.info(&format!(
-                "  '{program}' was not found on PATH. If {} is installed elsewhere, \
-                 it may simply not be running.",
+                "  '{program}' was not found on PATH. {} may be installed elsewhere.",
                 md.name
             ));
             matches!(
@@ -969,9 +968,9 @@ mod tests {
         assert_eq!(env.runs(), vec!["brew install ollama".to_string()]);
         let ui = capture(&ctx);
         let text = texts(ui);
-        assert!(text.contains(
-            "'ollama' was not found on PATH. If Ollama is installed elsewhere, it may simply not be running."
-        ));
+        assert!(
+            text.contains("'ollama' was not found on PATH. Ollama may be installed elsewhere.")
+        );
         assert!(text.contains("Ollama is installed but not answering at http://localhost:11434."));
         assert!(text.contains("  You can start it in another terminal with:"));
         assert!(text.contains("      ollama serve"));
@@ -982,7 +981,7 @@ mod tests {
             .iter()
             .map(|p| p.0.clone())
             .collect();
-        assert_eq!(prompts, vec!["Install Ollama now?", "Would you like to:"]);
+        assert_eq!(prompts, vec!["Install Ollama now?", "Would you like to"]);
         // "Continue without it" leaves the provider configured.
         assert!(ctx.config().get_provider("ollama").is_some());
         assert!(!text.contains("is healthy"));

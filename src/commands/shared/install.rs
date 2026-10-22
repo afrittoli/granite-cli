@@ -220,6 +220,14 @@ pub(crate) async fn wait_for_provider(
 ) -> anyhow::Result<bool> {
     let env = ctx.install_env();
     let ui = &*ctx.ui;
+    // An install can start the server, as Ollama's Linux script does with
+    // its service, so check before saying it is not answering.
+    if matches!(program, ServerProgram::Installed)
+        && matches!(env.check_provider(provider_type, config).await, Ok(s) if s.healthy)
+    {
+        ui.info(&ui.ok(&format!("✓ {name} is answering at {endpoint}.")));
+        return Ok(true);
+    }
     show_not_answering(ui, &*env, name, program, endpoint, info);
     if !ui.is_interactive() {
         return Ok(false);
@@ -278,7 +286,8 @@ pub(crate) fn show_not_answering(
 }
 
 /// The question asked after [`show_not_answering`].
-pub(crate) const WOULD_YOU_LIKE_TO: &str = "Would you like to:";
+/// dialoguer's default theme adds the colon.
+pub(crate) const WOULD_YOU_LIKE_TO: &str = "Would you like to";
 
 /// Print how to install a type by hand: every method for this operating
 /// system with what it needs, then the page and the note. This is the one
@@ -333,14 +342,14 @@ async fn run_method(
     let outcome = match env.run(&method.command).await {
         Ok(outcome) => outcome,
         Err(e) => {
-            ui.error(&ui.error_mark(&format!("✗ Could not run the install command: {e}")));
+            ui.error(&ui.error_mark(&format!("Could not run the install command: {e}")));
             show_manual_instructions(ui, env, name, info);
             return Ok(InstallOutcome::Failed);
         }
     };
 
     if !outcome.success {
-        ui.error(&ui.error_mark(&format!("✗ Install failed ({}).", outcome.status)));
+        ui.error(&ui.error_mark(&format!("Install failed ({}).", outcome.status)));
         show_manual_instructions(ui, env, name, info);
         return Ok(InstallOutcome::Failed);
     }
@@ -380,7 +389,7 @@ async fn run_method(
     }
 
     ui.error(&ui.error_mark(&format!(
-        "✗ The install command finished, but '{program}' was not found."
+        "The install command finished, but '{program}' was not found."
     )));
     show_manual_instructions(ui, env, name, info);
     Ok(InstallOutcome::Failed)
@@ -680,10 +689,7 @@ mod tests {
         let outcome = offer_install(&ctx, "Tool", &tool_info()).await.unwrap();
 
         assert_eq!(outcome, InstallOutcome::Failed);
-        assert_eq!(
-            *ui.errors.borrow(),
-            vec!["✗ Install failed (exit status 1)."]
-        );
+        assert_eq!(*ui.errors.borrow(), vec!["Install failed (exit status 1)."]);
         assert!(all_text(&ui).contains("To install Tool yourself:"));
     }
 
@@ -825,6 +831,31 @@ mod tests {
             env.runs(),
             vec!["curl -fsSL https://sudo.sh | sh".to_string()]
         );
+        assert!(ui.select_prompts.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_server_answering_right_after_its_install_is_not_reported_as_not_answering() {
+        let (ctx, env, ui) = flow_ctx(
+            FakeInstallEnv::new(Os::Linux).with_health(&[true]),
+            CaptureUi::default(),
+        );
+
+        let healthy = wait_for_provider(
+            &ctx,
+            "Tool",
+            ServerProgram::Installed,
+            "tool",
+            &serde_json::json!({}),
+            "http://localhost:1",
+            &tool_info(),
+        )
+        .await
+        .unwrap();
+
+        assert!(healthy);
+        assert_eq!(env.health_checks(), vec!["tool"]);
+        assert!(ui.warns.borrow().is_empty());
         assert!(ui.select_prompts.borrow().is_empty());
     }
 
