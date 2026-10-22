@@ -928,7 +928,7 @@ processes, so no unit test runs it.
 - `src/context.rs` (`AppContext`, where commands reach the UI)
 - AGENTS.md: no unit test may depend on installed binaries or the network
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 
