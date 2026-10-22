@@ -155,6 +155,8 @@ impl ProviderCommands {
 
                 ctx.ui.detail("Type Metadata", &type_fields);
 
+                crate::commands::shared::install::show_install_detail(ctx, &md.install);
+
                 if let Some(cfg) = configured {
                     let mut instance_fields: Vec<(&str, String)> = Vec::new();
 
@@ -612,11 +614,12 @@ mod tests {
         assert!(result.is_ok());
 
         let details = details!(ctx);
-        assert_eq!(details.len(), 1);
+        assert_eq!(details.len(), 2);
         let (id, fields) = &details[0];
         assert_eq!(id, "Type Metadata");
         assert!(fields.iter().any(|(k, _)| *k == "Name"));
         assert!(!fields.iter().any(|(k, _)| k.starts_with("Config")));
+        assert_eq!(details[1].0, "Install");
     }
 
     #[test]
@@ -626,13 +629,13 @@ mod tests {
         assert!(result.is_ok());
 
         let details = details!(ctx);
-        assert_eq!(details.len(), 2);
+        assert_eq!(details.len(), 3);
 
         let (id1, fields1) = &details[0];
         assert_eq!(id1, "Type Metadata");
         assert!(fields1.iter().any(|(k, _)| *k == "Name"));
 
-        let (id2, fields2) = &details[1];
+        let (id2, fields2) = &details[2];
         assert_eq!(id2, "my-provider");
 
         assert!(
@@ -700,6 +703,103 @@ mod tests {
                 .iter()
                 .any(|(k, v)| *k == "Note" && v.contains("not found in the bundled registry"))
         );
+    }
+
+    fn ctx_on(env: crate::utils::test_support::FakeInstallEnv) -> crate::AppContext {
+        let mut ctx = test_ctx();
+        ctx.set_install_env(Arc::new(env));
+        ctx
+    }
+
+    fn install_detail(ctx: &crate::AppContext) -> Vec<(String, String)> {
+        details!(ctx)
+            .iter()
+            .find(|(title, _)| title == "Install")
+            .map(|(_, fields)| fields.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn info_shows_install_detail_on_a_mac_with_homebrew() {
+        use crate::utils::install::Os;
+        let ctx = ctx_on(
+            crate::utils::test_support::FakeInstallEnv::new(Os::Mac).with_programs(&["brew"]),
+        );
+        ProviderCommands::info(&ctx, "ollama").unwrap();
+
+        let fields = install_detail(&ctx);
+        let get = |key: &str| -> Vec<String> {
+            fields
+                .iter()
+                .filter(|(k, _)| k == key || k.starts_with(&format!("{key} ")))
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+        assert_eq!(get("Program"), vec!["ollama (not found on PATH)"]);
+        assert_eq!(
+            get("Install"),
+            vec![
+                "brew install ollama  [✓ runs on this machine]",
+                "curl -fsSL https://ollama.com/install.sh | sh  [curl not found]",
+            ]
+        );
+        assert_eq!(get("Run"), vec!["ollama serve"]);
+        assert_eq!(
+            get("Start"),
+            vec!["Homebrew can run it as a service: brew services start ollama"]
+        );
+        assert_eq!(get("Page"), vec!["https://ollama.com/download"]);
+    }
+
+    #[test]
+    fn info_shows_why_no_method_runs_on_a_mac_without_homebrew() {
+        use crate::utils::install::Os;
+        let ctx = ctx_on(
+            crate::utils::test_support::FakeInstallEnv::new(Os::Mac).with_programs(&["curl"]),
+        );
+        ProviderCommands::info(&ctx, "llama-cpp").unwrap();
+
+        let fields = install_detail(&ctx);
+        assert!(fields.contains(&(
+            "Install".to_string(),
+            "brew install llama.cpp  [Homebrew not found]".to_string()
+        )));
+        assert!(fields.contains(&("Run".to_string(), "llama-server".to_string())));
+    }
+
+    #[test]
+    fn every_provider_type_declares_a_page_or_a_note() {
+        for (id, md) in PROVIDER_REGISTRY.entries() {
+            assert!(
+                md.install.page.is_some() || md.install.note.is_some(),
+                "{id} declares neither a page nor a note"
+            );
+        }
+    }
+
+    #[test]
+    fn local_provider_types_declare_a_program_and_a_run_command() {
+        for (id, md) in PROVIDER_REGISTRY.entries() {
+            if md.provider_type == crate::providers::ProviderType::Local {
+                assert!(md.install.program.is_some(), "{id} declares no program");
+                assert!(
+                    md.install.run_command.is_some(),
+                    "{id} declares no run command"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hosted_provider_types_declare_no_methods() {
+        for (id, md) in PROVIDER_REGISTRY.entries() {
+            if md.provider_type == crate::providers::ProviderType::Hosted {
+                assert!(
+                    md.install.methods.is_empty(),
+                    "{id} declares install methods"
+                );
+            }
+        }
     }
 
     // -- setup -----------------------------------------------------------------
