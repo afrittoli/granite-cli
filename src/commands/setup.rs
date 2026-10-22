@@ -1928,10 +1928,21 @@ impl SetupCommands {
         use crate::commands::shared::install::{
             ServerProgram, WOULD_YOU_LIKE_TO, show_not_answering,
         };
-        let mut installed: Vec<String> = step.providers.iter().cloned().collect();
-        installed.sort();
+        let env = ctx.install_env();
+        let mut installed: Vec<String> = Vec::new();
+        let mut just_installed: Vec<&String> = step.providers.iter().collect();
+        just_installed.sort();
+        for id in just_installed {
+            // An install can start the server, as Ollama's Linux script does
+            // with its service.
+            let config = PROVIDER_REGISTRY
+                .default_config(id)
+                .unwrap_or_else(|| serde_json::json!({}));
+            if !matches!(env.check_provider(id, &config).await, Ok(s) if s.healthy) {
+                installed.push(id.clone());
+            }
+        }
         if !installed.is_empty() || !not_running.is_empty() {
-            let env = ctx.install_env();
             let waiting = installed
                 .iter()
                 .map(|id| (id, true))
@@ -3592,7 +3603,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_step_lists_a_provider_on_path_as_not_running() {
+    async fn install_step_lists_a_provider_on_path_as_not_answering() {
         use crate::utils::install::Os;
         use crate::utils::test_support::FakeInstallEnv;
         let (ctx, env) =
@@ -3624,7 +3635,7 @@ mod tests {
                     && w.contains(" but is not answering at "))
         );
         assert!(infos.contains("      llama-server"));
-        assert_eq!(ui.select_prompts.borrow()[0].0, "Would you like to:");
+        assert_eq!(ui.select_prompts.borrow()[0].0, "Would you like to");
         assert!(env.runs().is_empty());
     }
 
@@ -3667,7 +3678,7 @@ mod tests {
             ui.errors
                 .borrow()
                 .iter()
-                .any(|e| e.starts_with("✗ Install failed"))
+                .any(|e| e.starts_with("Install failed"))
         );
 
         // The next phase starts with the installed launcher ticked.
@@ -3717,7 +3728,7 @@ mod tests {
                 .iter()
                 .any(|w| w == "Ollama is installed but not answering at http://localhost:11434.")
         );
-        assert_eq!(ui.select_prompts.borrow()[0].0, "Would you like to:");
+        assert_eq!(ui.select_prompts.borrow()[0].0, "Would you like to");
     }
 
     #[tokio::test]
