@@ -37,7 +37,7 @@ pub(crate) fn install_fields(
     info: &InstallInfo,
     allow_attended: bool,
 ) -> Vec<(String, String)> {
-    let platform = Platform::detect(env);
+    let platform = Platform::detect(env, &[info]);
     let mut fields: Vec<(&'static str, String)> = Vec::new();
 
     if let Some(program) = &info.program {

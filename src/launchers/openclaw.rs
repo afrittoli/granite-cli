@@ -14,6 +14,7 @@ use crate::capabilities::{
 use crate::launchers::base::{EnvBinding, LaunchContext, Launcher, LauncherMetadata, run_command};
 use crate::launchers::shared::mcp_cli::mcp_binding_request;
 use crate::registry::{ConfigConstructable, ConstructError};
+use crate::utils::install::{InstallInfo, InstallMethod, MethodKind, Os};
 use crate::utils::resolve_shell_command;
 use crate::utils::ui::Ui;
 use anyhow::Context;
@@ -175,6 +176,7 @@ impl HasOpenClawLauncherMetadata for OpenClawLauncher {
             default_command: "openclaw".to_string(),
             supported_capabilities: HashSet::from([BindingType::AgentModel, BindingType::Mcp]),
             tags: vec!["openclaw".to_string(), "agent".to_string()],
+            install: install_info(),
         }
     }
 }
@@ -307,6 +309,26 @@ fn write_openclaw_config(path: &Path, config: &serde_json::Value) -> anyhow::Res
     let mut content = serde_json::to_string_pretty(config)?;
     content.push('\n');
     std::fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))
+}
+
+/// Install instructions for OpenClaw.
+///
+/// Source, checked 2026-10-17: the openclaw/openclaw README, which gives the
+/// npm command verbatim for npm 11.16 or later. Its install script starts
+/// onboarding, so only the npm package is offered here.
+fn install_info() -> InstallInfo {
+    InstallInfo::default()
+        .program("openclaw")
+        .page("https://docs.openclaw.ai/install")
+        .note(
+            "The npm command needs npm 11.16 or later. After installing, run \
+             `openclaw onboard` to set it up.",
+        )
+        .method(InstallMethod::new(
+            Os::ANY,
+            MethodKind::Npm,
+            "npm install -g openclaw@latest --allow-scripts=openclaw",
+        ))
 }
 
 /*-- tests --*/
