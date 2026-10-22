@@ -254,22 +254,40 @@ output. Start from `manual-test-template.md` and use `lib.sh` in the setup
 section; do not write new `fresh` and `fresh_home` helpers.
 
 Guides are for reviewers and are usually kept with the pull request, not in
-the repository. Every step that can run without a person is a test in
-`hermetic/` or `local/` in the same branch, so a reviewer runs it with
-`run.sh` and it keeps running after the branch is merged.
+the repository. A guide is first-hand experience of a feature on one commit,
+not a regression suite, so not every step that can run without a person
+becomes a test:
+
+- A step becomes a test in `hermetic/` or `local/`, in the same branch, when
+  it meets "Which kind of test to write" in `AGENTS.md`: it covers command
+  dispatch, files on disk, the environment, process lifecycle, or software
+  granite-cli does not control. A reviewer runs it with `run.sh`, and CI
+  keeps running it after the branch is merged.
+- Any other scriptable step, typically one that repeats what unit tests
+  already check, stays in the guide as a Scripted step: its commands and the
+  output observed on the guide's commit. Nobody maintains it after the
+  branch merges; it is a record of that commit.
+- Before the branch merges, go through the Scripted steps once. A step that
+  found a bug, or that reaches lines the unit tests miss in the coverage
+  job's per-suite figures, becomes a test.
+
+A test that nothing runs stops matching the CLI without anyone noticing, so
+there is no folder for tests that CI skips.
 
 A guide separates what a script runs from what a person runs:
 
 - The guide starts with "How to run this plan": the `run.sh` command for the
   branch's tests, a test map, and a checklist of the manual steps.
 - The test map has one row per step: what the step covers; its kind
-  (Automated; Automated, needs a server; Manual: needs a terminal; Manual:
-  needs a person to judge something named); and its status on a named
-  commit (Passed in the automated run, with the date; Run through a scripted
-  pseudo-terminal, not typed by hand; Not run, with the reason; Failed, with
-  the reason).
-- Step headings carry `[Automated]` or `[Manual: ...]`. Automated steps keep
-  their commands and expected output, for investigating a failure.
+  (Automated; Automated, needs a server; Scripted: guide only, with the
+  reason it is not a test; Manual: needs a terminal; Manual: needs a person
+  to judge something named); and its status on a named commit (Passed in
+  the automated run, with the date; Observed, with the date; Run through a
+  scripted pseudo-terminal, not typed by hand; Not run, with the reason;
+  Failed, with the reason).
+- Step headings carry `[Automated]`, `[Scripted]` or `[Manual: ...]`.
+  Automated and Scripted steps keep their commands and expected output; an
+  Automated step's are for investigating a failure of its test.
 
 Interactive and non-interactive runs:
 
