@@ -1152,7 +1152,7 @@ phase; and the summary hints for empty kinds.
 - `src/commands/setup.rs` tests `run_wizard_with_empty_config_shows_info` and
   `run_auto_with_no_recommendations_shows_info`, which run real discovery
 
-**Status** — `[ ]` not started
+**Status** — `[x]` done
 
 ---
 

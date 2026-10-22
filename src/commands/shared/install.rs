@@ -149,6 +149,41 @@ pub(crate) async fn offer_install(
     run_method(ui, &*env, name, info, method, mode).await
 }
 
+/// Run `method`, which the user has already chosen, attached to the
+/// terminal when the UI can lend it and captured otherwise.
+pub(crate) async fn install_with(
+    ctx: &crate::AppContext,
+    name: &str,
+    info: &InstallInfo,
+    method: &InstallMethod,
+) -> anyhow::Result<InstallOutcome> {
+    let mode = if ctx.ui.can_lend_terminal() {
+        RunMode::Attached
+    } else {
+        RunMode::Captured
+    };
+    run_method(&*ctx.ui, &*ctx.install_env(), name, info, method, mode).await
+}
+
+/// The first method of `info` that can run here, offering attended methods
+/// only when the UI can lend the terminal; or, when none can, the reason the
+/// first method for this operating system cannot.
+pub(crate) fn first_method(
+    ctx: &crate::AppContext,
+    info: &InstallInfo,
+) -> Result<InstallMethod, Option<Unavailable>> {
+    let env = ctx.install_env();
+    let platform = Platform::detect(&*env, &[info]);
+    let statuses = assess(info, &platform, ctx.ui.can_lend_terminal());
+    if let Some(ok) = statuses.iter().find(|s| s.unavailable.is_none()) {
+        return Ok(ok.method.clone());
+    }
+    Err(statuses
+        .into_iter()
+        .filter_map(|s| s.unavailable)
+        .find(|u| *u != Unavailable::WrongOs))
+}
+
 /// Install a type with its first method that can run here without input,
 /// asking nothing. Used by `setup --auto --install`. The output is captured.
 #[allow(dead_code)] // called from spec 0028 sub-task 8
