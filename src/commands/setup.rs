@@ -1412,12 +1412,33 @@ impl SetupCommands {
     ) -> Result<()> {
         ctx.ui.info("=== granite-cli Auto Setup ===\n");
         let (installed_all, launcher_paths) = Self::auto_install(ctx, install).await?;
+        ctx.ui
+            .info("Auto-detecting and configuring all available components...\n");
+        let discovery = Discover::run_with_hardware(ctx, hardware).await;
+        Self::auto_configure(
+            ctx,
+            hardware,
+            pull,
+            discovery,
+            installed_all,
+            &launcher_paths,
+        )
+        .await
+    }
 
+    /// Everything `setup --auto` does after discovery, given what discovery
+    /// found and whether every type named with `--install` was installed.
+    /// Exits with an error at the end when one was not.
+    async fn auto_configure(
+        ctx: &mut crate::AppContext,
+        hardware: &crate::utils::hardware::HardwareProfile,
+        pull: Option<bool>,
+        mut discovery: DiscoveryResult,
+        installed_all: bool,
+        launcher_paths: &HashMap<String, std::path::PathBuf>,
+    ) -> Result<()> {
         let ui = &*ctx.ui;
-        ui.info("Auto-detecting and configuring all available components...\n");
-
-        let mut discovery = Discover::run_with_hardware(ctx, hardware).await;
-        mark_installed_off_path(&mut discovery, &launcher_paths);
+        mark_installed_off_path(&mut discovery, launcher_paths);
         Self::warn_missing(ctx, &discovery);
 
         if discovery.recommendations.is_empty() {
@@ -1465,7 +1486,7 @@ impl SetupCommands {
             &selection.recommended_capability_types_by_launcher,
         )
         .await?;
-        set_install_paths(ctx, &selected_launchers, &launcher_paths);
+        set_install_paths(ctx, &selected_launchers, launcher_paths);
 
         // Only pull if explicitly requested via --pull; never prompt in auto mode.
         if pull == Some(true) {
@@ -3948,15 +3969,16 @@ mod tests {
         let _home = crate::config::TestConfigHome::new();
         let (mut ctx, _) = ctx_on(crate::utils::test_support::FakeInstallEnv::default());
 
-        let result = SetupCommands::run_auto_with_hardware(
+        let result = SetupCommands::auto_configure(
             &mut ctx,
             &test_hardware_profile(),
             None,
-            &["no-such-type".to_string()],
+            no_discovery(),
+            false,
+            &HashMap::new(),
         )
         .await;
 
-        // The error comes from the install, whatever discovery found.
         assert_eq!(
             result.unwrap_err().to_string(),
             "Not every type named with --install was installed."
