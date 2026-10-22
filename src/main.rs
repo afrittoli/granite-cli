@@ -610,12 +610,32 @@ impl alog::Formatter for UiFormatter {
 
 #[tokio::main]
 async fn main() {
+    // Each handler stops an installer granite-cli is running before it
+    // exits; see `utils::install::stop_running_install`. A handler, once
+    // installed, replaces the signal's default action for the whole run, so
+    // each one exits with the status that action would have given.
     tokio::spawn(async {
         if tokio::signal::ctrl_c().await.is_ok() {
+            utils::install::stop_running_install();
             let _ = dialoguer::console::Term::stderr().show_cursor();
             std::process::exit(130);
         }
     });
+    #[cfg(unix)]
+    for (kind, status) in [
+        (tokio::signal::unix::SignalKind::terminate(), 143),
+        (tokio::signal::unix::SignalKind::hangup(), 129),
+    ] {
+        if let Ok(mut signal) = tokio::signal::unix::signal(kind) {
+            tokio::spawn(async move {
+                if signal.recv().await.is_some() {
+                    utils::install::stop_running_install();
+                    let _ = dialoguer::console::Term::stderr().show_cursor();
+                    std::process::exit(status);
+                }
+            });
+        }
+    }
 
     let cli = Cli::parse();
     let log_level = cli.log_level.clone();

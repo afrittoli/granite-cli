@@ -920,7 +920,7 @@ mod tests {
 
     #[tokio::test]
     async fn setup_offers_the_install_then_shows_how_to_start_when_the_program_is_missing() {
-        use crate::utils::install::{Os, RunMode};
+        use crate::utils::install::Os;
         use crate::utils::test_support::{FakeInstallEnv, FakeRun};
         let _home = crate::config::TestConfigHome::new();
         let env = Arc::new(
@@ -928,8 +928,7 @@ mod tests {
                 .with_programs(&["brew"])
                 .with_run(
                     "brew install ollama",
-                    FakeRun::ok(&["==> Pouring ollama"])
-                        .installs("ollama", "/opt/homebrew/bin/ollama"),
+                    FakeRun::ok().installs("ollama", "/opt/homebrew/bin/ollama"),
                 ),
         );
         let mut ctx = test_ctx();
@@ -941,10 +940,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            env.runs(),
-            vec![("brew install ollama".to_string(), RunMode::Captured)]
-        );
+        assert_eq!(env.runs(), vec!["brew install ollama".to_string()]);
         let ui = capture(&ctx);
         let text = texts(ui);
         assert!(text.contains(

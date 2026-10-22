@@ -9,8 +9,9 @@
 //! provider's health, so tests can replace all three with a fake.
 
 // Standard
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // Third Party
 use async_trait::async_trait;
@@ -18,12 +19,8 @@ use serde::{Deserialize, Serialize};
 
 // Local
 use crate::providers::HealthStatus;
-use crate::utils::ui::Ui;
 
 /*-- public --*/
-
-/// Number of output lines kept from a captured run for a failure report.
-pub(crate) const TAIL_LINES: usize = 20;
 
 /// An operating system an install method is for.
 ///
@@ -105,8 +102,9 @@ pub struct InstallMethod {
     pub kind: MethodKind,
     /// The command line, run through the shell exactly as shown.
     pub command: String,
-    /// True when the command asks for input, such as a `sudo` password. It
-    /// is offered only when the installer can use the terminal.
+    /// True when the command may ask for input, such as a `sudo` password.
+    /// It is shown with the method and does not stop it from running: in a
+    /// terminal the user answers, and without one the question fails.
     pub attended: bool,
     /// Directories the method installs into that may not be on PATH yet.
     /// A leading `~/` stands for the home directory.
@@ -128,7 +126,7 @@ impl InstallMethod {
         }
     }
 
-    /// Mark the method as asking for input.
+    /// Mark the method as one that may ask for input.
     pub(crate) fn attended(mut self) -> Self {
         self.attended = true;
         self
@@ -264,8 +262,6 @@ pub(crate) enum Unavailable {
     Wsl,
     /// A program the method needs is not on PATH.
     MissingProgram(String),
-    /// The method asks for input and the installer cannot use the terminal.
-    Attended,
 }
 
 impl std::fmt::Display for Unavailable {
@@ -274,7 +270,6 @@ impl std::fmt::Display for Unavailable {
             Unavailable::WrongOs => write!(f, "not for this operating system"),
             Unavailable::Wsl => write!(f, "not run under WSL"),
             Unavailable::MissingProgram(p) => write!(f, "{} not found", program_label(p)),
-            Unavailable::Attended => write!(f, "asks for input; run it in a terminal"),
         }
     }
 }
@@ -287,13 +282,8 @@ pub(crate) struct MethodStatus<'a> {
 }
 
 /// Every method in `info`, in declared order, with whether it can run on
-/// `platform`. `allow_attended` is whether a method that asks for input may
-/// run, which is true only when the installer can use the terminal.
-pub(crate) fn assess<'a>(
-    info: &'a InstallInfo,
-    platform: &Platform,
-    allow_attended: bool,
-) -> Vec<MethodStatus<'a>> {
+/// `platform`. A method that may ask for input can run like any other.
+pub(crate) fn assess<'a>(info: &'a InstallInfo, platform: &Platform) -> Vec<MethodStatus<'a>> {
     info.methods
         .iter()
         .map(|method| {
@@ -301,19 +291,15 @@ pub(crate) fn assess<'a>(
                 Some(Unavailable::WrongOs)
             } else if platform.wsl {
                 Some(Unavailable::Wsl)
-            } else if let Some(missing) = method
-                .kind
-                .required_programs(platform.os)
-                .iter()
-                .copied()
-                .chain(method.needs.iter().map(String::as_str))
-                .find(|p| !platform.has(p))
-            {
-                Some(Unavailable::MissingProgram(missing.to_string()))
-            } else if method.attended && !allow_attended {
-                Some(Unavailable::Attended)
             } else {
-                None
+                method
+                    .kind
+                    .required_programs(platform.os)
+                    .iter()
+                    .copied()
+                    .chain(method.needs.iter().map(String::as_str))
+                    .find(|p| !platform.has(p))
+                    .map(|missing| Unavailable::MissingProgram(missing.to_string()))
             };
             MethodStatus {
                 method,
@@ -324,27 +310,12 @@ pub(crate) fn assess<'a>(
 }
 
 /// The methods in `info` that can run on `platform`, in declared order.
-pub(crate) fn applicable<'a>(
-    info: &'a InstallInfo,
-    platform: &Platform,
-    allow_attended: bool,
-) -> Vec<&'a InstallMethod> {
-    assess(info, platform, allow_attended)
+pub(crate) fn applicable<'a>(info: &'a InstallInfo, platform: &Platform) -> Vec<&'a InstallMethod> {
+    assess(info, platform)
         .into_iter()
         .filter(|s| s.unavailable.is_none())
         .map(|s| s.method)
         .collect()
-}
-
-/// How a command runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RunMode {
-    /// The command inherits granite-cli's terminal, so it can show its own
-    /// progress and ask for input.
-    Attached,
-    /// The command gets no input. Each line it prints is passed to the UI
-    /// as it arrives.
-    Captured,
 }
 
 /// The result of running an install command.
@@ -353,9 +324,6 @@ pub(crate) struct RunOutcome {
     pub(crate) success: bool,
     /// The exit status as text, such as "exit status 243".
     pub(crate) status: String,
-    /// The last [`TAIL_LINES`] lines of output. Empty for an attached run,
-    /// whose output went straight to the terminal.
-    pub(crate) tail: Vec<String>,
 }
 
 /// Everything the install code does to the machine: look up a program, run
@@ -375,10 +343,11 @@ pub(crate) trait InstallEnv: Send + Sync {
     /// home directory.
     fn find_in(&self, dir: &str, program: &str) -> Option<PathBuf>;
 
-    /// Run `command` through the shell in `mode`. An `Err` means the shell
-    /// could not be started; a command that ran and failed is an `Ok` with
-    /// `success` false.
-    async fn run(&self, command: &str, mode: RunMode, ui: &dyn Ui) -> anyhow::Result<RunOutcome>;
+    /// Run `command` through the shell, attached: it inherits granite-cli's
+    /// terminal and standard input, and its output goes to standard error.
+    /// An `Err` means the shell could not be started; a command that ran and
+    /// failed is an `Ok` with `success` false.
+    async fn run(&self, command: &str) -> anyhow::Result<RunOutcome>;
 
     /// Build a provider of `provider_type` from `config` and run its health
     /// check.
@@ -387,12 +356,6 @@ pub(crate) trait InstallEnv: Send + Sync {
         provider_type: &str,
         config: &serde_json::Value,
     ) -> anyhow::Result<HealthStatus>;
-}
-
-/// Show one line of a captured command's output, indented under the
-/// command.
-pub(crate) fn report_line(ui: &dyn Ui, line: &str) {
-    ui.info(&format!("  │ {line}"));
 }
 
 /// The install environment of the machine granite-cli runs on.
@@ -429,19 +392,33 @@ impl InstallEnv for RealInstallEnv {
             .find(|path| path.is_file())
     }
 
-    async fn run(&self, command: &str, mode: RunMode, ui: &dyn Ui) -> anyhow::Result<RunOutcome> {
+    /// The installer's standard output goes to granite-cli's standard
+    /// error, so that granite-cli's own output stays usable in scripts.
+    ///
+    /// Without a terminal, on macOS and Linux, the installer runs in its own
+    /// process group, so that [`stop_running_install`] can stop every
+    /// process it started, both sides of a `curl … | bash` pipeline
+    /// included. With a terminal it stays in granite-cli's group, which the
+    /// terminal's `Ctrl-C` reaches, and where `sudo` can ask for a password:
+    /// a process in a background group that reads the terminal is stopped
+    /// until someone resumes it.
+    async fn run(&self, command: &str) -> anyhow::Result<RunOutcome> {
         let mut cmd = shell_command(command);
-        match mode {
-            RunMode::Attached => {
-                let status = cmd.status().await?;
-                Ok(RunOutcome {
-                    success: status.success(),
-                    status: status.to_string(),
-                    tail: Vec::new(),
-                })
-            }
-            RunMode::Captured => run_captured(cmd, ui).await,
+        cmd.stdin(std::process::Stdio::inherit())
+            .stdout(std::io::stderr())
+            .stderr(std::process::Stdio::inherit());
+        let own_group = cfg!(unix) && !has_terminal();
+        #[cfg(unix)]
+        if own_group {
+            cmd.process_group(0);
         }
+        let mut child = cmd.spawn()?;
+        let _running = RunningInstall::new(child.id(), own_group);
+        let status = child.wait().await?;
+        Ok(RunOutcome {
+            success: status.success(),
+            status: status.to_string(),
+        })
     }
 
     async fn check_provider(
@@ -456,7 +433,73 @@ impl InstallEnv for RealInstallEnv {
     }
 }
 
+/// Stop the installer [`RealInstallEnv`] is running, with every process it
+/// started when it runs in its own process group. `main` calls this when a
+/// signal ends granite-cli, so that a CI job timeout or `docker stop` leaves
+/// nothing running.
+pub(crate) fn stop_running_install() {
+    let pid = RUNNING_PID.swap(0, Ordering::SeqCst);
+    if pid == 0 {
+        return;
+    }
+    let own_group = RUNNING_OWN_GROUP.load(Ordering::SeqCst);
+    // Blocking on purpose: granite-cli exits right after this.
+    let _ = if cfg!(windows) {
+        std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .status()
+    } else {
+        // `sh`'s own `kill`, since a `kill` binary may be missing. The pid
+        // is a number granite-cli got from the operating system.
+        let target = if own_group {
+            format!("-s KILL -- -{pid}")
+        } else {
+            format!("-s TERM {pid}")
+        };
+        std::process::Command::new("sh")
+            .args(["-c", &format!("kill {target}")])
+            .status()
+    };
+}
+
 /*-- private --*/
+
+/// The process id of the installer [`RealInstallEnv::run`] is waiting for,
+/// or 0.
+static RUNNING_PID: AtomicU32 = AtomicU32::new(0);
+/// Whether that installer leads its own process group.
+static RUNNING_OWN_GROUP: AtomicBool = AtomicBool::new(false);
+
+/// Records the running installer for [`stop_running_install`] while it
+/// lives.
+struct RunningInstall;
+
+impl RunningInstall {
+    fn new(pid: Option<u32>, own_group: bool) -> Self {
+        RUNNING_OWN_GROUP.store(own_group, Ordering::SeqCst);
+        RUNNING_PID.store(pid.unwrap_or(0), Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for RunningInstall {
+    fn drop(&mut self) {
+        RUNNING_PID.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Whether granite-cli has a controlling terminal, which `sudo` and other
+/// installers ask their questions on even when standard input is redirected.
+fn has_terminal() -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .is_ok()
+}
 
 /// The name a person knows a required program by, for "Homebrew not found".
 fn program_label(program: &str) -> &str {
@@ -483,84 +526,12 @@ fn shell_command(command: &str) -> tokio::process::Command {
     cmd
 }
 
-/// Run `cmd` with no input, passing each line of stdout and stderr to `ui`
-/// as it arrives and keeping the last [`TAIL_LINES`]. Bytes that are not
-/// UTF-8 are replaced, so such a line neither ends the read nor closes the
-/// pipe while the installer is still writing to it.
-///
-/// The run ends when both pipes are closed. A background process that the
-/// installer starts and that keeps stdout or stderr open would keep it
-/// waiting; none of the methods granite-cli declares does that.
-async fn run_captured(mut cmd: tokio::process::Command, ui: &dyn Ui) -> anyhow::Result<RunOutcome> {
-    use tokio::io::BufReader;
-
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = cmd.spawn()?;
-    let mut stdout = child.stdout.take().map(BufReader::new);
-    let mut stderr = child.stderr.take().map(BufReader::new);
-
-    let mut tail: VecDeque<String> = VecDeque::with_capacity(TAIL_LINES);
-    let mut keep = |line: String| {
-        report_line(ui, &line);
-        if tail.len() == TAIL_LINES {
-            tail.pop_front();
-        }
-        tail.push_back(line);
-    };
-
-    while stdout.is_some() || stderr.is_some() {
-        tokio::select! {
-            line = next_line(&mut stdout) => match line? {
-                Some(line) => keep(line),
-                None => stdout = None,
-            },
-            line = next_line(&mut stderr) => match line? {
-                Some(line) => keep(line),
-                None => stderr = None,
-            },
-        }
-    }
-
-    let status = child.wait().await?;
-    Ok(RunOutcome {
-        success: status.success(),
-        status: status.to_string(),
-        tail: tail.into_iter().collect(),
-    })
-}
-
-/// The next line from `reader` without its line ending, decoded with
-/// replacement characters, or `None` at the end of the stream. A stream that
-/// is already closed never resolves, so the `select!` in `run_captured`
-/// waits on the other one.
-async fn next_line<R: tokio::io::AsyncBufRead + Unpin>(
-    reader: &mut Option<R>,
-) -> std::io::Result<Option<String>> {
-    use tokio::io::AsyncBufReadExt;
-
-    let Some(reader) = reader else {
-        return std::future::pending().await;
-    };
-    let mut buf = Vec::new();
-    if reader.read_until(b'\n', &mut buf).await? == 0 {
-        return Ok(None);
-    }
-    while matches!(buf.last(), Some(b'\n' | b'\r')) {
-        buf.pop();
-    }
-    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
-}
-
 /*-- tests --*/
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::utils::test_support::{FakeInstallEnv, FakeRun};
-    use crate::utils::ui::base::tests::CaptureUi;
 
     fn info() -> InstallInfo {
         InstallInfo::default()
@@ -606,7 +577,7 @@ mod tests {
     fn mac_with_homebrew_and_curl_selects_brew_first() {
         let env = FakeInstallEnv::new(Os::Mac).with_programs(&["brew", "curl"]);
         let info = info();
-        let methods = applicable(&info, &Platform::detect(&env, &[&info]), false);
+        let methods = applicable(&info, &Platform::detect(&env, &[&info]));
         assert_eq!(
             commands(&methods),
             vec![
@@ -621,7 +592,7 @@ mod tests {
         let env = FakeInstallEnv::new(Os::Mac).with_programs(&["curl"]);
         let info = info();
         let platform = Platform::detect(&env, &[&info]);
-        let statuses = assess(&info, &platform, false);
+        let statuses = assess(&info, &platform);
         assert_eq!(
             reason(&statuses, "brew install tool"),
             Some(&Unavailable::MissingProgram("brew".to_string()))
@@ -631,7 +602,7 @@ mod tests {
             "Homebrew not found"
         );
         assert_eq!(
-            commands(&applicable(&info, &platform, false)),
+            commands(&applicable(&info, &platform)),
             vec!["curl -fsSL https://example.com/i.sh | sh"]
         );
     }
@@ -642,10 +613,10 @@ mod tests {
         let info = info();
         let platform = Platform::detect(&env, &[&info]);
         assert_eq!(
-            commands(&applicable(&info, &platform, false)),
+            commands(&applicable(&info, &platform)),
             vec!["npm install -g tool"]
         );
-        let statuses = assess(&info, &platform, false);
+        let statuses = assess(&info, &platform);
         assert_eq!(
             reason(&statuses, "brew install tool"),
             Some(&Unavailable::WrongOs)
@@ -661,23 +632,22 @@ mod tests {
         let env = FakeInstallEnv::new(Os::Windows).with_programs(&["winget", "curl"]);
         let info = info();
         assert_eq!(
-            commands(&applicable(&info, &Platform::detect(&env, &[&info]), false)),
+            commands(&applicable(&info, &Platform::detect(&env, &[&info]))),
             vec!["winget install tool"]
         );
     }
 
     #[test]
-    fn attended_method_runs_only_when_attended_methods_may_run() {
+    fn method_that_may_ask_for_input_runs_like_any_other() {
         let info = InstallInfo::default()
             .method(InstallMethod::new(&[Os::Linux], MethodKind::Script, "curl x | sh").attended());
         let env = FakeInstallEnv::new(Os::Linux).with_programs(&["curl"]);
         let platform = Platform::detect(&env, &[&info]);
 
-        let statuses = assess(&info, &platform, false);
-        assert_eq!(statuses[0].unavailable, Some(Unavailable::Attended));
-        assert!(applicable(&info, &platform, false).is_empty());
-
-        assert_eq!(applicable(&info, &platform, true).len(), 1);
+        let statuses = assess(&info, &platform);
+        assert_eq!(statuses[0].unavailable, None);
+        assert!(statuses[0].method.attended);
+        assert_eq!(applicable(&info, &platform).len(), 1);
     }
 
     #[test]
@@ -691,7 +661,7 @@ mod tests {
             .needs("npm"),
         );
         let without = FakeInstallEnv::new(Os::Linux).with_programs(&["curl"]);
-        let statuses = assess(&info, &Platform::detect(&without, &[&info]), false);
+        let statuses = assess(&info, &Platform::detect(&without, &[&info]));
         assert_eq!(
             statuses[0].unavailable,
             Some(Unavailable::MissingProgram("npm".to_string()))
@@ -699,7 +669,7 @@ mod tests {
 
         let with = FakeInstallEnv::new(Os::Linux).with_programs(&["curl", "npm"]);
         assert_eq!(
-            applicable(&info, &Platform::detect(&with, &[&info]), false).len(),
+            applicable(&info, &Platform::detect(&with, &[&info])).len(),
             1
         );
     }
@@ -711,8 +681,8 @@ mod tests {
             .wsl();
         let info = info();
         let platform = Platform::detect(&env, &[&info]);
-        assert!(applicable(&info, &platform, true).is_empty());
-        let statuses = assess(&info, &platform, true);
+        assert!(applicable(&info, &platform).is_empty());
+        let statuses = assess(&info, &platform);
         assert_eq!(
             reason(&statuses, "npm install -g tool"),
             Some(&Unavailable::Wsl)
@@ -736,48 +706,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fake_env_records_commands_and_replays_output() {
+    async fn fake_env_records_commands_and_installs_what_it_was_told() {
         let env = FakeInstallEnv::new(Os::Mac).with_run(
             "npm install -g tool",
-            FakeRun::ok(&["added 1 package"]).installs("tool", "/usr/local/bin/tool"),
+            FakeRun::ok().installs("tool", "/usr/local/bin/tool"),
         );
-        let ui = CaptureUi::default();
-
-        let outcome = env
-            .run("npm install -g tool", RunMode::Captured, &ui)
-            .await
-            .unwrap();
+        let outcome = env.run("npm install -g tool").await.unwrap();
 
         assert!(outcome.success);
-        assert_eq!(outcome.tail, vec!["added 1 package"]);
-        assert_eq!(
-            env.runs(),
-            vec![("npm install -g tool".to_string(), RunMode::Captured)]
-        );
-        assert_eq!(*ui.infos.borrow(), vec!["  │ added 1 package"]);
+        assert_eq!(env.runs(), vec!["npm install -g tool".to_string()]);
         assert_eq!(env.find("tool"), Some(PathBuf::from("/usr/local/bin/tool")));
     }
 
     #[tokio::test]
     async fn fake_env_scripted_failure_installs_nothing_and_health_answers_in_order() {
         let env = FakeInstallEnv::new(Os::Linux)
-            .with_run(
-                "bad",
-                FakeRun::failed(&["boom"]).installs("tool", "/x/tool"),
-            )
+            .with_run("bad", FakeRun::failed().installs("tool", "/x/tool"))
             .with_run(
                 "script",
-                FakeRun::ok(&[]).installs_in("~/.tool/bin", "tool", "/home/me/.tool/bin/tool"),
+                FakeRun::ok().installs_in("~/.tool/bin", "tool", "/home/me/.tool/bin/tool"),
             )
             .with_health(&[false, true]);
-        let ui = CaptureUi::default();
 
-        let failed = env.run("bad", RunMode::Captured, &ui).await.unwrap();
+        let failed = env.run("bad").await.unwrap();
         assert!(!failed.success);
-        assert_eq!(failed.tail, vec!["boom"]);
         assert_eq!(env.find("tool"), None);
 
-        env.run("script", RunMode::Attached, &ui).await.unwrap();
+        env.run("script").await.unwrap();
         assert_eq!(env.find("tool"), None);
         assert_eq!(
             env.find_in("~/.tool/bin", "tool"),
@@ -794,67 +749,8 @@ mod tests {
     #[tokio::test]
     async fn fake_env_fails_a_command_it_was_not_given() {
         let env = FakeInstallEnv::new(Os::Linux);
-        let ui = CaptureUi::default();
-        let outcome = env.run("rm -rf /", RunMode::Attached, &ui).await.unwrap();
+        let outcome = env.run("rm -rf /").await.unwrap();
         assert!(!outcome.success);
         assert_eq!(env.runs().len(), 1);
-    }
-
-    /// Runs a real child process through the platform's shell. The command
-    /// uses only shell builtins, so nothing on PATH is needed beyond the
-    /// shell itself.
-    #[tokio::test]
-    async fn real_env_captures_output_and_exit_status() {
-        let command = if cfg!(windows) {
-            "Write-Output one; Write-Output two; Write-Output three; exit 3"
-        } else {
-            "echo one; echo two >&2; echo three; exit 3"
-        };
-        let ui = CaptureUi::default();
-
-        let outcome = RealInstallEnv
-            .run(command, RunMode::Captured, &ui)
-            .await
-            .unwrap();
-
-        assert!(!outcome.success);
-        assert!(outcome.status.contains('3'), "status: {}", outcome.status);
-        let mut tail = outcome.tail.clone();
-        tail.sort();
-        assert_eq!(tail, vec!["one", "three", "two"]);
-        assert_eq!(ui.infos.borrow().len(), 3);
-        assert!(ui.infos.borrow().iter().all(|l| l.starts_with("  │ ")));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn real_env_reads_on_past_a_line_that_is_not_utf8() {
-        let ui = CaptureUi::default();
-        let outcome = RealInstallEnv
-            .run("printf 'a\\377b\\n'; echo after", RunMode::Captured, &ui)
-            .await
-            .unwrap();
-        assert!(outcome.success);
-        assert_eq!(outcome.tail, vec!["a\u{FFFD}b", "after"]);
-    }
-
-    #[tokio::test]
-    async fn real_env_keeps_only_the_last_lines() {
-        let command = if cfg!(windows) {
-            "1..25 | ForEach-Object { Write-Output $_ }"
-        } else {
-            "i=1; while [ $i -le 25 ]; do echo $i; i=$((i+1)); done"
-        };
-        let ui = CaptureUi::default();
-
-        let outcome = RealInstallEnv
-            .run(command, RunMode::Captured, &ui)
-            .await
-            .unwrap();
-
-        assert!(outcome.success);
-        assert_eq!(outcome.tail.len(), TAIL_LINES);
-        assert_eq!(outcome.tail.first().map(String::as_str), Some("6"));
-        assert_eq!(outcome.tail.last().map(String::as_str), Some("25"));
     }
 }
