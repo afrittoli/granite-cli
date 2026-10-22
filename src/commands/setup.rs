@@ -3670,7 +3670,7 @@ mod tests {
         let _home = crate::config::TestConfigHome::new();
         let (mut ctx, _) = ctx_on(
             FakeInstallEnv::new(Os::Linux)
-                .with_programs(&["curl"])
+                .with_programs(&["curl", "bash"])
                 .with_run(
                     "curl -fsSL https://claude.ai/install.sh | bash",
                     FakeRun::ok().installs_in(
@@ -4009,7 +4009,7 @@ mod tests {
         use crate::utils::test_support::{FakeInstallEnv, FakeRun};
         let (ctx, _) = ctx_on(
             FakeInstallEnv::new(Os::Linux)
-                .with_programs(&["curl"])
+                .with_programs(&["curl", "bash"])
                 .with_run(
                     "curl -fsSL https://claude.ai/install.sh | bash",
                     FakeRun::ok().installs_in(

@@ -510,20 +510,26 @@ fn program_label(program: &str) -> &str {
     }
 }
 
-/// `command` as a child of the platform's shell: `sh -c` on macOS and
-/// Linux, PowerShell on Windows.
+/// `command` as a child of the shell [`shell_for`] picks.
 fn shell_command(command: &str) -> tokio::process::Command {
-    let mut cmd = if cfg!(windows) {
-        let mut c = tokio::process::Command::new("powershell");
-        c.args(["-NoProfile", "-Command"]);
-        c
-    } else {
-        let mut c = tokio::process::Command::new("sh");
-        c.arg("-c");
-        c
-    };
-    cmd.arg(command);
+    let (shell, args) = shell_for(command, cfg!(windows));
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(args).arg(command);
     cmd
+}
+
+/// The shell that runs `command`, and its arguments before the command:
+/// `sh -c` on macOS and Linux. On Windows, PowerShell runs a vendor script
+/// (`irm … | iex`), and `cmd /C` runs everything else. Under PowerShell,
+/// `npm` resolves to `npm.ps1`, which the default execution policy blocks.
+fn shell_for(command: &str, windows: bool) -> (&'static str, &'static [&'static str]) {
+    if !windows {
+        ("sh", &["-c"])
+    } else if command.contains("| iex") {
+        ("powershell", &["-NoProfile", "-Command"])
+    } else {
+        ("cmd", &["/C"])
+    }
 }
 
 /*-- tests --*/
@@ -691,6 +697,17 @@ mod tests {
             reason(&statuses, "winget install tool"),
             Some(&Unavailable::Wsl)
         );
+    }
+
+    #[test]
+    fn windows_runs_scripts_in_powershell_and_the_rest_in_cmd() {
+        assert_eq!(shell_for("npm install -g tool", false), ("sh", &["-c"][..]));
+        assert_eq!(
+            shell_for("irm https://t.ps1 | iex", true),
+            ("powershell", &["-NoProfile", "-Command"][..])
+        );
+        assert_eq!(shell_for("npm install -g tool", true), ("cmd", &["/C"][..]));
+        assert_eq!(shell_for("winget install tool", true), ("cmd", &["/C"][..]));
     }
 
     #[test]

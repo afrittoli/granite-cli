@@ -385,6 +385,7 @@ fn install_info() -> InstallInfo {
                 MethodKind::Script,
                 "curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --pm npm",
             )
+            .needs("bash")
             .needs("npm"),
         )
 }

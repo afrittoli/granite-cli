@@ -417,12 +417,14 @@ fn install_info() -> InstallInfo {
             "brew install ollama",
         ))
         .method(
+            // install.sh exits on anything but Linux.
             InstallMethod::new(
-                Os::UNIX,
+                &[Os::Linux],
                 MethodKind::Script,
                 "curl -fsSL https://ollama.com/install.sh | sh",
             )
-            .attended(),
+            .attended()
+            .bin_dir("/usr/local/bin"),
         )
         .method(InstallMethod::new(
             &[Os::Windows],
