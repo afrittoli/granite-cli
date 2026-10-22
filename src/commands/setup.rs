@@ -107,6 +107,13 @@ fn set_install_paths(
         let Some(mut launcher) = ctx.config().get_launcher(id).cloned() else {
             continue;
         };
+        // A command_path the user entered in this run is theirs to keep.
+        if launcher.config["command_path"]
+            .as_str()
+            .is_some_and(|p| !p.is_empty())
+        {
+            continue;
+        }
         launcher.config["command_path"] = serde_json::Value::String(path.display().to_string());
         if let Err(e) = ctx.config_mut().insert_launcher(id, launcher) {
             ctx.ui
@@ -1948,21 +1955,45 @@ impl SetupCommands {
                     &md.install,
                 );
             }
+            // Like `provider setup`, check again until every provider
+            // answers or the user continues without the rest.
             let items = vec![
                 "Check again".to_string(),
                 "Continue without them".to_string(),
             ];
-            if ui.select(WOULD_YOU_LIKE_TO, &items, 1)? == 0 {
+            let mut waiting: Vec<String> = installed.into_iter().chain(not_running).collect();
+            while ui.select(WOULD_YOU_LIKE_TO, &items, 1).ok() == Some(0) {
                 step.rediscover = true;
+                let mut still = Vec::new();
+                for id in waiting {
+                    let Some(md) = PROVIDER_REGISTRY.get(&id) else {
+                        continue;
+                    };
+                    let config = PROVIDER_REGISTRY
+                        .default_config(&id)
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    if !matches!(env.check_provider(&id, &config).await, Ok(s) if s.healthy) {
+                        ui.warn(&format!(
+                            "{} is still not answering at {}.",
+                            md.name, md.default_endpoint
+                        ));
+                        still.push(id);
+                    }
+                }
+                if still.is_empty() {
+                    break;
+                }
+                waiting = still;
             }
         }
 
         Ok(step)
     }
 
-    /// Show the types in `candidates` that have a method able to run here as
-    /// a multi-select with nothing ticked, list the others underneath, and
-    /// return the ticked ones. A provider whose program is already on PATH
+    /// List the types in `candidates` that cannot be installed here, then
+    /// show those that can as a multi-select with nothing ticked, and return
+    /// the ticked ones. The list comes first so that it can inform the
+    /// choice. A provider whose program is already on PATH
     /// is not offered: its id is pushed to `not_running` instead.
     fn pick_installs(
         ctx: &crate::AppContext,
@@ -2002,19 +2033,6 @@ impl SetupCommands {
             }
         }
 
-        let mut picked = Vec::new();
-        if !offered.is_empty() {
-            let items: Vec<String> = offered
-                .iter()
-                .map(|c| format!("{}  {}  {}", c.id, c.name, c.method.command))
-                .collect();
-            let selected = ui.multi_select(prompt, &items, &vec![false; items.len()])?;
-            for (i, choice) in offered.into_iter().enumerate() {
-                if selected.contains(&i) {
-                    picked.push(choice);
-                }
-            }
-        }
         if !running_hint.is_empty() {
             ui.info(&format!(
                 "  Found on PATH, not answering: {}.",
@@ -2034,6 +2052,19 @@ impl SetupCommands {
             ui.info(&format!(
                 "  Run `granite-cli {noun} info <type>` for instructions."
             ));
+        }
+        let mut picked = Vec::new();
+        if !offered.is_empty() {
+            let items: Vec<String> = offered
+                .iter()
+                .map(|c| format!("{}  {}  {}", c.id, c.name, c.method.command))
+                .collect();
+            let selected = ui.multi_select(prompt, &items, &vec![false; items.len()])?;
+            for (i, choice) in offered.into_iter().enumerate() {
+                if selected.contains(&i) {
+                    picked.push(choice);
+                }
+            }
         }
         Ok(picked)
     }
@@ -3535,6 +3566,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn install_step_checks_again_until_the_provider_answers() {
+        use crate::utils::install::Os;
+        use crate::utils::test_support::FakeInstallEnv;
+        let (ctx, env) = ctx_on(
+            FakeInstallEnv::new(Os::Mac)
+                .with_programs(&["brew", "llama-server"])
+                .with_health(&[false, true]),
+        );
+        let discovery = discovery_with(vec![launcher_found("opencode")]);
+        capture_ui(&ctx).select_answers.borrow_mut().extend([0, 0]);
+
+        let step = SetupCommands::install_step(&ctx, &discovery).await.unwrap();
+
+        assert!(step.rediscover);
+        assert_eq!(env.health_checks(), vec!["llama-cpp", "llama-cpp"]);
+        let ui = capture_ui(&ctx);
+        assert_eq!(ui.select_prompts.borrow().len(), 2);
+        assert!(
+            ui.warns
+                .borrow()
+                .iter()
+                .any(|w| w.contains("is still not answering"))
+        );
+    }
+
+    #[tokio::test]
     async fn install_step_lists_a_provider_on_path_as_not_running() {
         use crate::utils::install::Os;
         use crate::utils::test_support::FakeInstallEnv;
@@ -3734,6 +3791,22 @@ mod tests {
         assert_eq!(
             ctx.config().get_launcher("claude").unwrap().config["command_path"],
             "/home/me/.local/bin/claude"
+        );
+
+        // A command_path the user set is kept.
+        let mut launcher = ctx.config().get_launcher("claude").unwrap().clone();
+        launcher.config["command_path"] = serde_json::json!("/opt/claude/bin/claude");
+        ctx.config_mut()
+            .insert_launcher("claude", launcher)
+            .unwrap();
+        set_install_paths(
+            &mut ctx,
+            &HashSet::from(["claude".to_string()]),
+            &step.launcher_paths,
+        );
+        assert_eq!(
+            ctx.config().get_launcher("claude").unwrap().config["command_path"],
+            "/opt/claude/bin/claude"
         );
     }
 
