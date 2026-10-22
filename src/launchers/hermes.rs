@@ -774,6 +774,7 @@ fn install_info() -> InstallInfo {
                 MethodKind::Script,
                 "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
             )
+            .needs("bash")
             .attended()
             .bin_dir("~/.local/bin"),
         )

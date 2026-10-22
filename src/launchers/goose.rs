@@ -390,6 +390,7 @@ fn install_info() -> InstallInfo {
                 MethodKind::Script,
                 "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash",
             )
+            .needs("bash")
             .bin_dir("~/.local/bin"),
         )
 }

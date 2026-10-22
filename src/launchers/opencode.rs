@@ -1082,6 +1082,7 @@ fn install_info() -> InstallInfo {
                 MethodKind::Script,
                 "curl -fsSL https://opencode.ai/install | bash",
             )
+            .needs("bash")
             .bin_dir("~/.opencode/bin"),
         )
         .method(InstallMethod::new(

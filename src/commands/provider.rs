@@ -840,10 +840,7 @@ mod tests {
         assert_eq!(get("Program"), vec!["ollama (not found on PATH)"]);
         assert_eq!(
             get("Install"),
-            vec![
-                "brew install ollama  [✓ runs on this machine]",
-                "curl -fsSL https://ollama.com/install.sh | sh  [curl not found]",
-            ]
+            vec!["brew install ollama  [✓ runs on this machine]"]
         );
         assert_eq!(get("Run"), vec!["ollama serve"]);
         assert_eq!(
@@ -900,6 +897,35 @@ mod tests {
                     md.install.methods.is_empty(),
                     "{id} declares install methods"
                 );
+            }
+        }
+    }
+
+    /// A vendor script on macOS or Linux often installs outside PATH, so it
+    /// names where. The Windows installers put themselves on PATH.
+    #[test]
+    fn every_unix_script_method_declares_a_directory() {
+        use crate::utils::install::{MethodKind, Os};
+        for (id, md) in PROVIDER_REGISTRY.entries() {
+            for m in &md.install.methods {
+                if m.kind == MethodKind::Script && !m.os.contains(&Os::Windows) {
+                    assert!(
+                        !m.bin_dirs.is_empty(),
+                        "{id}: {} declares no directory",
+                        m.command
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_method_that_pipes_to_bash_needs_bash() {
+        for (id, md) in PROVIDER_REGISTRY.entries() {
+            for m in &md.install.methods {
+                if m.command.contains("bash") {
+                    assert!(m.needs.iter().any(|n| n == "bash"), "{id}: {}", m.command);
+                }
             }
         }
     }

@@ -452,6 +452,7 @@ fn install_info() -> InstallInfo {
                 MethodKind::Script,
                 "curl -fsSL https://claude.ai/install.sh | bash",
             )
+            .needs("bash")
             .bin_dir("~/.local/bin"),
         )
         .method(

@@ -943,6 +943,17 @@ mod tests {
     }
 
     #[test]
+    fn every_method_that_pipes_to_bash_needs_bash() {
+        for (id, md) in LAUNCHER_REGISTRY.entries() {
+            for m in &md.install.methods {
+                if m.command.contains("bash") {
+                    assert!(m.needs.iter().any(|n| n == "bash"), "{id}: {}", m.command);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn info_configured_unknown_type_renders_note() {
         let mut ctx = test_ctx();
         ctx.config_mut().launchers.insert(
@@ -1048,7 +1059,7 @@ mod tests {
         let _home = crate::config::TestConfigHome::new();
         let mut ctx = setup_ctx(
             FakeInstallEnv::new(Os::Linux)
-                .with_programs(&["curl"])
+                .with_programs(&["curl", "bash"])
                 .with_run(
                     "curl -fsSL https://opencode.ai/install | bash",
                     FakeRun::ok().installs_in(
