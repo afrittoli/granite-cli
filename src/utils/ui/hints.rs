@@ -35,6 +35,8 @@ pub(crate) enum Hint {
     Confirm,
     /// `[Esc] Cancel` — cancel the current operation.
     Cancel,
+    /// `[Esc] Stop install` — stop the install command that is running.
+    StopInstall,
     /// `[Backspace/Esc/q] Back` — exit detail view.
     Back,
     /// `[q] Quit` — exit the TUI.
@@ -67,6 +69,7 @@ impl std::fmt::Display for Hint {
             Hint::ConfirmYN => write!(f, "[y/n/←→/hl] Select"),
             Hint::Confirm => write!(f, "[Enter] Confirm"),
             Hint::Cancel => write!(f, "[Esc] Cancel"),
+            Hint::StopInstall => write!(f, "[Esc] Stop install"),
             Hint::Back => write!(f, "[Backspace/Esc/q] Back"),
             Hint::Quit => write!(f, "[q] Quit"),
             Hint::ConfiguredLegend => write!(f, "✓ = configured"),

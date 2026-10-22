@@ -612,6 +612,7 @@ impl alog::Formatter for UiFormatter {
 async fn main() {
     tokio::spawn(async {
         if tokio::signal::ctrl_c().await.is_ok() {
+            utils::install::stop_running_install();
             let _ = dialoguer::console::Term::stderr().show_cursor();
             std::process::exit(130);
         }

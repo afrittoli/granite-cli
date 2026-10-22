@@ -11,6 +11,7 @@
 // Standard
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // Third Party
 use async_trait::async_trait;
@@ -456,6 +457,16 @@ impl InstallEnv for RealInstallEnv {
     }
 }
 
+/// Kill the installer that [`RealInstallEnv`] is running captured, with
+/// every process it started, if there is one. `main` calls this when
+/// `Ctrl-C` ends granite-cli.
+pub(crate) fn stop_running_install() {
+    let pid = RUNNING_GROUP.swap(0, Ordering::SeqCst);
+    if pid != 0 {
+        kill_tree(pid);
+    }
+}
+
 /*-- private --*/
 
 /// The name a person knows a required program by, for "Homebrew not found".
@@ -465,6 +476,70 @@ fn program_label(program: &str) -> &str {
         "powershell" => "PowerShell",
         other => other,
     }
+}
+
+/// The process id of the captured installer that is running, or 0. On Unix
+/// it is also the id of the installer's process group.
+static RUNNING_GROUP: AtomicU32 = AtomicU32::new(0);
+
+/// Registers a captured installer in [`RUNNING_GROUP`] and, when dropped
+/// before [`RunningGroup::finished`], kills it with every process it started.
+/// A stop request, a read error and a dropped future all end that way.
+struct RunningGroup(Option<u32>);
+
+impl RunningGroup {
+    fn new(pid: Option<u32>) -> Self {
+        if let Some(pid) = pid {
+            RUNNING_GROUP.store(pid, Ordering::SeqCst);
+        }
+        Self(pid)
+    }
+
+    /// The installer exited by itself; leave what it started running.
+    fn finished(&mut self) {
+        if let Some(pid) = self.0.take() {
+            Self::unregister(pid);
+        }
+    }
+
+    /// Kill the installer with every process it started. On Windows the
+    /// tree is found from the installer's pid, so this runs while the
+    /// installer is still alive.
+    fn kill(&mut self) {
+        if let Some(pid) = self.0.take() {
+            Self::unregister(pid);
+            kill_tree(pid);
+        }
+    }
+
+    fn unregister(pid: u32) {
+        let _ = RUNNING_GROUP.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
+impl Drop for RunningGroup {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// Kill process `pid` and the processes it started: its process group on
+/// Unix, its process tree on Windows.
+fn kill_tree(pid: u32) {
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new("taskkill");
+        c.args(["/T", "/F", "/PID", &pid.to_string()]);
+        c
+    } else {
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", &format!("kill -s KILL -- -{pid}")]);
+        c
+    };
+    let _ = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// `command` as a child of the platform's shell: `sh -c` on macOS and
@@ -484,9 +559,18 @@ fn shell_command(command: &str) -> tokio::process::Command {
 }
 
 /// Run `cmd` with no input, passing each line of stdout and stderr to `ui`
-/// as it arrives and keeping the last [`TAIL_LINES`]. Bytes that are not
-/// UTF-8 are replaced, so such a line neither ends the read nor closes the
-/// pipe while the installer is still writing to it.
+/// as it arrives and keeping the last [`TAIL_LINES`]. Every 100 ms it asks
+/// `ui` whether a stop was requested, and if so kills the command with every
+/// process it started, and returns an error. Bytes that are not UTF-8 are
+/// replaced, so such a line neither ends the read nor closes the pipe while
+/// the installer is still writing to it.
+///
+/// On Unix the command runs in its own process group, so that a stop kills
+/// both sides of a `curl … | bash` pipeline. The terminal's `Ctrl-C` does not
+/// reach that group, so `main` calls [`stop_running_install`] before it exits.
+/// A background group cannot read the terminal: an installer that opens
+/// `/dev/tty`, such as `sudo`, stops there until it is killed. Methods that
+/// ask for input are marked attended and never run captured.
 ///
 /// The run ends when both pipes are closed. A background process that the
 /// installer starts and that keeps stdout or stderr open would keep it
@@ -498,7 +582,10 @@ async fn run_captured(mut cmd: tokio::process::Command, ui: &dyn Ui) -> anyhow::
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = cmd.spawn()?;
+    let mut group = RunningGroup::new(child.id());
     let mut stdout = child.stdout.take().map(BufReader::new);
     let mut stderr = child.stderr.take().map(BufReader::new);
 
@@ -511,8 +598,16 @@ async fn run_captured(mut cmd: tokio::process::Command, ui: &dyn Ui) -> anyhow::
         tail.push_back(line);
     };
 
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
     while stdout.is_some() || stderr.is_some() {
         tokio::select! {
+            _ = tick.tick() => {
+                if ui.stop_requested() {
+                    group.kill();
+                    let _ = child.kill().await;
+                    anyhow::bail!("Install stopped.");
+                }
+            },
             line = next_line(&mut stdout) => match line? {
                 Some(line) => keep(line),
                 None => stdout = None,
@@ -525,6 +620,7 @@ async fn run_captured(mut cmd: tokio::process::Command, ui: &dyn Ui) -> anyhow::
     }
 
     let status = child.wait().await?;
+    group.finished();
     Ok(RunOutcome {
         success: status.success(),
         status: status.to_string(),
@@ -836,6 +932,33 @@ mod tests {
             .unwrap();
         assert!(outcome.success);
         assert_eq!(outcome.tail, vec!["a\u{FFFD}b", "after"]);
+    }
+
+    /// The command starts a loop in the background that keeps appending to
+    /// a file, prints a line and waits, using only shell builtins. The stop
+    /// arrives after that line, and must end the background loop as well as
+    /// the shell: the file stops growing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn real_env_kills_a_captured_command_and_its_children_when_a_stop_is_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ticks");
+        let ui = CaptureUi::default();
+        *ui.stop_after_output.borrow_mut() = true;
+        let started = std::time::Instant::now();
+
+        let command = format!(
+            "while :; do echo x >> '{}'; done & echo started; wait",
+            file.display()
+        );
+        let result = RealInstallEnv.run(&command, RunMode::Captured, &ui).await;
+
+        assert_eq!(result.unwrap_err().to_string(), "Install stopped.");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let size = || std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+        let before = size();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(size(), before, "the background loop survived the stop");
     }
 
     #[tokio::test]

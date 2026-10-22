@@ -339,6 +339,9 @@ impl InstallEnv for FakeInstallEnv {
 
     async fn run(&self, command: &str, mode: RunMode, ui: &dyn Ui) -> anyhow::Result<RunOutcome> {
         self.runs.lock().unwrap().push((command.to_string(), mode));
+        if mode == RunMode::Captured && ui.stop_requested() {
+            anyhow::bail!("Install stopped.");
+        }
         let Some(run) = self.scripted.get(command) else {
             return Ok(RunOutcome {
                 success: false,

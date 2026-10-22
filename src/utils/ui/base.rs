@@ -202,6 +202,17 @@ pub trait Ui: Send + Sync + Any {
         false
     }
 
+    /// Told `true` when an install command starts and `false` when it ends,
+    /// so a UI can say how to stop it.
+    fn install_running(&self, _running: bool) {}
+
+    /// Whether the person has asked to stop what is running. A captured
+    /// install command checks this while it runs and is killed when it
+    /// turns true.
+    fn stop_requested(&self) -> bool {
+        false
+    }
+
     /// Ask the user to pick one of `items`, returning the chosen index.
     fn select(&self, prompt: &str, items: &[String], default: usize) -> anyhow::Result<usize> {
         Ok(dialoguer::Select::new()
@@ -355,6 +366,16 @@ pub(crate) mod tests {
 
         /// Answer for `can_lend_terminal()`. False by default.
         pub lends_terminal: RefCell<bool>,
+
+        /// Each value passed to `install_running()`, in order.
+        pub install_running: RefCell<Vec<bool>>,
+
+        /// Answer for `stop_requested()`. False by default.
+        pub stop: RefCell<bool>,
+
+        /// When true, `stop_requested()` also answers true once `info()`
+        /// has received a line, so a stop arrives while a command runs.
+        pub stop_after_output: RefCell<bool>,
     }
 
     impl ConfigConstructable for CaptureUi {
@@ -375,6 +396,15 @@ pub(crate) mod tests {
 
         fn can_lend_terminal(&self) -> bool {
             *self.lends_terminal.borrow()
+        }
+
+        fn install_running(&self, running: bool) {
+            self.install_running.borrow_mut().push(running);
+        }
+
+        fn stop_requested(&self) -> bool {
+            *self.stop.borrow()
+                || (*self.stop_after_output.borrow() && !self.infos.borrow().is_empty())
         }
 
         fn table(&self, title: &str, headers: &[&str], rows: &[Vec<String>]) {

@@ -2708,11 +2708,13 @@ fn spawn_setup(
     let pulls: Arc<Mutex<std::collections::HashMap<u64, crate::utils::ui::tui_ui::PullState>>> =
         Arc::new(Mutex::new(std::collections::HashMap::new()));
 
+    let installing = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let tui_ui = Arc::new(TuiUi::new(
         prompt_tx,
         answer_rx,
         Arc::clone(&output),
         Arc::clone(&pulls),
+        Arc::clone(&installing),
     ));
 
     // Build the pane title before the closure captures section/id/instance_id.
@@ -2752,7 +2754,7 @@ fn spawn_setup(
         });
     });
 
-    SetupPane::new(title, output, pulls, prompt_rx, answer_tx)
+    SetupPane::new(title, output, pulls, prompt_rx, answer_tx).with_install_flag(installing)
 }
 
 /*-- tests --*/

@@ -141,6 +141,8 @@ pub struct SetupPane {
     active: Option<PromptState>,
     /// Set to `true` once `prompt_rx` is disconnected (task finished).
     pub finished: bool,
+    /// True while the setup task runs an install command.
+    installing: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SetupPane {
@@ -160,7 +162,18 @@ impl SetupPane {
             answer_tx,
             active: None,
             finished: false,
+            installing: Default::default(),
         }
+    }
+
+    /// Share `flag` with the `TuiUi` of the setup task, which sets it while
+    /// an install command runs.
+    pub(crate) fn with_install_flag(
+        mut self,
+        flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.installing = flag;
+        self
     }
 
     /// Poll for a new prompt from the setup task (non-blocking).
@@ -185,6 +198,9 @@ impl SetupPane {
         match &self.active {
             Some(p) => p.hint(),
             None if self.finished => render_hints(&[Hint::Close]),
+            None if self.installing.load(std::sync::atomic::Ordering::SeqCst) => {
+                render_hints(&[Hint::ScrollOutput, Hint::StopInstall])
+            }
             None => render_hints(&[Hint::ScrollOutput, Hint::Cancel]),
         }
     }
@@ -193,7 +209,10 @@ impl SetupPane {
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
         use crossterm::event::KeyCode;
 
-        // Esc always cancels setup from any prompt state.
+        // Esc always cancels setup from any prompt state. During an install
+        // there is no prompt: `app.rs` drops the pane once `finished` is set,
+        // which closes the answer channel, and the running install sees that
+        // through `Ui::stop_requested`.
         if key.code == KeyCode::Esc {
             // Disconnect the answer channel — the setup task will get an Err
             // on its next `ask()` call and propagate it up as a cancellation.
@@ -693,6 +712,16 @@ mod tests {
     fn setup_pane_hint_waiting_for_prompt() {
         let (pane, _tx) = make_pane();
         // No prompt sent yet → waiting state
+        assert_eq!(pane.hint(), "[↑↓/jk] Scroll output  [Esc] Cancel");
+    }
+
+    #[test]
+    fn setup_pane_hint_while_an_install_runs() {
+        let (pane, _tx) = make_pane();
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let pane = pane.with_install_flag(flag.clone());
+        assert_eq!(pane.hint(), "[↑↓/jk] Scroll output  [Esc] Stop install");
+        flag.store(false, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(pane.hint(), "[↑↓/jk] Scroll output  [Esc] Cancel");
     }
 

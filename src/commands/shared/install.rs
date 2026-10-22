@@ -344,7 +344,10 @@ async fn run_method(
     mode: RunMode,
 ) -> anyhow::Result<InstallOutcome> {
     ui.info(&format!("Running: {}", method.command));
-    let outcome = match env.run(&method.command, mode, ui).await {
+    ui.install_running(true);
+    let run = env.run(&method.command, mode, ui).await;
+    ui.install_running(false);
+    let outcome = match run {
         Ok(outcome) => outcome,
         Err(e) => {
             ui.error(&ui.error_mark(&format!("✗ Could not run the install command: {e}")));
