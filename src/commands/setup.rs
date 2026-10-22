@@ -1801,7 +1801,7 @@ impl SetupCommands {
     ) -> Result<InstallStep> {
         let ui = &*ctx.ui;
         let mut step = InstallStep::default();
-        if !ui.is_interactive() {
+        if !ui.is_interactive() || !ui.can_lend_terminal() {
             return Ok(step);
         }
 
@@ -1968,11 +1968,7 @@ impl SetupCommands {
                 not_running.push(id);
                 continue;
             }
-            match crate::commands::shared::install::first_method(
-                ctx,
-                &info,
-                ctx.ui.can_lend_terminal(),
-            ) {
+            match crate::commands::shared::install::first_method(ctx, &info) {
                 Ok(method) => offered.push(InstallChoice {
                     id,
                     name,
@@ -3170,16 +3166,16 @@ impl SetupCommands {
             }
         }
         if !on_path.is_empty()
-            && types.iter().all(|(_, i)| {
-                crate::commands::shared::install::first_method(ctx, i, false).is_err()
-            })
+            && types
+                .iter()
+                .all(|(_, i)| crate::commands::shared::install::first_method(ctx, i).is_err())
         {
             return;
         }
         let installable: Vec<(String, String)> = types
             .iter()
             .filter_map(|(id, info)| {
-                crate::commands::shared::install::first_method(ctx, info, false)
+                crate::commands::shared::install::first_method(ctx, info)
                     .ok()
                     .map(|m| (id.clone(), m.command))
             })
@@ -3231,9 +3227,7 @@ impl SetupCommands {
                     .as_deref()
                     .is_none_or(|p| env.find(p).is_none())
             })
-            .find(|(_, info)| {
-                crate::commands::shared::install::first_method(ctx, info, false).is_ok()
-            })
+            .find(|(_, info)| crate::commands::shared::install::first_method(ctx, info).is_ok())
             .map(|(id, _)| id)
     }
 
@@ -3529,11 +3523,11 @@ mod tests {
                 .with_programs(&["npm"])
                 .with_run(
                     "npm install -g opencode-ai",
-                    FakeRun::ok(&[]).installs("opencode", "/usr/bin/opencode"),
+                    FakeRun::ok().installs("opencode", "/usr/bin/opencode"),
                 )
                 .with_run(
                     "npm install -g openclaw@latest --allow-scripts=openclaw",
-                    FakeRun::failed(&["npm error"]),
+                    FakeRun::failed(),
                 ),
         );
         let ui = capture_ui(&ctx);
@@ -3545,7 +3539,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            env.runs().into_iter().map(|(c, _)| c).collect::<Vec<_>>(),
+            env.runs(),
             vec![
                 "npm install -g openclaw@latest --allow-scripts=openclaw",
                 "npm install -g opencode-ai",
@@ -3586,7 +3580,7 @@ mod tests {
                 .with_programs(&["brew"])
                 .with_run(
                     "brew install ollama",
-                    FakeRun::ok(&[]).installs("ollama", "/opt/homebrew/bin/ollama"),
+                    FakeRun::ok().installs("ollama", "/opt/homebrew/bin/ollama"),
                 ),
         );
         // On a Mac with Homebrew the offer is llama-cpp, ollama.
@@ -3622,7 +3616,7 @@ mod tests {
                 .with_programs(&["curl"])
                 .with_run(
                     "curl -fsSL https://claude.ai/install.sh | bash",
-                    FakeRun::ok(&[]).installs_in(
+                    FakeRun::ok().installs_in(
                         "~/.local/bin",
                         "claude",
                         "/home/me/.local/bin/claude",
@@ -3824,18 +3818,18 @@ mod tests {
 
     #[tokio::test]
     async fn auto_install_runs_exactly_the_named_types() {
-        use crate::utils::install::{Os, RunMode};
+        use crate::utils::install::Os;
         use crate::utils::test_support::{FakeInstallEnv, FakeRun};
         let (ctx, env) = ctx_on(
             FakeInstallEnv::new(Os::Mac)
                 .with_programs(&["brew", "npm", "curl"])
                 .with_run(
                     "npm install -g opencode-ai",
-                    FakeRun::ok(&[]).installs("opencode", "/usr/local/bin/opencode"),
+                    FakeRun::ok().installs("opencode", "/usr/local/bin/opencode"),
                 )
                 .with_run(
                     "brew install ollama",
-                    FakeRun::ok(&[]).installs("ollama", "/opt/homebrew/bin/ollama"),
+                    FakeRun::ok().installs("ollama", "/opt/homebrew/bin/ollama"),
                 ),
         );
 
@@ -3848,8 +3842,8 @@ mod tests {
         assert_eq!(
             env.runs(),
             vec![
-                ("brew install ollama".to_string(), RunMode::Captured),
-                ("npm install -g opencode-ai".to_string(), RunMode::Captured),
+                "brew install ollama".to_string(),
+                "npm install -g opencode-ai".to_string(),
             ]
         );
         assert!(env.health_checks().is_empty());
@@ -3861,21 +3855,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_install_reports_an_unknown_type_and_one_that_cannot_run() {
+    async fn auto_install_reports_an_unknown_type_and_a_failed_install() {
         use crate::utils::install::Os;
         use crate::utils::test_support::FakeInstallEnv;
-        let (ctx, env) = ctx_on(FakeInstallEnv::new(Os::Linux).with_programs(&["curl"]));
+        let (ctx, env) = ctx_on(FakeInstallEnv::new(Os::Linux).with_programs(&["curl", "bash"]));
 
-        // hermes has only an attended script, which --install does not run.
+        // hermes has only a script that may ask for input. --install runs it;
+        // the fake environment fails it, as a question without a terminal
+        // would.
         let (ok, _) =
             SetupCommands::auto_install(&ctx, &["no-such-type".to_string(), "hermes".to_string()])
                 .await
                 .unwrap();
 
         assert!(!ok);
-        assert!(env.runs().is_empty());
+        assert_eq!(env.runs().len(), 1);
         let ui = capture_ui(&ctx);
         assert!(ui.errors.borrow()[0].contains("'no-such-type'"));
+        assert!(
+            ui.errors
+                .borrow()
+                .iter()
+                .any(|e| e.contains("Install failed"))
+        );
         assert!(
             ui.infos
                 .borrow()
@@ -3931,7 +3933,7 @@ mod tests {
                 .with_programs(&["curl"])
                 .with_run(
                     "curl -fsSL https://claude.ai/install.sh | bash",
-                    FakeRun::ok(&[]).installs_in(
+                    FakeRun::ok().installs_in(
                         "~/.local/bin",
                         "claude",
                         "/home/me/.local/bin/claude",

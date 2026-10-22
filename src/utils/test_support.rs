@@ -18,7 +18,7 @@ use crate::providers::{
     ApiEndpoint, ApiType, HealthStatus, ModelFormat, Provider, ProviderError, PullResult,
 };
 use crate::registry::{ConfigConstructable, ConstructError, Named, Secret};
-use crate::utils::install::{InstallEnv, Os, RunMode, RunOutcome, TAIL_LINES, report_line};
+use crate::utils::install::{InstallEnv, Os, RunOutcome};
 use crate::utils::ui::Ui;
 
 /*-- public --*/
@@ -205,35 +205,29 @@ pub(crate) struct FakeInstallEnv {
     path: Mutex<HashMap<String, PathBuf>>,
     dirs: Mutex<HashMap<(String, String), PathBuf>>,
     scripted: HashMap<String, FakeRun>,
-    runs: Mutex<Vec<(String, RunMode)>>,
+    runs: Mutex<Vec<String>>,
     health: Mutex<VecDeque<bool>>,
     health_checks: Mutex<Vec<(String, serde_json::Value)>>,
 }
 
-/// What a scripted command prints, whether it succeeds, and what it puts
-/// on the machine.
+/// Whether a scripted command succeeds, and what it puts on the machine.
 #[derive(Clone, Default)]
 pub(crate) struct FakeRun {
-    lines: Vec<String>,
     success: bool,
     on_path: Vec<(String, PathBuf)>,
     in_dir: Vec<(String, String, PathBuf)>,
 }
 
 impl FakeRun {
-    pub(crate) fn ok(lines: &[&str]) -> Self {
+    pub(crate) fn ok() -> Self {
         Self {
-            lines: lines.iter().map(|l| l.to_string()).collect(),
             success: true,
             ..Default::default()
         }
     }
 
-    pub(crate) fn failed(lines: &[&str]) -> Self {
-        Self {
-            success: false,
-            ..Self::ok(lines)
-        }
+    pub(crate) fn failed() -> Self {
+        Self::default()
     }
 
     /// The command puts `program` on PATH at `path`.
@@ -299,8 +293,8 @@ impl FakeInstallEnv {
         self
     }
 
-    /// Every command run so far, with its mode.
-    pub(crate) fn runs(&self) -> Vec<(String, RunMode)> {
+    /// Every command run so far.
+    pub(crate) fn runs(&self) -> Vec<String> {
         self.runs.lock().unwrap().clone()
     }
 
@@ -337,20 +331,14 @@ impl InstallEnv for FakeInstallEnv {
             .cloned()
     }
 
-    async fn run(&self, command: &str, mode: RunMode, ui: &dyn Ui) -> anyhow::Result<RunOutcome> {
-        self.runs.lock().unwrap().push((command.to_string(), mode));
+    async fn run(&self, command: &str) -> anyhow::Result<RunOutcome> {
+        self.runs.lock().unwrap().push(command.to_string());
         let Some(run) = self.scripted.get(command) else {
             return Ok(RunOutcome {
                 success: false,
                 status: "exit status 127".to_string(),
-                tail: vec![format!("not scripted: {command}")],
             });
         };
-        if mode == RunMode::Captured {
-            for line in &run.lines {
-                report_line(ui, line);
-            }
-        }
         if run.success {
             let mut path = self.path.lock().unwrap();
             for (program, at) in &run.on_path {
@@ -361,18 +349,12 @@ impl InstallEnv for FakeInstallEnv {
                 dirs.insert((dir.clone(), program.clone()), at.clone());
             }
         }
-        let tail_from = run.lines.len().saturating_sub(TAIL_LINES);
         Ok(RunOutcome {
             success: run.success,
             status: if run.success {
                 "exit status 0".to_string()
             } else {
                 "exit status 1".to_string()
-            },
-            tail: if mode == RunMode::Captured {
-                run.lines[tail_from..].to_vec()
-            } else {
-                Vec::new()
             },
         })
     }

@@ -3,8 +3,7 @@
 
 // Local
 use crate::utils::install::{
-    InstallEnv, InstallInfo, InstallMethod, Platform, RunMode, Unavailable, applicable, assess,
-    report_line,
+    InstallEnv, InstallInfo, InstallMethod, Platform, Unavailable, applicable, assess,
 };
 use crate::utils::ui::Ui;
 
@@ -13,7 +12,7 @@ use crate::utils::ui::Ui;
 /// Show the install detail of a type as an "Install" block, unless `info`
 /// holds nothing.
 pub(crate) fn show_install_detail(ctx: &crate::AppContext, info: &InstallInfo) {
-    let fields = install_fields(&*ctx.install_env(), info, ctx.ui.can_lend_terminal());
+    let fields = install_fields(&*ctx.install_env(), info);
     if fields.is_empty() {
         return;
     }
@@ -32,15 +31,7 @@ pub(crate) fn show_install_detail(ctx: &crate::AppContext, info: &InstallInfo) {
 /// Methods for other operating systems are left out. When a key repeats,
 /// as "Install" does for several methods, each one is numbered ("Install 1",
 /// "Install 2"), since the JSON backend keeps one value per key.
-///
-/// `allow_attended` is whether a method that asks for input may run, which
-/// is `Ui::can_lend_terminal`. The verdict on an attended method therefore
-/// depends on the output format of this run.
-pub(crate) fn install_fields(
-    env: &dyn InstallEnv,
-    info: &InstallInfo,
-    allow_attended: bool,
-) -> Vec<(String, String)> {
+pub(crate) fn install_fields(env: &dyn InstallEnv, info: &InstallInfo) -> Vec<(String, String)> {
     let platform = Platform::detect(env, &[info]);
     let mut fields: Vec<(&'static str, String)> = Vec::new();
 
@@ -52,10 +43,13 @@ pub(crate) fn install_fields(
         fields.push(("Program", found));
     }
 
-    for status in assess(info, &platform, allow_attended) {
+    for status in assess(info, &platform) {
         let verdict = match &status.unavailable {
             Some(Unavailable::WrongOs) => continue,
             Some(reason) => reason.to_string(),
+            None if status.method.attended => {
+                format!("✓ runs on this machine, {MAY_ASK}")
+            }
             None => "✓ runs on this machine".to_string(),
         };
         fields.push(("Install", format!("{}  [{verdict}]", status.method.command)));
@@ -92,18 +86,19 @@ pub(crate) enum InstallOutcome {
     Failed,
     /// No method can run on this machine.
     Unavailable,
-    /// The UI is not interactive, so nothing was offered.
+    /// The UI is not interactive, or cannot lend the terminal, so nothing
+    /// was offered.
     NotOffered,
 }
 
 /// Offer to install a type whose program is missing.
 ///
 /// Lists the methods that can run here, each as its full command, and a line
-/// that installs nothing; choosing a command is the consent to run it. An
-/// attended method is offered only when the UI can lend the terminal, and
-/// the chosen command runs attached exactly then, captured otherwise. When
-/// the UI is not interactive, nothing is offered and the manual instructions
-/// are shown. `name` is the type's display name.
+/// that installs nothing; choosing a command is the consent to run it. A
+/// method that may ask for input is marked. When the UI is not interactive,
+/// or cannot lend the terminal to the installer, as in the TUI, nothing is
+/// offered and the manual instructions are shown. `name` is the type's
+/// display name.
 pub(crate) async fn offer_install(
     ctx: &crate::AppContext,
     name: &str,
@@ -111,14 +106,13 @@ pub(crate) async fn offer_install(
 ) -> anyhow::Result<InstallOutcome> {
     let env = ctx.install_env();
     let ui = &*ctx.ui;
-    if !ui.is_interactive() {
+    if !ui.is_interactive() || !ui.can_lend_terminal() {
         show_manual_instructions(ui, &*env, name, info);
         return Ok(InstallOutcome::NotOffered);
     }
 
-    let lend = ui.can_lend_terminal();
     let platform = Platform::detect(&*env, &[info]);
-    let methods = applicable(info, &platform, lend);
+    let methods = applicable(info, &platform);
     if methods.is_empty() {
         show_manual_instructions(ui, &*env, name, info);
         return Ok(InstallOutcome::Unavailable);
@@ -128,7 +122,7 @@ pub(crate) async fn offer_install(
         .iter()
         .map(|m| {
             if m.attended {
-                format!("{}  (asks for input)", m.command)
+                format!("{}  ({MAY_ASK})", m.command)
             } else {
                 m.command.clone()
             }
@@ -141,41 +135,28 @@ pub(crate) async fn offer_install(
         return Ok(InstallOutcome::Declined);
     };
 
-    let mode = if lend {
-        RunMode::Attached
-    } else {
-        RunMode::Captured
-    };
-    run_method(ui, &*env, name, info, method, mode).await
+    run_method(ui, &*env, name, info, method).await
 }
 
-/// Run `method`, which the user has already chosen, attached to the
-/// terminal when the UI can lend it and captured otherwise.
+/// Run `method`, which the user has already chosen.
 pub(crate) async fn install_with(
     ctx: &crate::AppContext,
     name: &str,
     info: &InstallInfo,
     method: &InstallMethod,
 ) -> anyhow::Result<InstallOutcome> {
-    let mode = if ctx.ui.can_lend_terminal() {
-        RunMode::Attached
-    } else {
-        RunMode::Captured
-    };
-    run_method(&*ctx.ui, &*ctx.install_env(), name, info, method, mode).await
+    run_method(&*ctx.ui, &*ctx.install_env(), name, info, method).await
 }
 
-/// The first method of `info` that can run here, with attended methods only
-/// when `allow_attended`; or, when none can, the reason the first method for
-/// this operating system cannot.
+/// The first method of `info` that can run here; or, when none can, the
+/// reason the first method for this operating system cannot.
 pub(crate) fn first_method(
     ctx: &crate::AppContext,
     info: &InstallInfo,
-    allow_attended: bool,
 ) -> Result<InstallMethod, Option<Unavailable>> {
     let env = ctx.install_env();
     let platform = Platform::detect(&*env, &[info]);
-    let statuses = assess(info, &platform, allow_attended);
+    let statuses = assess(info, &platform);
     if let Some(ok) = statuses.iter().find(|s| s.unavailable.is_none()) {
         return Ok(ok.method.clone());
     }
@@ -185,8 +166,9 @@ pub(crate) fn first_method(
         .find(|u| *u != Unavailable::WrongOs))
 }
 
-/// Install a type with its first method that can run here without input,
-/// asking nothing. Used by `setup --auto --install`. The output is captured.
+/// Install a type with its first method that can run here, asking nothing.
+/// Used by `setup --auto --install`. A method that may ask for input runs
+/// too: without a terminal its question fails, and the failure is reported.
 pub(crate) async fn install_unattended(
     ctx: &crate::AppContext,
     name: &str,
@@ -195,11 +177,11 @@ pub(crate) async fn install_unattended(
     let env = ctx.install_env();
     let ui = &*ctx.ui;
     let platform = Platform::detect(&*env, &[info]);
-    let Some(method) = applicable(info, &platform, false).into_iter().next() else {
+    let Some(method) = applicable(info, &platform).into_iter().next() else {
         show_manual_instructions(ui, &*env, name, info);
         return Ok(InstallOutcome::Unavailable);
     };
-    run_method(ui, &*env, name, info, method, RunMode::Captured).await
+    run_method(ui, &*env, name, info, method).await
 }
 
 /// What granite-cli knows about a provider's program when its server does
@@ -304,7 +286,7 @@ pub(crate) fn show_manual_instructions(
     info: &InstallInfo,
 ) {
     let platform = Platform::detect(env, &[info]);
-    let methods: Vec<_> = assess(info, &platform, true)
+    let methods: Vec<_> = assess(info, &platform)
         .into_iter()
         .filter(|s| s.unavailable != Some(Unavailable::WrongOs))
         .collect();
@@ -330,6 +312,7 @@ pub(crate) fn show_manual_instructions(
 /*-- private --*/
 
 const DONT_INSTALL: &str = "Don't install (show manual instructions)";
+const MAY_ASK: &str = "may ask for input";
 const CHECK_AGAIN: &str = "Check again";
 const CONTINUE_WITHOUT: &str = "Continue without it";
 
@@ -341,10 +324,9 @@ async fn run_method(
     name: &str,
     info: &InstallInfo,
     method: &InstallMethod,
-    mode: RunMode,
 ) -> anyhow::Result<InstallOutcome> {
     ui.info(&format!("Running: {}", method.command));
-    let outcome = match env.run(&method.command, mode, ui).await {
+    let outcome = match env.run(&method.command).await {
         Ok(outcome) => outcome,
         Err(e) => {
             ui.error(&ui.error_mark(&format!("✗ Could not run the install command: {e}")));
@@ -355,12 +337,6 @@ async fn run_method(
 
     if !outcome.success {
         ui.error(&ui.error_mark(&format!("✗ Install failed ({}).", outcome.status)));
-        if !outcome.tail.is_empty() {
-            ui.info(&format!("  Last {} lines of output:", outcome.tail.len()));
-            for line in &outcome.tail {
-                report_line(ui, line);
-            }
-        }
         show_manual_instructions(ui, env, name, info);
         return Ok(InstallOutcome::Failed);
     }
@@ -430,7 +406,6 @@ fn number_repeated_keys(fields: Vec<(&'static str, String)>) -> Vec<(String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::install::RunMode;
     use crate::utils::install::{InstallMethod, MethodKind, Os};
     use crate::utils::test_support::{FakeInstallEnv, FakeRun};
     use crate::utils::ui::base::tests::CaptureUi;
@@ -467,7 +442,7 @@ mod tests {
     #[test]
     fn fields_list_this_os_only_with_verdicts() {
         let env = FakeInstallEnv::new(Os::Mac).with_programs(&["brew", "tool"]);
-        let fields = install_fields(&env, &info(), false);
+        let fields = install_fields(&env, &info());
         assert_eq!(
             fields,
             pairs(&[
@@ -484,7 +459,7 @@ mod tests {
     #[test]
     fn fields_give_the_reason_a_method_cannot_run() {
         let env = FakeInstallEnv::new(Os::Mac);
-        let fields = install_fields(&env, &info(), false);
+        let fields = install_fields(&env, &info());
         assert!(fields.contains(&pair("Program", "tool (not found on PATH)")));
         assert!(fields.contains(&pair("Install", "brew install tool  [Homebrew not found]")));
     }
@@ -504,7 +479,7 @@ mod tests {
             ))
             .page("https://example.com");
         let env = FakeInstallEnv::new(Os::Linux).with_programs(&["npm"]);
-        let keys: Vec<String> = install_fields(&env, &info, false)
+        let keys: Vec<String> = install_fields(&env, &info)
             .into_iter()
             .map(|(k, _)| k)
             .collect();
@@ -512,27 +487,23 @@ mod tests {
     }
 
     #[test]
-    fn attended_method_runs_only_when_the_terminal_can_be_lent() {
+    fn a_method_that_may_ask_for_input_runs_and_says_so() {
         let info = InstallInfo::default()
             .method(InstallMethod::new(&[Os::Linux], MethodKind::Script, "curl x | sh").attended());
         let env = FakeInstallEnv::new(Os::Linux).with_programs(&["curl"]);
         assert_eq!(
-            install_fields(&env, &info, false),
+            install_fields(&env, &info),
             pairs(&[(
                 "Install",
-                "curl x | sh  [asks for input; run it in a terminal]"
+                "curl x | sh  [✓ runs on this machine, may ask for input]"
             )])
-        );
-        assert_eq!(
-            install_fields(&env, &info, true),
-            pairs(&[("Install", "curl x | sh  [✓ runs on this machine]")])
         );
     }
 
     #[test]
     fn empty_info_has_no_fields() {
         let env = FakeInstallEnv::default();
-        assert!(install_fields(&env, &InstallInfo::default(), false).is_empty());
+        assert!(install_fields(&env, &InstallInfo::default()).is_empty());
     }
 
     // -- install flow ----------------------------------------------------------
@@ -587,7 +558,7 @@ mod tests {
     #[tokio::test]
     async fn declining_runs_nothing_and_shows_manual_instructions() {
         let ui = CaptureUi::default();
-        ui.select_answers.borrow_mut().push_back(2); // Don't install
+        ui.select_answers.borrow_mut().push_back(3); // Don't install
         let (ctx, env, ui) = flow_ctx(
             FakeInstallEnv::new(Os::Linux).with_programs(&["npm", "curl"]),
             ui,
@@ -603,6 +574,7 @@ mod tests {
             &vec![
                 "npm install -g tool".to_string(),
                 "curl -fsSL https://t.sh | sh".to_string(),
+                "curl -fsSL https://sudo.sh | sh  (may ask for input)".to_string(),
                 DONT_INSTALL.to_string(),
             ]
         );
@@ -611,7 +583,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn choosing_a_method_runs_exactly_that_command_captured() {
+    async fn choosing_a_method_runs_exactly_that_command() {
         let ui = CaptureUi::default();
         ui.select_answers.borrow_mut().push_back(0);
         let (ctx, env, ui) = flow_ctx(
@@ -619,7 +591,7 @@ mod tests {
                 .with_programs(&["npm", "curl"])
                 .with_run(
                     "npm install -g tool",
-                    FakeRun::ok(&["added 1 package"]).installs("tool", "/usr/local/bin/tool"),
+                    FakeRun::ok().installs("tool", "/usr/local/bin/tool"),
                 ),
             ui,
         );
@@ -633,13 +605,9 @@ mod tests {
                 off_path: false
             }
         );
-        assert_eq!(
-            env.runs(),
-            vec![("npm install -g tool".to_string(), RunMode::Captured)]
-        );
+        assert_eq!(env.runs(), vec!["npm install -g tool".to_string()]);
         let text = all_text(&ui);
         assert!(text.contains("Running: npm install -g tool"));
-        assert!(text.contains("  │ added 1 package"));
         assert!(text.contains("✓ Installed: /usr/local/bin/tool"));
     }
 
@@ -652,76 +620,41 @@ mod tests {
                 .with_programs(&["npm", "curl"])
                 .with_run(
                     "curl -fsSL https://t.sh | sh",
-                    FakeRun::ok(&[]).installs("tool", "/x/tool"),
+                    FakeRun::ok().installs("tool", "/x/tool"),
                 ),
             ui,
         );
 
         offer_install(&ctx, "Tool", &tool_info()).await.unwrap();
 
-        assert_eq!(
-            env.runs(),
-            vec![(
-                "curl -fsSL https://t.sh | sh".to_string(),
-                RunMode::Captured
-            )]
-        );
+        assert_eq!(env.runs(), vec!["curl -fsSL https://t.sh | sh".to_string()]);
     }
 
     #[tokio::test]
-    async fn the_command_runs_attached_when_the_ui_can_lend_the_terminal() {
+    async fn a_ui_that_cannot_lend_the_terminal_gets_manual_instructions() {
         let ui = CaptureUi::default();
-        *ui.lends_terminal.borrow_mut() = true;
-        ui.select_answers.borrow_mut().push_back(0);
-        let (ctx, env, _ui) = flow_ctx(
-            FakeInstallEnv::new(Os::Linux)
-                .with_programs(&["npm"])
-                .with_run(
-                    "npm install -g tool",
-                    FakeRun::ok(&[]).installs("tool", "/x/tool"),
-                ),
+        *ui.lends_terminal.borrow_mut() = Some(false);
+        let (ctx, env, ui) = flow_ctx(
+            FakeInstallEnv::new(Os::Linux).with_programs(&["npm", "curl"]),
             ui,
         );
 
-        offer_install(&ctx, "Tool", &tool_info()).await.unwrap();
+        let outcome = offer_install(&ctx, "Tool", &tool_info()).await.unwrap();
 
-        assert_eq!(
-            env.runs(),
-            vec![("npm install -g tool".to_string(), RunMode::Attached)]
-        );
+        assert_eq!(outcome, InstallOutcome::NotOffered);
+        assert!(env.runs().is_empty());
+        assert!(ui.select_prompts.borrow().is_empty());
+        assert!(all_text(&ui).contains("To install Tool yourself:"));
     }
 
     #[tokio::test]
-    async fn an_attended_method_is_offered_only_when_the_terminal_can_be_lent() {
-        let env = || FakeInstallEnv::new(Os::Linux).with_programs(&["curl"]);
-        let items = |ui: &CaptureUi| ui.select_prompts.borrow()[0].1.clone();
-
-        let (ctx, _, ui) = flow_ctx(env(), CaptureUi::default());
-        ui.select_answers.borrow_mut().push_back(1);
-        offer_install(&ctx, "Tool", &tool_info()).await.unwrap();
-        assert!(!items(&ui).iter().any(|i| i.contains("sudo.sh")));
-
-        let lending = CaptureUi::default();
-        *lending.lends_terminal.borrow_mut() = true;
-        lending.select_answers.borrow_mut().push_back(2);
-        let (ctx, _, ui) = flow_ctx(env(), lending);
-        offer_install(&ctx, "Tool", &tool_info()).await.unwrap();
-        assert!(
-            items(&ui).contains(&"curl -fsSL https://sudo.sh | sh  (asks for input)".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failure_shows_the_last_lines_and_the_manual_instructions() {
+    async fn a_failure_shows_the_status_and_the_manual_instructions() {
         let ui = CaptureUi::default();
         ui.select_answers.borrow_mut().push_back(0);
         let (ctx, _, ui) = flow_ctx(
             FakeInstallEnv::new(Os::Linux)
                 .with_programs(&["npm"])
-                .with_run(
-                    "npm install -g tool",
-                    FakeRun::failed(&["npm error code EACCES"]),
-                ),
+                .with_run("npm install -g tool", FakeRun::failed()),
             ui,
         );
 
@@ -731,12 +664,6 @@ mod tests {
         assert_eq!(
             *ui.errors.borrow(),
             vec!["✗ Install failed (exit status 1)."]
-        );
-        assert!(
-            ui.infos
-                .borrow()
-                .iter()
-                .any(|l| l == "  │ npm error code EACCES")
         );
         assert!(all_text(&ui).contains("To install Tool yourself:"));
     }
@@ -750,7 +677,7 @@ mod tests {
                 .with_programs(&["curl"])
                 .with_run(
                     "curl -fsSL https://t.sh | sh",
-                    FakeRun::ok(&[]).installs_in("~/.tool/bin", "tool", "/home/me/.tool/bin/tool"),
+                    FakeRun::ok().installs_in("~/.tool/bin", "tool", "/home/me/.tool/bin/tool"),
                 ),
             ui,
         );
@@ -775,7 +702,7 @@ mod tests {
         let (ctx, _, _) = flow_ctx(
             FakeInstallEnv::new(Os::Linux)
                 .with_programs(&["npm"])
-                .with_run("npm install -g tool", FakeRun::ok(&[])),
+                .with_run("npm install -g tool", FakeRun::ok()),
             ui,
         );
         assert_eq!(
@@ -846,7 +773,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_unattended_runs_the_first_method_that_asks_nothing() {
+    async fn install_unattended_runs_the_first_method_even_if_it_may_ask() {
         let info = InstallInfo::default()
             .program("tool")
             .method(
@@ -866,8 +793,8 @@ mod tests {
             FakeInstallEnv::new(Os::Linux)
                 .with_programs(&["npm", "curl"])
                 .with_run(
-                    "npm install -g tool",
-                    FakeRun::ok(&[]).installs("tool", "/x/tool"),
+                    "curl -fsSL https://sudo.sh | sh",
+                    FakeRun::ok().installs("tool", "/x/tool"),
                 ),
             CaptureUi::default(),
         );
@@ -877,7 +804,7 @@ mod tests {
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
         assert_eq!(
             env.runs(),
-            vec![("npm install -g tool".to_string(), RunMode::Captured)]
+            vec!["curl -fsSL https://sudo.sh | sh".to_string()]
         );
         assert!(ui.select_prompts.borrow().is_empty());
     }

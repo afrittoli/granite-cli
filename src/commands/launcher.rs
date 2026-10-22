@@ -1008,8 +1008,7 @@ mod tests {
                 .with_programs(&["npm"])
                 .with_run(
                     "npm install -g opencode-ai",
-                    FakeRun::ok(&["added 1 package"])
-                        .installs("opencode", "/usr/local/bin/opencode"),
+                    FakeRun::ok().installs("opencode", "/usr/local/bin/opencode"),
                 ),
         );
         capture(&ctx).select_answers.borrow_mut().push_back(0);
@@ -1052,7 +1051,7 @@ mod tests {
                 .with_programs(&["curl"])
                 .with_run(
                     "curl -fsSL https://opencode.ai/install | bash",
-                    FakeRun::ok(&[]).installs_in(
+                    FakeRun::ok().installs_in(
                         "~/.opencode/bin",
                         "opencode",
                         "/home/me/.opencode/bin/opencode",

@@ -353,8 +353,10 @@ pub(crate) mod tests {
         /// a person to ask.
         pub interactive: RefCell<Option<bool>>,
 
-        /// Answer for `can_lend_terminal()`. False by default.
-        pub lends_terminal: RefCell<bool>,
+        /// Answer for `can_lend_terminal()`. `None`, the default, answers
+        /// true, as for a terminal session, so a test only sets this when it
+        /// is testing a UI that cannot lend the terminal, such as the TUI.
+        pub lends_terminal: RefCell<Option<bool>>,
     }
 
     impl ConfigConstructable for CaptureUi {
@@ -374,7 +376,7 @@ pub(crate) mod tests {
         }
 
         fn can_lend_terminal(&self) -> bool {
-            *self.lends_terminal.borrow()
+            self.lends_terminal.borrow().unwrap_or(true)
         }
 
         fn table(&self, title: &str, headers: &[&str], rows: &[Vec<String>]) {
